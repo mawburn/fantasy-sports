@@ -52,39 +52,39 @@ setup-hooks: install-dev
 	@echo "Pre-commit hooks installed!"
 
 # Format code
-format: $(VENV)
+format:
 	@echo "Formatting Python code with Ruff..."
-	$(VENV)/bin/ruff format src/ tests/ scripts/
-	$(VENV)/bin/ruff check --fix src/ tests/ scripts/
+	$(UV) run ruff format src/ tests/ scripts/
+	$(UV) run ruff check --fix src/ tests/ scripts/
 	@echo "Formatting Python code with Black..."
-	$(VENV)/bin/black src/ tests/ scripts/
+	$(UV) run black src/ tests/ scripts/
 	@echo "Sorting imports with isort..."
-	$(VENV)/bin/isort src/ tests/ scripts/
+	$(UV) run isort src/ tests/ scripts/
 	@echo "Formatting Markdown files..."
-	$(VENV)/bin/mdformat docs/ *.md
+	$(UV) run mdformat docs/ *.md
 	@echo "Formatting complete!"
 
 # Run linters
-lint: $(VENV)
+lint:
 	@echo "Running Ruff linter..."
-	$(VENV)/bin/ruff check src/ tests/ scripts/
+	$(UV) run ruff check src/ tests/ scripts/
 	@echo "Running Black check..."
-	$(VENV)/bin/black --check src/ tests/ scripts/
+	$(UV) run black --check src/ tests/ scripts/
 	@echo "Running isort check..."
-	$(VENV)/bin/isort --check-only src/ tests/ scripts/
+	$(UV) run isort --check-only src/ tests/ scripts/
 	@echo "Running mypy..."
-	$(VENV)/bin/mypy src/
+	$(UV) run mypy src/
 	@echo "Running bandit security checks..."
-	$(VENV)/bin/bandit -r src/ -ll
+	$(UV) run bandit -r src/ -ll
 	@echo "Linting complete!"
 
 # Run tests
-test: $(VENV)
-	$(VENV)/bin/pytest tests/ -v
+test:
+	$(UV) run pytest tests/ -v
 
 # Run tests with coverage
-test-cov: $(VENV)
-	$(VENV)/bin/pytest tests/ --cov=src --cov-report=term-missing --cov-report=html
+test-cov:
+	$(UV) run pytest tests/ --cov=src --cov-report=term-missing --cov-report=html
 
 # Clean build artifacts and cache
 clean:
@@ -107,26 +107,26 @@ freeze: $(VENV)
 	@echo "Lockfile generated!"
 
 # Start development server
-run: $(VENV)
-	$(PYTHON_VENV) -m uvicorn src.api.main:app --reload --host 127.0.0.1 --port 8000
+run:
+	$(UV) run uvicorn src.api.main:app --reload --host 127.0.0.1 --port 8000
 
 # Build documentation
-docs: $(VENV)
-	$(VENV)/bin/mkdocs build
+docs:
+	$(UV) run mkdocs build
 
 # Serve documentation locally
-docs-serve: $(VENV)
-	$(VENV)/bin/mkdocs serve
+docs-serve:
+	$(UV) run mkdocs serve
 
 # Database operations
-db-init: $(VENV)
-	$(PYTHON_VENV) scripts/init_database.py
+db-init:
+	$(UV) run python scripts/init_database.py
 
-db-migrate: $(VENV)
-	$(VENV)/bin/alembic upgrade head
+db-migrate:
+	$(UV) run alembic upgrade head
 
-db-backup: $(VENV)
-	$(PYTHON_VENV) scripts/backup_system.py
+db-backup:
+	$(UV) run python scripts/backup_system.py
 
 # Install everything and setup for first use
 setup: install-dev setup-hooks
