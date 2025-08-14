@@ -2,7 +2,9 @@
 
 ## Overview
 
-This learning plan is designed to take you from PyTorch beginner to building sophisticated sports prediction models. Each phase builds practical skills while working toward your goal of accurate DFS predictions.
+This learning plan is designed to take you from PyTorch beginner to building sophisticated sports
+prediction models. Each phase builds practical skills while working toward your goal of accurate DFS
+predictions.
 
 ## Phase 1: PyTorch Fundamentals (Weeks 1-2)
 
@@ -10,8 +12,8 @@ This learning plan is designed to take you from PyTorch beginner to building sop
 
 #### Tensors - The Foundation
 
-**What**: Multi-dimensional arrays (like enhanced numpy arrays) that can run on GPU
-**Why Important**: All data in PyTorch becomes tensors - player stats, predictions, model weights
+**What**: Multi-dimensional arrays (like enhanced numpy arrays) that can run on GPU **Why
+Important**: All data in PyTorch becomes tensors - player stats, predictions, model weights
 **Learn**:
 
 - Creating tensors from your NFL data
@@ -21,9 +23,8 @@ This learning plan is designed to take you from PyTorch beginner to building sop
 
 #### Automatic Differentiation
 
-**What**: PyTorch automatically calculates gradients (slopes) for optimization
-**Why Important**: This is how neural networks learn - by adjusting weights based on gradients
-**Learn**:
+**What**: PyTorch automatically calculates gradients (slopes) for optimization **Why Important**:
+This is how neural networks learn - by adjusting weights based on gradients **Learn**:
 
 - `tensor.requires_grad = True` - tells PyTorch to track operations
 - `loss.backward()` - calculates all gradients automatically
@@ -31,9 +32,8 @@ This learning plan is designed to take you from PyTorch beginner to building sop
 
 #### Basic Neural Network Layers
 
-**What**: Building blocks like `nn.Linear` (fully connected layers)
-**Why Important**: These layers learn relationships in your NFL data
-**Learn**:
+**What**: Building blocks like `nn.Linear` (fully connected layers) **Why Important**: These layers
+learn relationships in your NFL data **Learn**:
 
 - `nn.Linear(input_size, output_size)` - maps features to predictions
 - `nn.ReLU()` - activation function that adds non-linearity
@@ -42,8 +42,8 @@ This learning plan is designed to take you from PyTorch beginner to building sop
 ### Hands-On Projects
 
 1. **Convert NFL CSV to tensors** - Practice data loading and conversion
-2. **Build simple 2-layer network** - Predict fantasy points from basic stats
-3. **Manual training loop** - Understand forward pass, loss calculation, backpropagation
+1. **Build simple 2-layer network** - Predict fantasy points from basic stats
+1. **Manual training loop** - Understand forward pass, loss calculation, backpropagation
 
 ### Success Criteria
 
@@ -57,9 +57,8 @@ This learning plan is designed to take you from PyTorch beginner to building sop
 
 #### Network Depth and Width
 
-**What**: How many layers and neurons per layer
-**Why Important**: Deeper/wider networks can learn more complex patterns
-**Experiment With**:
+**What**: How many layers and neurons per layer **Why Important**: Deeper/wider networks can learn
+more complex patterns **Experiment With**:
 
 - 3-layer vs 5-layer vs 8-layer networks
 - Hidden layer sizes: 32, 64, 128, 256 neurons
@@ -67,9 +66,8 @@ This learning plan is designed to take you from PyTorch beginner to building sop
 
 #### Regularization Techniques
 
-**What**: Methods to prevent overfitting (memorizing training data)
-**Why Important**: Your model needs to work on new, unseen games
-**Learn**:
+**What**: Methods to prevent overfitting (memorizing training data) **Why Important**: Your model
+needs to work on new, unseen games **Learn**:
 
 - **Dropout**: Randomly disable neurons during training
 - **Batch Normalization**: Normalize inputs to each layer
@@ -77,9 +75,8 @@ This learning plan is designed to take you from PyTorch beginner to building sop
 
 #### Loss Functions for Regression
 
-**What**: How you measure prediction errors
-**Why Important**: Different loss functions optimize for different goals
-**Experiment With**:
+**What**: How you measure prediction errors **Why Important**: Different loss functions optimize for
+different goals **Experiment With**:
 
 - **Mean Squared Error (MSE)**: Standard choice, penalizes large errors heavily
 - **Mean Absolute Error (MAE)**: Less sensitive to outliers
@@ -90,8 +87,7 @@ This learning plan is designed to take you from PyTorch beginner to building sop
 
 #### Optimizers
 
-**What**: Algorithms that update model weights based on gradients
-**Learn**:
+**What**: Algorithms that update model weights based on gradients **Learn**:
 
 - **Adam**: Usually best starting point, adaptive learning rates
 - **SGD**: Simple but sometimes more stable
@@ -99,9 +95,8 @@ This learning plan is designed to take you from PyTorch beginner to building sop
 
 #### Learning Rate Scheduling
 
-**What**: Adjusting learning rate during training
-**Why Important**: Start with larger steps, then fine-tune with smaller steps
-**Techniques**:
+**What**: Adjusting learning rate during training **Why Important**: Start with larger steps, then
+fine-tune with smaller steps **Techniques**:
 
 - **Step decay**: Reduce learning rate every N epochs
 - **Cosine annealing**: Smoothly reduce learning rate
@@ -110,9 +105,9 @@ This learning plan is designed to take you from PyTorch beginner to building sop
 ### Hands-On Projects
 
 1. **Architecture comparison** - Test 3-layer vs 5-layer vs 8-layer networks
-2. **Regularization experiments** - Add dropout, batch norm, compare results
-3. **Optimizer tuning** - Test Adam vs SGD with different learning rates
-4. **Custom loss function** - Create DFS-specific loss that penalizes expensive player errors more
+1. **Regularization experiments** - Add dropout, batch norm, compare results
+1. **Optimizer tuning** - Test Adam vs SGD with different learning rates
+1. **Custom loss function** - Create DFS-specific loss that penalizes expensive player errors more
 
 ### Success Criteria
 
@@ -127,9 +122,8 @@ This learning plan is designed to take you from PyTorch beginner to building sop
 
 #### Rolling Statistics
 
-**What**: Moving averages and trends over recent games
-**Why Important**: Recent performance often predicts future performance
-**Create**:
+**What**: Moving averages and trends over recent games **Why Important**: Recent performance often
+predicts future performance **Create**:
 
 - 3-game, 5-game, 10-game rolling averages
 - Rolling standard deviation (consistency metrics)
@@ -137,8 +131,7 @@ This learning plan is designed to take you from PyTorch beginner to building sop
 
 #### Contextual Features
 
-**What**: Game situation and matchup factors
-**Learn**:
+**What**: Game situation and matchup factors **Learn**:
 
 - Opponent strength adjustments (vs good/bad defenses)
 - Home/away splits and venue effects
@@ -148,9 +141,8 @@ This learning plan is designed to take you from PyTorch beginner to building sop
 
 #### Position-Specific Modeling
 
-**What**: Different neural networks for different positions
-**Why Important**: QBs, RBs, WRs have different usage patterns and predictability
-**Build**:
+**What**: Different neural networks for different positions **Why Important**: QBs, RBs, WRs have
+different usage patterns and predictability **Build**:
 
 - Separate networks for QB vs skill positions
 - Position-specific feature sets
@@ -160,9 +152,8 @@ This learning plan is designed to take you from PyTorch beginner to building sop
 
 #### Experiment Tracking Mastery
 
-**What**: Systematic tracking of all model experiments and results
-**Why Important**: With hundreds of experiments, you need organized tracking
-**Learn**:
+**What**: Systematic tracking of all model experiments and results **Why Important**: With hundreds
+of experiments, you need organized tracking **Learn**:
 
 - **MLflow Setup**: Install, configure, and integrate with your training pipeline
 - **Experiment Organization**: Projects, runs, tags for easy searching
@@ -198,8 +189,7 @@ with mlflow.start_run():
 
 #### Experiment Comparison and Analysis
 
-**What**: Systematically compare different model approaches
-**Learn**:
+**What**: Systematically compare different model approaches **Learn**:
 
 - **MLflow UI**: Navigate experiments, compare runs, analyze trends
 - **Programmatic Comparison**: Load and compare experiments via Python API
@@ -208,9 +198,8 @@ with mlflow.start_run():
 
 #### Custom Dataset Classes
 
-**What**: Structured way to load and process your data
-**Why Important**: Handles batching, shuffling, and data augmentation automatically
-**Learn**:
+**What**: Structured way to load and process your data **Why Important**: Handles batching,
+shuffling, and data augmentation automatically **Learn**:
 
 - Inherit from `torch.utils.data.Dataset`
 - Implement `__len__` and `__getitem__` methods
@@ -218,9 +207,8 @@ with mlflow.start_run():
 
 #### Model Ensembles
 
-**What**: Combining predictions from multiple models
-**Why Important**: Often more accurate than any single model
-**Techniques**:
+**What**: Combining predictions from multiple models **Why Important**: Often more accurate than any
+single model **Techniques**:
 
 - Simple averaging of multiple model predictions
 - Weighted averaging based on model performance
@@ -228,9 +216,8 @@ with mlflow.start_run():
 
 #### Attention Mechanisms
 
-**What**: Letting the model focus on most important features dynamically
-**Why Important**: Some features matter more in certain situations
-**Learn**:
+**What**: Letting the model focus on most important features dynamically **Why Important**: Some
+features matter more in certain situations **Learn**:
 
 - Basic attention layer implementation
 - Self-attention for feature interactions
@@ -239,11 +226,11 @@ with mlflow.start_run():
 ### Hands-On Projects
 
 1. **MLflow Integration** - Set up experiment tracking for your DFS models
-2. **Experiment Dashboard** - Build custom views for comparing model performance
-3. **Position-specific models** - Build separate models for QB, RB, WR, TE with proper tracking
-4. **Feature engineering pipeline** - Automate creation of rolling stats and contextual features
-5. **Ensemble system** - Combine your best models for improved accuracy
-6. **Attention model** - Build network that can focus on most relevant features
+1. **Experiment Dashboard** - Build custom views for comparing model performance
+1. **Position-specific models** - Build separate models for QB, RB, WR, TE with proper tracking
+1. **Feature engineering pipeline** - Automate creation of rolling stats and contextual features
+1. **Ensemble system** - Combine your best models for improved accuracy
+1. **Attention model** - Build network that can focus on most relevant features
 
 ### Success Criteria
 
@@ -260,9 +247,8 @@ with mlflow.start_run():
 
 #### Time-Series Cross-Validation
 
-**What**: Proper way to validate models on sequential data
-**Why Important**: Can't use future data to predict past (data leakage)
-**Learn**:
+**What**: Proper way to validate models on sequential data **Why Important**: Can't use future data
+to predict past (data leakage) **Learn**:
 
 - Walk-forward validation methodology
 - Rolling window validation
@@ -270,9 +256,8 @@ with mlflow.start_run():
 
 #### A/B Testing Framework
 
-**What**: Systematically comparing model versions
-**Why Important**: Ensures new changes actually improve performance
-**Build**:
+**What**: Systematically comparing model versions **Why Important**: Ensures new changes actually
+improve performance **Build**:
 
 - Standardized evaluation metrics
 - Statistical significance testing
@@ -282,8 +267,7 @@ with mlflow.start_run():
 
 #### Hyperparameter Optimization
 
-**What**: Systematic search for best model settings
-**Learn**:
+**What**: Systematic search for best model settings **Learn**:
 
 - **Grid Search**: Test all combinations of parameters
 - **Random Search**: Sample random combinations
@@ -292,9 +276,8 @@ with mlflow.start_run():
 
 #### Neural Architecture Search (NAS)
 
-**What**: Automatically finding optimal network architectures
-**Why Important**: Discover architectures you wouldn't think to try
-**Experiment With**:
+**What**: Automatically finding optimal network architectures **Why Important**: Discover
+architectures you wouldn't think to try **Experiment With**:
 
 - Automated layer size selection
 - Skip connections and residual blocks
@@ -304,8 +287,7 @@ with mlflow.start_run():
 
 #### Model Monitoring
 
-**What**: Tracking model performance in production
-**Learn**:
+**What**: Tracking model performance in production **Learn**:
 
 - Prediction vs actual tracking
 - Data drift detection (when new data differs from training data)
@@ -313,8 +295,7 @@ with mlflow.start_run():
 
 #### Automated Retraining
 
-**What**: Systematic pipeline for updating models with new data
-**Build**:
+**What**: Systematic pipeline for updating models with new data **Build**:
 
 - Scheduled data collection and processing
 - Automatic model retraining and validation
@@ -322,9 +303,8 @@ with mlflow.start_run():
 
 #### Systematic Hyperparameter Optimization
 
-**What**: Automated search for optimal model settings using experiment tracking
-**Tools**: Optuna + MLflow integration for organized search
-**Learn**:
+**What**: Automated search for optimal model settings using experiment tracking **Tools**: Optuna +
+MLflow integration for organized search **Learn**:
 
 - **Optuna Integration**: Automated hyperparameter search with MLflow logging
 - **Search Strategies**: Grid search, random search, Bayesian optimization
@@ -333,8 +313,7 @@ with mlflow.start_run():
 
 #### Experiment Organization Strategies
 
-**What**: Systematic approach to managing hundreds of experiments
-**Learn**:
+**What**: Systematic approach to managing hundreds of experiments **Learn**:
 
 - **Naming Conventions**: Consistent experiment and run naming
 - **Tagging Systems**: Organize experiments by model type, feature set, objective
@@ -344,12 +323,14 @@ with mlflow.start_run():
 ### Hands-On Projects
 
 1. **MLflow Setup and Integration** - Connect all training to experiment tracking
-2. **Hyperparameter optimization** - Use Optuna + MLflow to find optimal settings automatically
-3. **Experiment Analysis Dashboard** - Build custom analysis of your experiment results
-4. **A/B Testing Framework** - Compare model versions systematically
-5. **Production pipeline** - Build automated system for weekly model updates with full tracking
-6. **Performance monitoring** - Track prediction accuracy over multiple weeks with historical analysis
-7. **Advanced architectures** - Experiment with residual connections, skip layers with proper tracking
+1. **Hyperparameter optimization** - Use Optuna + MLflow to find optimal settings automatically
+1. **Experiment Analysis Dashboard** - Build custom analysis of your experiment results
+1. **A/B Testing Framework** - Compare model versions systematically
+1. **Production pipeline** - Build automated system for weekly model updates with full tracking
+1. **Performance monitoring** - Track prediction accuracy over multiple weeks with historical
+   analysis
+1. **Advanced architectures** - Experiment with residual connections, skip layers with proper
+   tracking
 
 ### Success Criteria
 
@@ -367,9 +348,8 @@ with mlflow.start_run():
 
 #### Transformer Models for Tabular Data
 
-**What**: Attention-based models (like ChatGPT) adapted for sports data
-**Why Important**: Can capture complex feature interactions
-**Learn**:
+**What**: Attention-based models (like ChatGPT) adapted for sports data **Why Important**: Can
+capture complex feature interactions **Learn**:
 
 - Positional encoding for player/game sequences
 - Multi-head attention for different relationship types
@@ -377,9 +357,8 @@ with mlflow.start_run():
 
 #### Graph Neural Networks
 
-**What**: Models that understand relationships between players/teams
-**Why Important**: Football is about interactions between players
-**Explore**:
+**What**: Models that understand relationships between players/teams **Why Important**: Football is
+about interactions between players **Explore**:
 
 - Player-to-player interaction graphs
 - Team chemistry and combination effects
@@ -387,9 +366,8 @@ with mlflow.start_run():
 
 #### Reinforcement Learning for Lineup Optimization
 
-**What**: AI that learns optimal lineup construction strategies
-**Why Important**: Goes beyond predicting points to optimizing lineups
-**Learn**:
+**What**: AI that learns optimal lineup construction strategies **Why Important**: Goes beyond
+predicting points to optimizing lineups **Learn**:
 
 - Multi-armed bandit problems for player selection
 - Deep Q-learning for lineup construction
@@ -399,8 +377,7 @@ with mlflow.start_run():
 
 #### Custom Loss Functions
 
-**What**: Loss functions designed specifically for DFS success
-**Create**:
+**What**: Loss functions designed specifically for DFS success **Create**:
 
 - Tournament-specific loss (optimize for ceiling, not floor)
 - Lineup correlation loss (penalize correlated players)
@@ -408,8 +385,7 @@ with mlflow.start_run():
 
 #### Multi-Objective Optimization
 
-**What**: Optimizing for multiple goals simultaneously
-**Learn**:
+**What**: Optimizing for multiple goals simultaneously **Learn**:
 
 - Pareto frontiers for risk vs reward
 - Constraint optimization for lineup building
@@ -417,9 +393,8 @@ with mlflow.start_run():
 
 #### Causal Inference
 
-**What**: Understanding cause-and-effect relationships in player performance
-**Why Important**: Identify true drivers vs correlation
-**Explore**:
+**What**: Understanding cause-and-effect relationships in player performance **Why Important**:
+Identify true drivers vs correlation **Explore**:
 
 - Causal discovery in player performance data
 - Treatment effect estimation for coaching changes
@@ -428,9 +403,9 @@ with mlflow.start_run():
 ### Advanced Experiments
 
 1. **Transformer for sports data** - Adapt state-of-the-art NLP models for tabular data
-2. **Multi-objective lineup optimization** - Balance projection accuracy with ownership
-3. **Causal analysis** - Identify true performance drivers vs spurious correlations
-4. **Meta-learning** - Models that adapt quickly to new players or rule changes
+1. **Multi-objective lineup optimization** - Balance projection accuracy with ownership
+1. **Causal analysis** - Identify true performance drivers vs spurious correlations
+1. **Meta-learning** - Models that adapt quickly to new players or rule changes
 
 ### Success Criteria
 
@@ -462,4 +437,5 @@ with mlflow.start_run():
 - **Learning**: Understanding of PyTorch concepts, ability to debug models
 - **Innovation**: Novel approaches, feature discoveries, architecture improvements
 
-This learning plan balances theoretical understanding with practical application, ensuring you both master PyTorch fundamentals and build increasingly sophisticated models for DFS prediction.
+This learning plan balances theoretical understanding with practical application, ensuring you both
+master PyTorch fundamentals and build increasingly sophisticated models for DFS prediction.

@@ -2,7 +2,9 @@
 
 ## Overview
 
-This document details the component architecture of the NFL DFS system, defining the structure, responsibilities, and interactions of each major component. The system follows a modular, loosely-coupled design enabling independent development and testing.
+This document details the component architecture of the NFL DFS system, defining the structure,
+responsibilities, and interactions of each major component. The system follows a modular,
+loosely-coupled design enabling independent development and testing.
 
 ## Component Hierarchy
 
@@ -635,21 +637,21 @@ dependencies:
 ### Initialization Sequence
 
 1. Load configuration
-2. Initialize logging
-3. Connect to database
-4. Initialize cache
-5. Load models
-6. Start scheduler
-7. Initialize API server
+1. Initialize logging
+1. Connect to database
+1. Initialize cache
+1. Load models
+1. Start scheduler
+1. Initialize API server
 
 ### Shutdown Sequence
 
 1. Stop accepting new requests
-2. Complete in-flight operations
-3. Flush caches
-4. Close database connections
-5. Save model state
-6. Shutdown logging
+1. Complete in-flight operations
+1. Flush caches
+1. Close database connections
+1. Save model state
+1. Shutdown logging
 
 ## Error Handling
 

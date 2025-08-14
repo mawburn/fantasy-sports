@@ -2,7 +2,9 @@
 
 ## Overview
 
-This document outlines the package management strategy for the NFL DFS system using UV, the fastest Python package manager available. UV is written in Rust and provides 10-100x faster dependency resolution compared to traditional tools like pip and Poetry.
+This document outlines the package management strategy for the NFL DFS system using UV, the fastest
+Python package manager available. UV is written in Rust and provides 10-100x faster dependency
+resolution compared to traditional tools like pip and Poetry.
 
 ## Why UV?
 
@@ -14,11 +16,11 @@ performance_comparison:
     uv: ~0.1-1 seconds
     pip: ~10-60 seconds
     poetry: ~30-120 seconds
-  
+
   installation_speed:
     uv: 10-100x faster than pip
     cold_cache: Still 8-10x faster
-  
+
   memory_usage:
     uv: Minimal memory footprint
     pip: Higher memory consumption
@@ -230,34 +232,34 @@ on: [push, pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
-    
+
     steps:
       - uses: actions/checkout@v3
-      
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
-      
+
       - name: Install UV
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-      
+
       - name: Create virtual environment
         run: uv venv
-      
+
       - name: Install dependencies
         run: |
           source .venv/bin/activate
           uv pip sync requirements.txt
           uv pip install -r requirements-dev.txt
-      
+
       - name: Run tests
         run: |
           source .venv/bin/activate
           pytest tests/ --cov=src --cov-report=xml
-      
+
       - name: Security audit
         run: |
           source .venv/bin/activate
@@ -274,7 +276,7 @@ FROM python:3.11-slim
 RUN apt-get update && apt-get install -y curl && \
     curl -LsSf https://astral.sh/uv/install.sh | sh && \
     apt-get remove -y curl && apt-get autoremove -y
-    
+
 ENV PATH="/root/.cargo/bin:$PATH"
 
 WORKDIR /app
@@ -344,11 +346,11 @@ optimization_tips:
   parallel_downloads:
     # UV automatically uses optimal parallelism
     default: Auto-configured based on system
-  
+
   cache_management:
     location: ~/.cache/uv
     clear_cache: uv cache clean
-    
+
   network_optimization:
     # Use local PyPI mirror if available
     index_url: https://pypi.company.internal/simple/
@@ -438,17 +440,17 @@ import statistics
 def benchmark_install(manager_cmd, runs=5):
     """Benchmark package manager installation speed"""
     times = []
-    
+
     for i in range(runs):
         # Clear cache
         subprocess.run("rm -rf .venv", shell=True)
-        
+
         # Measure installation time
         start = time.time()
         subprocess.run(manager_cmd, shell=True)
         elapsed = time.time() - start
         times.append(elapsed)
-        
+
     return {
         'mean': statistics.mean(times),
         'median': statistics.median(times),
@@ -470,7 +472,8 @@ benchmarks = {
 
 ## Conclusion
 
-UV represents a paradigm shift in Python package management, offering unprecedented speed and reliability. For the NFL DFS system, this translates to:
+UV represents a paradigm shift in Python package management, offering unprecedented speed and
+reliability. For the NFL DFS system, this translates to:
 
 - **Faster Development Cycles**: Reduced waiting time for dependency installation
 - **Improved CI/CD Performance**: Faster build times in continuous integration
@@ -478,4 +481,5 @@ UV represents a paradigm shift in Python package management, offering unpreceden
 - **Enhanced Security**: Built-in vulnerability scanning keeps dependencies secure
 - **Lower Resource Usage**: Minimal memory and CPU footprint
 
-The adoption of UV aligns with the project's goal of maintaining a high-performance, efficient system while keeping development velocity high and operational overhead low.
+The adoption of UV aligns with the project's goal of maintaining a high-performance, efficient
+system while keeping development velocity high and operational overhead low.

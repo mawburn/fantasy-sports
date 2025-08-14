@@ -1,9 +1,14 @@
 # NFL DFS Machine Learning Technical Specification
 
 ## Project Overview
-Build a machine learning application for NFL DraftKings daily fantasy sports that predicts player performance and optimizes lineups. The system learns from comparing predictions against actual NFL game results to continuously improve accuracy. Contest selection helps identify interesting games to play for entertainment.
+
+Build a machine learning application for NFL DraftKings daily fantasy sports that predicts player
+performance and optimizes lineups. The system learns from comparing predictions against actual NFL
+game results to continuously improve accuracy. Contest selection helps identify interesting games to
+play for entertainment.
 
 **Core Focus:**
+
 - NFL-only implementation for DraftKings scoring
 - Local deployment for personal use
 - Self-improving models based on prediction accuracy
@@ -13,7 +18,9 @@ Build a machine learning application for NFL DraftKings daily fantasy sports tha
 
 ### Package Management with Poetry
 
-UV is the sole package manager for this project. UV is the fastest Python package manager available (10-100x faster than pip/poetry), written in Rust for maximum performance. It provides deterministic lockfiles and serves as a drop-in replacement for pip with minimal system resource usage.
+UV is the sole package manager for this project. UV is the fastest Python package manager available
+(10-100x faster than pip/poetry), written in Rust for maximum performance. It provides deterministic
+lockfiles and serves as a drop-in replacement for pip with minimal system resource usage.
 
 ```txt
 # requirements.txt - Managed by UV for blazing fast dependency resolution
@@ -89,6 +96,7 @@ BACKTEST_VALIDATION_SPLIT=0.2
 ## Data Architecture
 
 ### File Structure
+
 ```
 data/
 ├── database/
@@ -127,6 +135,7 @@ data/
 ## NFL-Specific Application Architecture
 
 ### Core Structure
+
 ```
 src/
 ├── config/
@@ -218,6 +227,7 @@ src/
 ### Position-Specific Features
 
 #### Quarterbacks
+
 - **Passing Efficiency**: EPA/play, CPOE, Success Rate
 - **Pressure Metrics**: Passer rating under pressure, sack rate
 - **Rushing Upside**: Designed runs, scramble yards, goal line rushes
@@ -226,6 +236,7 @@ src/
 - **Primetime Performance**: MNF/SNF/TNF adjustments
 
 #### Running Backs
+
 - **Rushing Efficiency**: YPC, yards after contact, broken tackles
 - **Pass Game Usage**: Target share, routes run percentage
 - **Goal Line Role**: Carries inside 5, red zone share
@@ -233,6 +244,7 @@ src/
 - **Backup Threat**: Snap share trends, injury history
 
 #### Wide Receivers & Tight Ends
+
 - **Target Quality**: ADOT, air yards share, catchable targets
 - **Separation Metrics**: Average separation, yards after catch
 - **Red Zone Role**: Red zone targets, end zone targets
@@ -240,6 +252,7 @@ src/
 - **Quarterback Dependency**: Performance with backup QBs
 
 #### Defenses
+
 - **Points Allowed**: Recent trends, home/away splits
 - **Turnover Potential**: Interception rate, fumble recoveries
 - **Sack Rate**: Pass rush efficiency
@@ -247,6 +260,7 @@ src/
 - **Special Teams**: Return TD potential
 
 ### Game Environment Features
+
 - **Vegas Lines**: Spread, total, team implied totals
 - **Weather Impact**: Wind speed, precipitation, temperature
 - **Stadium Effects**: Dome vs outdoor, altitude, turf type
@@ -255,6 +269,7 @@ src/
 - **Rest Advantage**: Thursday games, bye weeks
 
 ### DraftKings-Specific Features
+
 - **Salary Changes**: Week-over-week price movement
 - **Value Score**: Points per $1000 of salary
 - **Ownership Projections**: Based on salary, recent performance, narratives
@@ -268,37 +283,44 @@ src/
 Each position has its own model architecture optimized for that position's scoring patterns:
 
 #### QB Model
+
 - XGBoost primary (handles game script dependencies well)
 - Neural network for primetime/national game adjustments
 - Separate sub-models for rushing QBs vs pocket passers
 
-#### RB Model  
+#### RB Model
+
 - LightGBM primary (excellent with categorical features like team)
 - Separate models for workhorse vs committee backs
 - Special handling for pass-catching specialists
 
 #### WR/TE Model
+
 - Ensemble of XGBoost + Neural Network
 - Correlation features heavily weighted
 - Separate ceiling/floor models for different contest types
 
 #### DST Model
+
 - Simpler linear model with heavy feature engineering
 - Focus on opponent quality and game script
 
 ### Projection Types
 
 #### Cash Game Projections
+
 - Median outcomes (50th percentile)
 - Floor projections (25th percentile)
 - Consistency weighting
 
-#### GPP Projections  
+#### GPP Projections
+
 - Ceiling projections (75th-90th percentile)
 - Boom/bust probability
 - Correlation boost factors
 
 #### Showdown Specific
+
 - Captain value multiplier (1.5x scoring at 1.5x salary)
 - Single-game correlation adjustments
 - Leverage play identification
@@ -310,21 +332,25 @@ Each position has its own model architecture optimized for that position's scori
 After each NFL week, the system:
 
 1. **Compares Predictions to Actuals**
+
    - Predicted: Lamar Jackson 24.5 FP
    - Actual: Lamar Jackson 19.2 FP
    - Error: -5.3 FP (overestimated)
 
-2. **Analyzes Error Patterns**
+1. **Analyzes Error Patterns**
+
    - Consistently overestimating rushing QBs in bad weather?
    - Undervaluing RBs against specific defenses?
    - Missing injury impact on target distribution?
 
-3. **Adjusts Model Weights**
+1. **Adjusts Model Weights**
+
    - Reduce weather penalty for mobile QBs
    - Increase importance of defensive rankings
    - Add injury cascading effects
 
-4. **Updates Feature Importance**
+1. **Updates Feature Importance**
+
    - Track which features predicted well
    - Deprecate features that add noise
    - Discover new predictive patterns
@@ -334,21 +360,25 @@ After each NFL week, the system:
 The backtesting system helps improve models by:
 
 #### Parameter Search
+
 - Test different hyperparameters
 - Find optimal model architectures
 - Determine best ensemble weights
 
 #### Feature Selection
+
 - Identify most predictive features
 - Remove redundant features
 - Discover feature interactions
 
 #### Time Decay Analysis
+
 - Find optimal recency weighting
 - Balance recent trends vs historical data
 - Prevent overfitting to recent weeks
 
 #### Validation Strategy
+
 - Walk-forward validation on historical seasons
 - Hold-out weeks for final testing
 - Statistical significance testing
@@ -360,6 +390,7 @@ The backtesting system helps improve models by:
 Instead of maximizing profit, the system identifies entertaining contests based on:
 
 #### Entertainment Factors
+
 - **Shootout Potential**: High Vegas totals, close spreads
 - **Star Players**: Games with exciting players to root for
 - **Rivalry Games**: Division matchups with history
@@ -367,12 +398,14 @@ Instead of maximizing profit, the system identifies entertaining contests based 
 - **Playoff Implications**: Late-season meaningful games
 
 #### Personal Preferences
+
 - **Favorite Teams**: Track your preferred teams
 - **Player Followings**: Players you enjoy watching
 - **Avoid Blowouts**: Skip games with huge spreads
 - **Weather Preferences**: Some enjoy snow games, others don't
 
 #### Competitive Balance
+
 - **Multiple Viable Lineups**: Games with many good plays
 - **Interesting Decisions**: Not obvious chalk plays
 - **Correlation Opportunities**: Fun stacking potential
@@ -380,6 +413,7 @@ Instead of maximizing profit, the system identifies entertaining contests based 
 ### Game Scoring Algorithm
 
 Each game gets scored on:
+
 - Entertainment Value (0-100)
 - Competitive Balance (0-100)
 - DFS Complexity (0-100)
@@ -388,6 +422,7 @@ Each game gets scored on:
 ## Optimization Strategies
 
 ### DraftKings Classic Roster Construction
+
 - QB + 2RB + 3WR + TE + FLEX + DST
 - $50,000 salary cap
 - Correlation rules enforcement
@@ -395,12 +430,14 @@ Each game gets scored on:
 ### Stacking Strategies
 
 #### Primary Stacks
+
 - **QB + WR1**: Highest correlation, most common
 - **QB + WR2**: Good leverage in tournaments
 - **QB + TE**: Valuable in high-total games
 - **QB + Multiple**: Full onslaught stacks
 
 #### Secondary Correlations
+
 - **Opposing WR1**: Shootout scenarios
 - **RB + DST**: Negative correlation leverage
 - **Game Stacks**: 4-5 players from same game
@@ -408,12 +445,14 @@ Each game gets scored on:
 ### Contest-Specific Optimization
 
 #### Cash Games (50/50s, Double-Ups)
+
 - Maximize floor projections
 - High-ownership players acceptable
 - Safe stacks (QB + WR1)
 - Minimize variance
 
 #### GPP Tournaments
+
 - Maximize ceiling projections
 - Find leverage plays
 - Contrarian captain in Showdowns
@@ -422,6 +461,7 @@ Each game gets scored on:
 ## API Endpoints
 
 ### Core Prediction Endpoints
+
 ```
 GET  /api/v1/nfl/predictions/{week}/{slate_type}     # Get all predictions
 GET  /api/v1/nfl/projections/{player_id}            # Individual projection
@@ -430,6 +470,7 @@ GET  /api/v1/nfl/predictions/accuracy/{week}        # How accurate were last wee
 ```
 
 ### DraftKings Lineup Endpoints
+
 ```
 POST /api/v1/dk/lineups/optimize/classic            # Main slate optimization
 POST /api/v1/dk/lineups/optimize/showdown          # Single game optimization
@@ -438,6 +479,7 @@ GET  /api/v1/dk/lineups/analyze/{lineup_id}       # Analyze specific lineup
 ```
 
 ### Game Selection Endpoints
+
 ```
 POST /api/v1/games/upload-slates                   # Upload available games/contests
 GET  /api/v1/games/recommendations/{week}          # Get fun games to play
@@ -446,6 +488,7 @@ POST /api/v1/games/preferences                     # Set your preferences
 ```
 
 ### Model Improvement Endpoints
+
 ```
 POST /api/v1/models/learn-from-results             # Update model with actual results
 GET  /api/v1/models/error-analysis/{week}         # Analyze prediction errors
@@ -454,6 +497,7 @@ GET  /api/v1/models/feature-importance            # Current feature rankings
 ```
 
 ### Data Management Endpoints
+
 ```
 POST /api/v1/dk/salaries/upload                    # Upload DK salary CSV
 POST /api/v1/nfl/data/refresh                      # Pull latest NFL data
@@ -464,24 +508,28 @@ POST /api/v1/nfl/results/update                    # Update with actual game res
 ## Implementation Priorities
 
 ### Phase 1: Core NFL Data Pipeline (Weeks 1-2)
+
 - Set up nfl_data_py integration
 - Build position-specific feature engineering
 - Create DraftKings salary processor
 - Implement basic XGBoost models by position
 
 ### Phase 2: DraftKings Optimization (Weeks 3-4)
+
 - Build lineup optimizer with stacking
 - Implement cash vs GPP strategies
 - Add Showdown captain optimization
 - Create correlation matrices from historical data
 
 ### Phase 3: Model Self-Improvement (Weeks 5-6)
+
 - Build prediction error tracking
 - Implement backtesting framework
 - Add automatic parameter tuning
 - Create feature importance evolution
 
 ### Phase 4: Game Selection & Analysis (Weeks 7-8)
+
 - Build game entertainment scorer
 - Add personal preference system
 - Create comprehensive error analysis
@@ -490,23 +538,27 @@ POST /api/v1/nfl/results/update                    # Update with actual game res
 ## Success Metrics
 
 ### Model Accuracy
+
 - QB predictions: MAE < 3.5 FP
-- RB predictions: MAE < 3.0 FP  
+- RB predictions: MAE < 3.0 FP
 - WR predictions: MAE < 2.5 FP
 - Continuous improvement week-over-week
 
 ### Prediction Improvement
+
 - Error reduction after each week's learning
 - Better feature importance rankings over time
 - Improved accuracy on specific game situations
 
 ### User Experience
+
 - Find engaging games to play
 - Generate diverse interesting lineups
 - Understand why predictions were made
 - Learn from prediction mistakes
 
 ### System Performance
+
 - Full slate optimization < 5 seconds
 - Weekly model retraining < 10 minutes
 - Backtest parameter search < 30 minutes
@@ -515,11 +567,13 @@ POST /api/v1/nfl/results/update                    # Update with actual game res
 
 This NFL-specific design focuses on continuous improvement and entertainment:
 
-1. **Self-improving models** learn from comparing predictions to actual results, not contest outcomes
-2. **Backtesting** identifies which features and parameters improve prediction accuracy
-3. **Game selection** finds fun, interesting games rather than trying to maximize profit
-4. **Position-specific models** because QBs, RBs, and WRs have fundamentally different patterns
-5. **Correlation-based optimization** because stacking makes DFS more entertaining
-6. **Error analysis** helps understand and fix systematic prediction problems
+1. **Self-improving models** learn from comparing predictions to actual results, not contest
+   outcomes
+1. **Backtesting** identifies which features and parameters improve prediction accuracy
+1. **Game selection** finds fun, interesting games rather than trying to maximize profit
+1. **Position-specific models** because QBs, RBs, and WRs have fundamentally different patterns
+1. **Correlation-based optimization** because stacking makes DFS more entertaining
+1. **Error analysis** helps understand and fix systematic prediction problems
 
-The system is designed for personal enjoyment of NFL DFS, with a focus on getting better at predictions over time rather than treating it as an investment vehicle.
+The system is designed for personal enjoyment of NFL DFS, with a focus on getting better at
+predictions over time rather than treating it as an investment vehicle.
