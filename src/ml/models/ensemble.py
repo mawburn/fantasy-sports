@@ -26,9 +26,7 @@ class EnsembleModel:
         self.weights: np.ndarray | None = None
         self.is_trained = False
 
-    def add_model(
-        self, model: BaseModel, weight: float | None = None, name: str | None = None
-    ):
+    def add_model(self, model: BaseModel, weight: float | None = None, name: str | None = None):
         """Add a model to the ensemble.
 
         Args:

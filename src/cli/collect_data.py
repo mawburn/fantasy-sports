@@ -1,10 +1,10 @@
-"""CLI script for collecting NFL data."""
+"""CLI commands for collecting NFL data."""
 
 import logging
 import sys
 from pathlib import Path
 
-import click
+import typer
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -13,152 +13,154 @@ from src.config.settings import settings
 from src.data.collection.nfl_collector import NFLDataCollector
 from src.database.init_db import create_database
 
+app = typer.Typer(help="Data collection commands for NFL data")
+
 
 def setup_logging():
     """Set up logging configuration."""
     logging.basicConfig(
         level=getattr(logging, settings.log_level),
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[logging.StreamHandler(), logging.FileHandler(settings.log_file, mode="a")],
+        handlers=[
+            logging.FileHandler(settings.log_file),
+            logging.StreamHandler(sys.stdout),
+        ],
     )
 
 
-@click.group()
-def cli():
-    """NFL DFS Data Collection CLI."""
-    setup_logging()
-
-    # Ensure log directory exists
-    settings.log_file.parent.mkdir(parents=True, exist_ok=True)
-
-
-@cli.command()
+@app.command()
 def init_db():
     """Initialize the database."""
-    click.echo("Initializing database...")
+    typer.echo("Initializing database...")
     try:
         create_database()
-        click.echo("✅ Database initialized successfully!")
+        typer.echo("✅ Database initialized successfully!")
     except Exception as e:
-        click.echo(f"❌ Database initialization failed: {e}")
-        sys.exit(1)
+        typer.echo(f"❌ Database initialization failed: {e}")
+        raise typer.Exit(1) from e
 
 
-@cli.command()
-@click.option(
-    "--seasons", "-s", multiple=True, type=int, help="Seasons to collect (e.g., -s 2023 -s 2024)"
-)
-def collect_teams(seasons: list[int] | None):
+@app.command()
+def collect_teams(
+    seasons: list[int] = typer.Option(
+        [], "--season", "-s", help="Seasons to collect (e.g., -s 2023 -s 2024)"
+    ),
+):
     """Collect NFL team data."""
-    seasons_list = list(seasons) if seasons else None
-    click.echo(f"Collecting NFL team data for seasons: {seasons_list or 'all available'}")
+    setup_logging()
+    seasons_list = seasons if seasons else None
+    typer.echo(f"Collecting NFL team data for seasons: {seasons_list or 'all available'}")
     try:
         collector = NFLDataCollector()
         teams_added = collector.collect_teams(seasons=seasons_list)
-        click.echo(f"✅ Teams collection complete! Added {teams_added} new teams.")
+        typer.echo(f"✅ Teams collection complete! Added {teams_added} new teams.")
     except Exception as e:
-        click.echo(f"❌ Teams collection failed: {e}")
-        sys.exit(1)
+        typer.echo(f"❌ Teams collection failed: {e}")
+        raise typer.Exit(1) from e
 
 
-@cli.command()
-@click.option(
-    "--seasons", "-s", multiple=True, type=int, help="Seasons to collect (e.g., -s 2023 -s 2024)"
-)
-def collect_players(seasons: list[int] | None):
+@app.command()
+def collect_players(
+    seasons: list[int] = typer.Option(
+        [], "--season", "-s", help="Seasons to collect (e.g., -s 2023 -s 2024)"
+    ),
+):
     """Collect NFL player data."""
-    seasons_list = list(seasons) if seasons else None
-    click.echo(f"Collecting NFL player data for seasons: {seasons_list or 'current season'}...")
+    setup_logging()
+    seasons_list = seasons if seasons else None
+    typer.echo(f"Collecting NFL player data for seasons: {seasons_list or 'current season'}...")
     try:
         collector = NFLDataCollector()
         players_added = collector.collect_players(seasons_list)
-        click.echo(f"✅ Players collection complete! Added {players_added} new players.")
+        typer.echo(f"✅ Players collection complete! Added {players_added} new players.")
     except Exception as e:
-        click.echo(f"❌ Players collection failed: {e}")
-        sys.exit(1)
+        typer.echo(f"❌ Players collection failed: {e}")
+        raise typer.Exit(1) from e
 
 
-@cli.command()
-@click.option(
-    "--seasons", "-s", multiple=True, type=int, help="Seasons to collect (e.g., -s 2023 -s 2024)"
-)
-def collect_schedules(seasons: list[int] | None):
+@app.command()
+def collect_schedules(
+    seasons: list[int] = typer.Option(
+        [], "--season", "-s", help="Seasons to collect (e.g., -s 2023 -s 2024)"
+    ),
+):
     """Collect NFL schedule data."""
-    seasons_list = list(seasons) if seasons else None
-    click.echo(f"Collecting NFL schedule data for seasons: {seasons_list or 'current season'}...")
+    setup_logging()
+    seasons_list = seasons if seasons else None
+    typer.echo(f"Collecting NFL schedule data for seasons: {seasons_list or 'current season'}...")
     try:
         collector = NFLDataCollector()
         games_added = collector.collect_schedules(seasons_list)
-        click.echo(f"✅ Schedules collection complete! Added {games_added} new games.")
+        typer.echo(f"✅ Schedules collection complete! Added {games_added} new games.")
     except Exception as e:
-        click.echo(f"❌ Schedules collection failed: {e}")
-        sys.exit(1)
+        typer.echo(f"❌ Schedules collection failed: {e}")
+        raise typer.Exit(1) from e
 
 
-@cli.command()
-@click.option(
-    "--seasons", "-s", multiple=True, type=int, help="Seasons to collect (e.g., -s 2023 -s 2024)"
-)
-def collect_stats(seasons: list[int] | None):
+@app.command()
+def collect_stats(
+    seasons: list[int] = typer.Option(
+        [], "--season", "-s", help="Seasons to collect (e.g., -s 2023 -s 2024)"
+    ),
+):
     """Collect NFL player statistics."""
-    seasons_list = list(seasons) if seasons else None
-    click.echo(f"Collecting NFL player stats for seasons: {seasons_list or 'current season'}...")
+    setup_logging()
+    seasons_list = seasons if seasons else None
+    typer.echo(f"Collecting NFL player stats for seasons: {seasons_list or 'current season'}...")
     try:
         collector = NFLDataCollector()
         stats_added = collector.collect_player_stats(seasons_list)
-        click.echo(f"✅ Stats collection complete! Added {stats_added} new stat records.")
+        typer.echo(f"✅ Stats collection complete! Added {stats_added} new stat records.")
     except Exception as e:
-        click.echo(f"❌ Stats collection failed: {e}")
-        sys.exit(1)
+        typer.echo(f"❌ Stats collection failed: {e}")
+        raise typer.Exit(1) from e
 
 
-@cli.command()
-@click.option(
-    "--seasons", "-s", multiple=True, type=int, help="Seasons to collect (e.g., -s 2023 -s 2024)"
-)
-@click.option("--weeks", "-w", multiple=True, type=int, help="Weeks to collect (e.g., -w 1 -w 2)")
-def collect_pbp(seasons: list[int] | None, weeks: list[int] | None):
+@app.command()
+def collect_pbp(
+    seasons: list[int] = typer.Option(
+        [], "--season", "-s", help="Seasons to collect (e.g., -s 2023 -s 2024)"
+    ),
+    weeks: list[int] = typer.Option([], "--week", "-w", help="Weeks to collect (e.g., -w 1 -w 2)"),
+):
     """Collect NFL play-by-play data."""
-    seasons_list = list(seasons) if seasons else None
-    weeks_list = list(weeks) if weeks else None
-    click.echo(
+    setup_logging()
+    seasons_list = seasons if seasons else None
+    weeks_list = weeks if weeks else None
+    typer.echo(
         f"Collecting NFL play-by-play data for seasons: {seasons_list or 'current season'}, weeks: {weeks_list or 'all weeks'}..."
     )
     try:
         collector = NFLDataCollector()
         plays_added = collector.collect_play_by_play(seasons_list, weeks_list)
-        click.echo(f"✅ Play-by-play collection complete! Added {plays_added} new plays.")
+        typer.echo(f"✅ Play-by-play collection complete! Added {plays_added} new plays.")
     except Exception as e:
-        click.echo(f"❌ Play-by-play collection failed: {e}")
-        sys.exit(1)
+        typer.echo(f"❌ Play-by-play collection failed: {e}")
+        raise typer.Exit(1) from e
 
 
-@cli.command()
-@click.option(
-    "--file", "-f", type=click.Path(exists=True), help="Path to DraftKings salary CSV file"
-)
-@click.option(
-    "--directory",
-    "-d",
-    type=click.Path(exists=True),
-    help="Directory containing DraftKings CSV files",
-)
-@click.option(
-    "--contest-name", "-c", type=str, help="Contest name (derived from filename if not provided)"
-)
-def collect_dk(file: str | None, directory: str | None, contest_name: str | None):
+@app.command()
+def collect_dk(
+    file: str = typer.Option(None, "--file", "-f", help="Path to DraftKings salary CSV file"),
+    directory: str = typer.Option(
+        None, "--directory", "-d", help="Directory containing DraftKings CSV files"
+    ),
+    contest_name: str = typer.Option(
+        None, "--contest-name", "-c", help="Contest name (derived from filename if not provided)"
+    ),
+):
     """Process DraftKings salary data from CSV files."""
+    setup_logging()
+
     if not file and not directory:
-        click.echo("❌ Must specify either --file or --directory")
-        sys.exit(1)
+        typer.echo("❌ Must specify either --file or --directory")
+        raise typer.Exit(1) from None
 
     if file and directory:
-        click.echo("❌ Cannot specify both --file and --directory")
-        sys.exit(1)
+        typer.echo("❌ Cannot specify both --file and --directory")
+        raise typer.Exit(1) from None
 
     try:
-        from pathlib import Path
-
         from src.data.collection.dk_collector import DraftKingsCollector
 
         collector = DraftKingsCollector()
@@ -166,55 +168,57 @@ def collect_dk(file: str | None, directory: str | None, contest_name: str | None
         if file:
             # Process single file
             file_path = Path(file)
-            click.echo(f"Processing DraftKings file: {file_path}")
+            typer.echo(f"Processing DraftKings file: {file_path}")
             results = collector.process_salary_file(file_path, contest_name)
-            click.echo("✅ File processed successfully!")
-            click.echo(f"  Contests: {results.get('contests', 0)}")
-            click.echo(f"  Salaries: {results.get('salaries', 0)}")
-            click.echo(f"  Unmatched players: {results.get('unmatched_players', 0)}")
+            typer.echo("✅ File processed successfully!")
+            typer.echo(f"  Contests: {results.get('contests', 0)}")
+            typer.echo(f"  Salaries: {results.get('salaries', 0)}")
+            typer.echo(f"  Unmatched players: {results.get('unmatched_players', 0)}")
 
         else:
             # Process directory
             dir_path = Path(directory)
-            click.echo(f"Processing DraftKings files in: {dir_path}")
+            typer.echo(f"Processing DraftKings files in: {dir_path}")
             results = collector.bulk_process_files(dir_path)
-            click.echo("✅ Directory processed successfully!")
-            click.echo(f"  Files processed: {results.get('files_processed', 0)}")
-            click.echo(f"  Total contests: {results.get('total_contests', 0)}")
-            click.echo(f"  Total salaries: {results.get('total_salaries', 0)}")
+            typer.echo("✅ Directory processed successfully!")
+            typer.echo(f"  Files processed: {results.get('files_processed', 0)}")
+            typer.echo(f"  Total contests: {results.get('total_contests', 0)}")
+            typer.echo(f"  Total salaries: {results.get('total_salaries', 0)}")
             if results.get("errors"):
-                click.echo(f"  Errors: {len(results['errors'])}")
+                typer.echo(f"  Errors: {len(results['errors'])}")
                 for error in results["errors"]:
-                    click.echo(f"    - {error}")
+                    typer.echo(f"    - {error}")
 
     except Exception as e:
-        click.echo(f"❌ DraftKings collection failed: {e}")
-        sys.exit(1)
+        typer.echo(f"❌ DraftKings collection failed: {e}")
+        raise typer.Exit(1) from e
 
 
-@cli.command()
-@click.option(
-    "--seasons", "-s", multiple=True, type=int, help="Seasons to collect (e.g., -s 2023 -s 2024)"
-)
-def collect_all(seasons: list[int] | None):
+@app.command()
+def collect_all(
+    seasons: list[int] = typer.Option(
+        [], "--season", "-s", help="Seasons to collect (e.g., -s 2023 -s 2024)"
+    ),
+):
     """Collect all NFL data (teams, players, schedules, stats)."""
-    seasons_list = list(seasons) if seasons else None
-    click.echo(f"Starting full data collection for seasons: {seasons_list or 'current season'}...")
+    setup_logging()
+    seasons_list = seasons if seasons else None
+    typer.echo(f"Starting full data collection for seasons: {seasons_list or 'current season'}...")
     try:
         collector = NFLDataCollector()
         results = collector.collect_all_data(seasons_list)
 
-        click.echo("✅ Full data collection complete!")
-        click.echo("Results:")
+        typer.echo("✅ Full data collection complete!")
+        typer.echo("Results:")
         for data_type, count in results.items():
-            click.echo(f"  - {data_type}: {count} new records")
+            typer.echo(f"  - {data_type}: {count} new records")
 
     except Exception as e:
-        click.echo(f"❌ Data collection failed: {e}")
-        sys.exit(1)
+        typer.echo(f"❌ Data collection failed: {e}")
+        raise typer.Exit(1) from e
 
 
-@cli.command()
+@app.command()
 def status():
     """Show database status and record counts."""
     try:
@@ -239,21 +243,21 @@ def status():
             contests_count = session.query(DraftKingsContest).count()
             salaries_count = session.query(DraftKingsSalary).count()
 
-            click.echo("📊 Database Status:")
-            click.echo(f"  Teams: {teams_count}")
-            click.echo(f"  Players: {players_count}")
-            click.echo(f"  Games: {games_count}")
-            click.echo(f"  Player Stats: {stats_count}")
-            click.echo(f"  Play-by-Play: {pbp_count}")
-            click.echo(f"  DK Contests: {contests_count}")
-            click.echo(f"  DK Salaries: {salaries_count}")
+            typer.echo("📊 Database Status:")
+            typer.echo(f"  Teams: {teams_count}")
+            typer.echo(f"  Players: {players_count}")
+            typer.echo(f"  Games: {games_count}")
+            typer.echo(f"  Player Stats: {stats_count}")
+            typer.echo(f"  Play-by-Play: {pbp_count}")
+            typer.echo(f"  DK Contests: {contests_count}")
+            typer.echo(f"  DK Salaries: {salaries_count}")
         finally:
             session.close()
 
     except Exception as e:
-        click.echo(f"❌ Failed to get database status: {e}")
-        sys.exit(1)
+        typer.echo(f"❌ Failed to get database status: {e}")
+        raise typer.Exit(1) from e
 
 
 if __name__ == "__main__":
-    cli()
+    app()

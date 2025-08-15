@@ -145,3 +145,4 @@ Thumbs.db
 # Miscellaneous
 .python-version
 .env.production
+ruff_errors.json

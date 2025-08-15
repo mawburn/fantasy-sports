@@ -369,7 +369,7 @@ class BaseModel(ABC):
         else:
             uncertainty = self._residual_std
 
-        alpha = 1 - confidence_level
+        1 - confidence_level
         z_score = 1.96  # 95% confidence interval
 
         margin = z_score * uncertainty

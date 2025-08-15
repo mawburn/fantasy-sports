@@ -3,6 +3,7 @@
 import logging
 from datetime import datetime
 from pathlib import Path
+from typing import ClassVar
 
 import pandas as pd
 from fuzzywuzzy import fuzz
@@ -11,6 +12,22 @@ from ...database.connection import SessionLocal
 from ...database.models import DraftKingsContest, DraftKingsSalary, Player
 
 logger = logging.getLogger(__name__)
+
+
+class CSVParsingError(ValueError):
+    """Raised when CSV parsing fails."""
+
+
+class MissingColumnsError(ValueError):
+    """Raised when required columns are missing."""
+
+
+class DKFileNotFoundError(FileNotFoundError):
+    """Raised when a DK file is not found."""
+
+
+class DataValidationError(ValueError):
+    """Raised when data validation fails."""
 
 
 class DKPlayerMatcher:
@@ -80,7 +97,7 @@ class DKPlayerMatcher:
 class DKCSVParser:
     """Parse DraftKings salary CSV files."""
 
-    EXPECTED_COLUMNS = [
+    EXPECTED_COLUMNS: ClassVar[list[str]] = [
         "Name",
         "Position",
         "Team",
@@ -92,7 +109,7 @@ class DKCSVParser:
         "ID",
     ]
 
-    POSITION_MAPPING = {
+    POSITION_MAPPING: ClassVar[dict[str, str]] = {
         "QB": "QB",
         "RB": "RB",
         "WR": "WR",
@@ -128,14 +145,14 @@ class DKCSVParser:
             return df
 
         except Exception as e:
-            logger.error(f"Failed to parse DK CSV {file_path}: {e}")
-            raise ValueError(f"CSV parsing failed: {e}")
+            logger.exception("Failed to parse DK CSV %s", file_path)
+            raise CSVParsingError(f"CSV parsing failed: {e}") from e
 
     def _validate_columns(self, df: pd.DataFrame):
         """Validate that required columns are present."""
         missing_cols = set(self.EXPECTED_COLUMNS) - set(df.columns)
         if missing_cols:
-            raise ValueError(f"Missing required columns: {missing_cols}")
+            raise MissingColumnsError(f"Missing required columns: {missing_cols}")
 
     def _clean_salary_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """Clean and standardize salary data."""
@@ -167,7 +184,7 @@ class DKCSVParser:
 class DKSalaryValidator:
     """Validate DraftKings salary data."""
 
-    SALARY_RANGES = {
+    SALARY_RANGES: ClassVar[dict[str, tuple[int, int]]] = {
         "QB": (4000, 9500),
         "RB": (3000, 10500),
         "WR": (3000, 10500),
@@ -217,7 +234,9 @@ class DraftKingsCollector:
         self.parser = DKCSVParser()
         self.validator = DKSalaryValidator()
 
-    def process_salary_file(self, file_path: Path, contest_name: str = None) -> dict[str, int]:
+    def process_salary_file(
+        self, file_path: Path, contest_name: str | None = None
+    ) -> dict[str, int]:
         """
         Process a DraftKings salary CSV file.
 
@@ -229,7 +248,7 @@ class DraftKingsCollector:
             Dictionary with processing results
         """
         if not file_path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
+            raise DKFileNotFoundError(f"File not found: {file_path}")
 
         logger.info(f"Processing DraftKings salary file: {file_path}")
 
@@ -241,7 +260,7 @@ class DraftKingsCollector:
 
         if validation_results["errors"]:
             logger.error(f"Validation errors: {validation_results['errors']}")
-            raise ValueError(f"Data validation failed: {validation_results['errors']}")
+            raise DataValidationError(f"Data validation failed: {validation_results['errors']}")
 
         if validation_results["warnings"]:
             logger.warning(f"Validation warnings: {validation_results['warnings']}")
@@ -301,9 +320,9 @@ class DraftKingsCollector:
 
             session.commit()
 
-        except Exception as e:
+        except Exception:
             session.rollback()
-            logger.error(f"Error storing salary data: {e}")
+            logger.exception("Error storing salary data")
             raise
         finally:
             session.close()
@@ -351,7 +370,7 @@ class DraftKingsCollector:
             Summary of processing results
         """
         if not directory.exists():
-            raise FileNotFoundError(f"Directory not found: {directory}")
+            raise DKFileNotFoundError(f"Directory not found: {directory}")
 
         csv_files = list(directory.glob("*.csv"))
         if not csv_files:
@@ -378,7 +397,7 @@ class DraftKingsCollector:
 
             except Exception as e:
                 error_msg = f"Failed to process {csv_file.name}: {e}"
-                logger.error(error_msg)
+                logger.exception(error_msg)
                 total_results["errors"].append(error_msg)
 
         return total_results

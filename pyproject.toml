@@ -158,6 +158,10 @@ ignore = [
     "W191",   # indentation contains tabs
     "ERA001",  # commented-out code (we want to keep some for future use)
     "TRY300", # Consider moving statement to else block (stylistic preference)
+    "TRY301", # Abstract raise to an inner function (stylistic preference)
+    "TRY003", # Avoid specifying long messages outside the exception class (stylistic preference)
+    "TRY401", # Redundant exception object in logging.exception (exception is auto-captured)
+    "ARG002", # Unused method argument (sometimes needed for interface compliance)
 ]
 
 [tool.ruff.lint.isort]

@@ -154,3 +154,36 @@ class PlayerStatsSummaryResponse(BaseModel):
     total_passing_tds: int
     total_rushing_tds: int
     total_receiving_tds: int
+
+
+# Prediction API Schemas
+
+
+class PlayerPredictionRequest(BaseModel):
+    """Request schema for player prediction."""
+
+    player_id: int
+    game_date: datetime
+
+
+class PredictionResponse(BaseModel):
+    """Response schema for player predictions."""
+
+    player_id: int
+    player_name: str
+    position: str
+    predicted_points: float
+    confidence_score: float
+    floor: float | None = None
+    ceiling: float | None = None
+    model_version: str | None = None
+    prediction_date: datetime
+
+
+class SlatePredictionResponse(BaseModel):
+    """Response schema for slate predictions."""
+
+    game_date: datetime
+    total_predictions: int
+    predictions: list[PredictionResponse]
+    errors: list[str] | None = None

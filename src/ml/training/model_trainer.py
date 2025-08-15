@@ -4,6 +4,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
+from typing import ClassVar
 
 import joblib
 import numpy as np
@@ -23,7 +24,13 @@ logger = logging.getLogger(__name__)
 class ModelTrainer:
     """Coordinate training of position-specific models."""
 
-    MODEL_CLASSES = {"QB": QBModel, "RB": RBModel, "WR": WRModel, "TE": TEModel, "DEF": DEFModel}
+    MODEL_CLASSES: ClassVar[dict[str, type]] = {
+        "QB": QBModel,
+        "RB": RBModel,
+        "WR": WRModel,
+        "TE": TEModel,
+        "DEF": DEFModel,
+    }
 
     def __init__(self, db_session: Session | None = None, model_dir: Path | None = None):
         """Initialize model trainer.
@@ -59,7 +66,7 @@ class ModelTrainer:
             Dictionary with training results and model metadata
         """
         if position not in self.MODEL_CLASSES:
-            raise ValueError(f"Unsupported position: {position}")
+            raise ValueError(f"Unsupported position: {position}") from None
 
         logger.info(f"Starting training for {position} model")
 
@@ -227,7 +234,7 @@ class ModelTrainer:
         """
         results = {}
 
-        for position in self.MODEL_CLASSES.keys():
+        for position in self.MODEL_CLASSES:
             try:
                 if use_ensemble:
                     # Create multiple configs for ensemble
@@ -245,7 +252,7 @@ class ModelTrainer:
                     )
 
             except Exception as e:
-                logger.error(f"Failed to train {position} model: {e}")
+                logger.exception("Failed to train %s model", position)
                 results[position] = {"error": str(e)}
 
         return results
@@ -317,7 +324,7 @@ class ModelTrainer:
         self,
         ensemble: EnsembleModel,
         ensemble_metrics: dict,
-        test_mae: float,
+        _test_mae: float,
         test_r2: float,
         data_metadata: dict,
     ) -> ModelMetadata:
@@ -377,9 +384,9 @@ class ModelTrainer:
         Returns:
             List of model configurations
         """
-        base_config = ModelConfig(
-            model_name=f"{position}_base", position=position, model_dir=self.model_dir
-        )
+        # base_config = ModelConfig(
+        #     model_name=f"{position}_base", position=position, model_dir=self.model_dir
+        # )
 
         # Create variations for ensemble diversity
         configs = []
@@ -427,12 +434,12 @@ class ModelTrainer:
         metadata = self.db.query(ModelMetadata).filter(ModelMetadata.model_id == model_id).first()
 
         if not metadata:
-            raise ValueError(f"Model not found: {model_id}")
+            raise ValueError(f"Model not found: {model_id}") from None
 
         # Load model file
         model_path = Path(metadata.model_path)
         if not model_path.exists():
-            raise FileNotFoundError(f"Model file not found: {model_path}")
+            raise FileNotFoundError(f"Model file not found: {model_path}") from None
 
         if metadata.model_type == "EnsembleModel":
             model = joblib.load(model_path)
@@ -440,7 +447,7 @@ class ModelTrainer:
             # Load base model
             model_class = self.MODEL_CLASSES.get(metadata.position)
             if not model_class:
-                raise ValueError(f"Unknown position: {metadata.position}")
+                raise ValueError(f"Unknown position: {metadata.position}") from None
 
             # Create model config from metadata
             config = ModelConfig(

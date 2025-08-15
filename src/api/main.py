@@ -3,7 +3,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.api.routers import data
+from src.api.routers import data, predictions
 from src.config import settings
 
 # Create FastAPI app
@@ -59,8 +59,8 @@ async def get_config():
 
 
 app.include_router(data.router, prefix="/api/data", tags=["data"])
+app.include_router(predictions.router, prefix="/api", tags=["predictions"])
 
 # Future routers to be added:
-# from src.api.routers import predictions, optimization
-# app.include_router(predictions.router, prefix="/api/predictions", tags=["predictions"])
+# from src.api.routers import optimization
 # app.include_router(optimization.router, prefix="/api/optimize", tags=["optimization"])

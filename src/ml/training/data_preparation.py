@@ -58,7 +58,7 @@ class DataPreparator:
         raw_data = self._extract_position_data(position, start_date, end_date, min_games)
 
         if raw_data.empty:
-            raise ValueError(f"No data found for position {position} in date range")
+            raise ValueError(f"No data found for position {position} in date range") from None
 
         logger.info(f"Extracted {len(raw_data)} samples for {position}")
 
@@ -123,7 +123,7 @@ class DataPreparator:
         """
         # Query for players in position with sufficient game history
         query = """
-        SELECT 
+        SELECT
             p.id as player_id,
             p.display_name,
             p.position,
@@ -243,7 +243,7 @@ class DataPreparator:
                 continue
 
         if not features_list:
-            raise ValueError("No valid features extracted")
+            raise ValueError("No valid features extracted") from None
 
         X = np.array(features_list)
         y = np.array(targets)
@@ -286,10 +286,7 @@ class DataPreparator:
             self.scaler = RobustScaler()  # More robust to outliers than StandardScaler
             X_scaled = self.scaler.fit_transform(X_clean)
         else:
-            if self.scaler is not None:
-                X_scaled = self.scaler.transform(X_clean)
-            else:
-                X_scaled = X_clean
+            X_scaled = self.scaler.transform(X_clean) if self.scaler is not None else X_clean
 
         return X_scaled, y_clean
 
@@ -362,7 +359,7 @@ class DataPreparator:
         return all_features
 
     def prepare_prediction_data(
-        self, player_ids: list[int], game_date: datetime, position: str
+        self, player_ids: list[int], game_date: datetime, _position: str
     ) -> tuple[np.ndarray, list[int]]:
         """Prepare data for making predictions on new games.
 
@@ -393,17 +390,14 @@ class DataPreparator:
                 continue
 
         if not features_list:
-            raise ValueError("No valid features extracted for prediction")
+            raise ValueError("No valid features extracted for prediction") from None
 
         X = np.array(features_list)
 
         # Clean and scale features
         X_clean = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
-        if self.scaler is not None:
-            X_scaled = self.scaler.transform(X_clean)
-        else:
-            X_scaled = X_clean
+        X_scaled = self.scaler.transform(X_clean) if self.scaler is not None else X_clean
 
         return X_scaled, valid_player_ids
 

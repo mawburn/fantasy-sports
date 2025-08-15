@@ -76,7 +76,8 @@ class QBModel(BaseModel):
             self.feature_importance = dict(
                 zip(
                     [f"feature_{i}" for i in range(X_train.shape[1])],
-                    self.model.feature_importances_, strict=False,
+                    self.model.feature_importances_,
+                    strict=False,
                 )
             )
 
@@ -338,7 +339,7 @@ class RBModel(BaseModel):
 
             # Use default model for unmatched clusters
             if len(self.cluster_models) > 0:
-                default_model = list(self.cluster_models.values())[0]
+                default_model = next(iter(self.cluster_models.values()))
                 unmapped_mask = predictions == 0
                 if np.any(unmapped_mask):
                     predictions[unmapped_mask] = default_model.predict(X[unmapped_mask])
