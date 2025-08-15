@@ -195,6 +195,160 @@ class NFLDataTransformer:
 
 ## DraftKings Integration
 
+### Historical DFS Salaries (Kaggle)
+
+**Kaggle datasets for historical DraftKings NFL salary data**
+
+#### Data Source Configuration
+
+```python
+class KaggleHistoricalConfig:
+    KAGGLE_DATASETS = [
+        "jacobchapman91/draftkings-nfl-salaries-2009-2023",
+        "tobycrabtree/draftkings-nfl-salaries-2020-2024", 
+        "chrisfeller/draftkings-nfl-contest-data-2018-2023"
+    ]
+    
+    DATA_COLUMNS = [
+        'Name', 'Position', 'Team', 'Opponent', 'Salary', 
+        'AvgPointsPerGame', 'Week', 'Season', 'Game_Date'
+    ]
+    
+    DOWNLOAD_PATH = "data/raw/kaggle/dfs_salaries/"
+    BATCH_SIZE = 10000
+    COMPRESSION = 'gzip'
+```
+
+#### Kaggle Data Collector
+
+```python
+class KaggleHistoricalCollector:
+    def __init__(self, config: KaggleHistoricalConfig):
+        self.kaggle_api = kaggle.KaggleApi()
+        self.kaggle_api.authenticate()
+        self.config = config
+        self.validator = HistoricalSalaryValidator()
+
+    async def download_historical_salaries(self, seasons: List[int]) -> pd.DataFrame:
+        """
+        Download historical DFS salary data from Kaggle
+        """
+        all_data = []
+        
+        for dataset in self.config.KAGGLE_DATASETS:
+            try:
+                # Download dataset
+                dataset_path = await self._download_dataset(dataset)
+                
+                # Load and process CSV files
+                csv_files = glob.glob(f"{dataset_path}/*.csv")
+                
+                for csv_file in csv_files:
+                    df = pd.read_csv(csv_file, encoding='utf-8-sig')
+                    
+                    # Filter by requested seasons
+                    if 'Season' in df.columns:
+                        df = df[df['Season'].isin(seasons)]
+                    
+                    # Validate and clean data
+                    df = self.validator.validate_historical_data(df)
+                    
+                    all_data.append(df)
+                    
+            except Exception as e:
+                logger.warning(f"Failed to process dataset {dataset}: {e}")
+        
+        # Combine all datasets
+        combined_data = pd.concat(all_data, ignore_index=True)
+        
+        # Remove duplicates based on player, week, season
+        combined_data = combined_data.drop_duplicates(
+            subset=['Name', 'Position', 'Team', 'Week', 'Season']
+        )
+        
+        return combined_data
+
+    async def _download_dataset(self, dataset: str) -> Path:
+        """
+        Download Kaggle dataset to local directory
+        """
+        download_path = Path(self.config.DOWNLOAD_PATH) / dataset.split('/')[-1]
+        download_path.mkdir(parents=True, exist_ok=True)
+        
+        self.kaggle_api.dataset_download_files(
+            dataset, 
+            path=str(download_path),
+            unzip=True,
+            quiet=False
+        )
+        
+        return download_path
+```
+
+#### Historical Data Validation
+
+```python
+class HistoricalSalaryValidator:
+    def validate_historical_data(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Validate historical salary data from Kaggle
+        """
+        # Check for required columns
+        required_cols = ['Name', 'Position', 'Team', 'Salary']
+        missing_cols = set(required_cols) - set(data.columns)
+        if missing_cols:
+            raise ValidationError(f"Missing required columns: {missing_cols}")
+        
+        # Standardize position names
+        data['Position'] = data['Position'].map({
+            'QB': 'QB', 'RB': 'RB', 'WR': 'WR', 'TE': 'TE',
+            'DST': 'DST', 'DEF': 'DST', 'K': 'K'
+        })
+        
+        # Validate salary ranges (historical context)
+        data = self._validate_historical_salary_ranges(data)
+        
+        # Clean player names
+        data['Name'] = data['Name'].str.strip()
+        data['Name'] = data['Name'].str.replace(r'[^\w\s\-\.]', '', regex=True)
+        
+        # Standardize team abbreviations
+        data['Team'] = data['Team'].str.upper()
+        
+        return data
+    
+    def _validate_historical_salary_ranges(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Validate salary ranges considering historical inflation
+        """
+        # Define historical salary ranges by season
+        historical_ranges = {
+            2018: {'QB': (4000, 8500), 'RB': (3000, 9500), 'WR': (3000, 9000)},
+            2019: {'QB': (4200, 8700), 'RB': (3200, 9700), 'WR': (3200, 9200)},
+            2020: {'QB': (4400, 8900), 'RB': (3400, 9900), 'WR': (3400, 9400)},
+            2021: {'QB': (4600, 9100), 'RB': (3600, 10100), 'WR': (3600, 9600)},
+            2022: {'QB': (4800, 9300), 'RB': (3800, 10300), 'WR': (3800, 9800)},
+            2023: {'QB': (5000, 9500), 'RB': (4000, 10500), 'WR': (4000, 10000)},
+            2024: {'QB': (5200, 9700), 'RB': (4200, 10700), 'WR': (4200, 10200)}
+        }
+        
+        # Flag unusual salaries for manual review
+        for season, ranges in historical_ranges.items():
+            season_data = data[data.get('Season', 2024) == season]
+            
+            for position, (min_sal, max_sal) in ranges.items():
+                pos_data = season_data[season_data['Position'] == position]
+                outliers = pos_data[
+                    (pos_data['Salary'] < min_sal * 0.5) | 
+                    (pos_data['Salary'] > max_sal * 1.5)
+                ]
+                
+                if not outliers.empty:
+                    logger.warning(f"Salary outliers in {season} {position}: {len(outliers)} players")
+        
+        return data
+```
+
 ### CSV File Processing
 
 **Manual upload and processing of DraftKings salary files**
@@ -487,6 +641,475 @@ class WeatherAdapter:
             impact.kicking_penalty = -0.10
 
         return impact
+```
+
+## FantasyPros Integration
+
+### Opponent Matchup Stats Scraping
+
+**FantasyPros defensive rankings and matchup statistics**
+
+#### FantasyPros Scraper Configuration
+
+```python
+class FantasyProsConfig:
+    BASE_URL = "https://www.fantasypros.com"
+    ENDPOINTS = {
+        'defense_vs_position': '/nfl/stats/defense-vs-position.php',
+        'rankings': '/nfl/rankings/{position}.php',
+        'matchups': '/nfl/stats/points-allowed.php'
+    }
+    
+    SCRAPING_HEADERS = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+    }
+    
+    RATE_LIMIT_DELAY = 2  # seconds between requests
+    MAX_RETRIES = 3
+    TIMEOUT = 30
+```
+
+#### Defensive Matchup Scraper
+
+```python
+class FantasyProsDefenseScraper:
+    def __init__(self, config: FantasyProsConfig):
+        self.config = config
+        self.session = requests.Session()
+        self.session.headers.update(config.SCRAPING_HEADERS)
+        self.rate_limiter = RateLimiter(config.RATE_LIMIT_DELAY)
+
+    async def scrape_defense_vs_position(self, position: str) -> pd.DataFrame:
+        """
+        Scrape defensive stats vs specific position (QB, RB, WR, TE)
+        """
+        url = f"{self.config.BASE_URL}{self.config.ENDPOINTS['defense_vs_position']}"
+        params = {'pos': position.upper()}
+        
+        await self.rate_limiter.wait()
+        
+        try:
+            response = await self._make_request(url, params)
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # Find the main data table
+            table = soup.find('table', {'id': 'data'})
+            if not table:
+                raise ScrapingError(f"Could not find data table for {position}")
+            
+            # Extract table data
+            headers = [th.text.strip() for th in table.find('thead').find_all('th')]
+            rows = []
+            
+            for tr in table.find('tbody').find_all('tr'):
+                row_data = [td.text.strip() for td in tr.find_all('td')]
+                if len(row_data) == len(headers):
+                    rows.append(row_data)
+            
+            df = pd.DataFrame(rows, columns=headers)
+            
+            # Clean and standardize data
+            df = self._clean_defense_data(df, position)
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Failed to scrape defense vs {position}: {e}")
+            raise ScrapingError(f"Defense scraping failed: {e}")
+
+    def _clean_defense_data(self, df: pd.DataFrame, position: str) -> pd.DataFrame:
+        """
+        Clean and standardize defensive matchup data
+        """
+        # Standardize team names
+        df['Team'] = df['Team'].apply(self._standardize_team_name)
+        
+        # Convert numeric columns
+        numeric_cols = ['Fantasy Points Allowed', 'Yards Allowed', 'TDs Allowed']
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        # Add position context
+        df['vs_position'] = position.upper()
+        
+        # Calculate rankings
+        df['fp_allowed_rank'] = df['Fantasy Points Allowed'].rank(ascending=False)
+        df['yards_allowed_rank'] = df['Yards Allowed'].rank(ascending=False)
+        
+        # Add difficulty ratings
+        df['matchup_difficulty'] = self._calculate_matchup_difficulty(df)
+        
+        return df
+
+    def _calculate_matchup_difficulty(self, df: pd.DataFrame) -> pd.Series:
+        """
+        Calculate matchup difficulty score (1-10, 10 being hardest)
+        """
+        # Normalize fantasy points allowed to 1-10 scale
+        fp_allowed = df['Fantasy Points Allowed']
+        min_fp, max_fp = fp_allowed.min(), fp_allowed.max()
+        
+        # Higher points allowed = easier matchup (lower difficulty)
+        difficulty = 10 - 9 * ((fp_allowed - min_fp) / (max_fp - min_fp))
+        
+        return difficulty.round(1)
+
+    async def scrape_points_allowed_trends(self, weeks: int = 4) -> pd.DataFrame:
+        """
+        Scrape recent trends in points allowed by defense
+        """
+        url = f"{self.config.BASE_URL}{self.config.ENDPOINTS['matchups']}"
+        
+        await self.rate_limiter.wait()
+        
+        try:
+            response = await self._make_request(url)
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # Extract trending data
+            trend_data = self._extract_trend_data(soup, weeks)
+            
+            return pd.DataFrame(trend_data)
+            
+        except Exception as e:
+            logger.error(f"Failed to scrape points allowed trends: {e}")
+            raise ScrapingError(f"Trends scraping failed: {e}")
+
+    def _standardize_team_name(self, team_name: str) -> str:
+        """
+        Convert FantasyPros team names to standard abbreviations
+        """
+        team_mapping = {
+            'Arizona Cardinals': 'ARI', 'Atlanta Falcons': 'ATL',
+            'Baltimore Ravens': 'BAL', 'Buffalo Bills': 'BUF',
+            'Carolina Panthers': 'CAR', 'Chicago Bears': 'CHI',
+            'Cincinnati Bengals': 'CIN', 'Cleveland Browns': 'CLE',
+            'Dallas Cowboys': 'DAL', 'Denver Broncos': 'DEN',
+            'Detroit Lions': 'DET', 'Green Bay Packers': 'GB',
+            'Houston Texans': 'HOU', 'Indianapolis Colts': 'IND',
+            'Jacksonville Jaguars': 'JAX', 'Kansas City Chiefs': 'KC',
+            'Las Vegas Raiders': 'LV', 'Los Angeles Chargers': 'LAC',
+            'Los Angeles Rams': 'LAR', 'Miami Dolphins': 'MIA',
+            'Minnesota Vikings': 'MIN', 'New England Patriots': 'NE',
+            'New Orleans Saints': 'NO', 'New York Giants': 'NYG',
+            'New York Jets': 'NYJ', 'Philadelphia Eagles': 'PHI',
+            'Pittsburgh Steelers': 'PIT', 'San Francisco 49ers': 'SF',
+            'Seattle Seahawks': 'SEA', 'Tampa Bay Buccaneers': 'TB',
+            'Tennessee Titans': 'TEN', 'Washington Commanders': 'WAS'
+        }
+        
+        return team_mapping.get(team_name.strip(), team_name.upper()[:3])
+
+    async def _make_request(self, url: str, params: dict = None) -> requests.Response:
+        """
+        Make HTTP request with retry logic
+        """
+        for attempt in range(self.config.MAX_RETRIES):
+            try:
+                response = self.session.get(
+                    url, 
+                    params=params, 
+                    timeout=self.config.TIMEOUT
+                )
+                response.raise_for_status()
+                return response
+                
+            except requests.RequestException as e:
+                if attempt == self.config.MAX_RETRIES - 1:
+                    raise e
+                
+                wait_time = (2 ** attempt) * self.config.RATE_LIMIT_DELAY
+                await asyncio.sleep(wait_time)
+```
+
+#### Matchup Data Validator
+
+```python
+class FantasyProsValidator:
+    def validate_matchup_data(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Validate scraped matchup data
+        """
+        # Check required columns
+        required_cols = ['Team', 'vs_position', 'Fantasy Points Allowed']
+        missing_cols = set(required_cols) - set(data.columns)
+        if missing_cols:
+            raise ValidationError(f"Missing columns: {missing_cols}")
+        
+        # Validate team count (should be 32 NFL teams)
+        unique_teams = data['Team'].nunique()
+        if unique_teams < 30 or unique_teams > 32:
+            logger.warning(f"Unexpected team count: {unique_teams}")
+        
+        # Validate numeric ranges
+        data = self._validate_numeric_ranges(data)
+        
+        # Check for reasonable fantasy points values
+        fp_allowed = data['Fantasy Points Allowed']
+        if fp_allowed.min() < 0 or fp_allowed.max() > 50:
+            logger.warning("Fantasy points allowed values seem unusual")
+        
+        return data
+    
+    def _validate_numeric_ranges(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Validate numeric columns are within expected ranges
+        """
+        numeric_validations = {
+            'Fantasy Points Allowed': (0, 50),
+            'Yards Allowed': (0, 500),
+            'TDs Allowed': (0, 5)
+        }
+        
+        for col, (min_val, max_val) in numeric_validations.items():
+            if col in data.columns:
+                outliers = data[
+                    (data[col] < min_val) | (data[col] > max_val)
+                ]
+                if not outliers.empty:
+                    logger.warning(f"Outliers in {col}: {len(outliers)} rows")
+        
+        return data
+```
+
+## DraftKings Injury Reports
+
+### Injury Report Scraping
+
+**DraftKings injury report data collection**
+
+#### Injury Scraper Configuration
+
+```python
+class DKInjuryConfig:
+    BASE_URL = "https://www.draftkings.com"
+    INJURY_ENDPOINT = "/lineup/injury-report/nfl"
+    
+    SCRAPING_HEADERS = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate',
+        'Connection': 'keep-alive'
+    }
+    
+    RATE_LIMIT_DELAY = 3  # seconds between requests
+    MAX_RETRIES = 3
+    TIMEOUT = 30
+    
+    INJURY_STATUS_MAPPING = {
+        'Out': 'OUT',
+        'Doubtful': 'DOUBTFUL', 
+        'Questionable': 'QUESTIONABLE',
+        'Probable': 'PROBABLE',
+        'IR': 'IR',
+        'PUP': 'PUP',
+        'Suspended': 'SUSPENDED'
+    }
+```
+
+#### DraftKings Injury Scraper
+
+```python
+class DKInjuryScraper:
+    def __init__(self, config: DKInjuryConfig):
+        self.config = config
+        self.session = requests.Session()
+        self.session.headers.update(config.SCRAPING_HEADERS)
+        self.rate_limiter = RateLimiter(config.RATE_LIMIT_DELAY)
+
+    async def scrape_injury_reports(self) -> pd.DataFrame:
+        """
+        Scrape current NFL injury reports from DraftKings
+        """
+        url = f"{self.config.BASE_URL}{self.config.INJURY_ENDPOINT}"
+        
+        await self.rate_limiter.wait()
+        
+        try:
+            response = await self._make_request(url)
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # Find injury report container
+            injury_container = soup.find('div', {'class': 'injury-report-container'})
+            if not injury_container:
+                # Try alternative selectors
+                injury_container = soup.find('section', {'id': 'injury-report'})
+            
+            if not injury_container:
+                raise ScrapingError("Could not find injury report container")
+            
+            # Extract injury data
+            injury_data = self._extract_injury_data(injury_container)
+            
+            # Convert to DataFrame
+            df = pd.DataFrame(injury_data)
+            
+            # Clean and validate
+            df = self._clean_injury_data(df)
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Failed to scrape injury reports: {e}")
+            raise ScrapingError(f"Injury scraping failed: {e}")
+
+    def _extract_injury_data(self, container) -> List[Dict]:
+        """
+        Extract injury data from HTML container
+        """
+        injuries = []
+        
+        # Look for player injury cards/rows
+        player_elements = container.find_all(['div', 'tr'], 
+                                           class_=re.compile(r'player|injury'))
+        
+        for element in player_elements:
+            try:
+                injury_info = self._parse_player_injury(element)
+                if injury_info:
+                    injuries.append(injury_info)
+            except Exception as e:
+                logger.debug(f"Failed to parse injury element: {e}")
+                continue
+        
+        return injuries
+
+    def _parse_player_injury(self, element) -> Optional[Dict]:
+        """
+        Parse individual player injury information
+        """
+        # Extract player name
+        name_elem = element.find(['span', 'div', 'td'], 
+                                class_=re.compile(r'name|player'))
+        if not name_elem:
+            return None
+        
+        player_name = name_elem.get_text(strip=True)
+        
+        # Extract team
+        team_elem = element.find(['span', 'div', 'td'], 
+                                class_=re.compile(r'team'))
+        team = team_elem.get_text(strip=True) if team_elem else None
+        
+        # Extract position
+        pos_elem = element.find(['span', 'div', 'td'], 
+                               class_=re.compile(r'position|pos'))
+        position = pos_elem.get_text(strip=True) if pos_elem else None
+        
+        # Extract injury status
+        status_elem = element.find(['span', 'div', 'td'], 
+                                  class_=re.compile(r'status|injury'))
+        status = status_elem.get_text(strip=True) if status_elem else None
+        
+        # Extract injury description
+        desc_elem = element.find(['span', 'div', 'td'], 
+                                class_=re.compile(r'description|injury-desc'))
+        description = desc_elem.get_text(strip=True) if desc_elem else None
+        
+        return {
+            'player_name': player_name,
+            'team': team,
+            'position': position,
+            'injury_status': status,
+            'injury_description': description,
+            'report_date': datetime.now().date()
+        }
+
+    def _clean_injury_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Clean and standardize injury report data
+        """
+        if df.empty:
+            return df
+        
+        # Clean player names
+        df['player_name'] = df['player_name'].str.strip()
+        df['player_name'] = df['player_name'].str.replace(r'[^\w\s\-\.]', '', regex=True)
+        
+        # Standardize injury status
+        df['injury_status'] = df['injury_status'].map(
+            self.config.INJURY_STATUS_MAPPING
+        ).fillna(df['injury_status'])
+        
+        # Standardize team names
+        df['team'] = df['team'].str.upper()
+        
+        # Clean injury descriptions
+        df['injury_description'] = df['injury_description'].str.title()
+        
+        # Remove duplicates
+        df = df.drop_duplicates(subset=['player_name', 'team'])
+        
+        return df
+
+    async def _make_request(self, url: str) -> requests.Response:
+        """
+        Make HTTP request with retry logic and error handling
+        """
+        for attempt in range(self.config.MAX_RETRIES):
+            try:
+                response = self.session.get(url, timeout=self.config.TIMEOUT)
+                response.raise_for_status()
+                return response
+                
+            except requests.RequestException as e:
+                if attempt == self.config.MAX_RETRIES - 1:
+                    raise e
+                
+                wait_time = (2 ** attempt) * self.config.RATE_LIMIT_DELAY
+                await asyncio.sleep(wait_time)
+```
+
+#### Injury Data Validator
+
+```python
+class InjuryDataValidator:
+    VALID_STATUSES = {'OUT', 'DOUBTFUL', 'QUESTIONABLE', 'PROBABLE', 'IR', 'PUP', 'SUSPENDED'}
+    VALID_POSITIONS = {'QB', 'RB', 'WR', 'TE', 'K', 'DST'}
+
+    def validate_injury_data(self, data: pd.DataFrame) -> ValidationResult:
+        """
+        Validate scraped injury report data
+        """
+        errors = []
+        warnings = []
+        
+        if data.empty:
+            warnings.append("No injury data found")
+            return ValidationResult(errors=errors, warnings=warnings)
+        
+        # Check required columns
+        required_cols = ['player_name', 'injury_status']
+        missing_cols = set(required_cols) - set(data.columns)
+        if missing_cols:
+            errors.append(f"Missing required columns: {missing_cols}")
+        
+        # Validate injury statuses
+        if 'injury_status' in data.columns:
+            invalid_statuses = data[
+                ~data['injury_status'].isin(self.VALID_STATUSES)
+            ]
+            if not invalid_statuses.empty:
+                warnings.append(f"Unknown injury statuses: {invalid_statuses['injury_status'].unique()}")
+        
+        # Validate positions
+        if 'position' in data.columns:
+            invalid_positions = data[
+                ~data['position'].isin(self.VALID_POSITIONS)
+            ]
+            if not invalid_positions.empty:
+                warnings.append(f"Unknown positions: {invalid_positions['position'].unique()}")
+        
+        # Check for reasonable data volume
+        if len(data) > 200:
+            warnings.append(f"Unusually high injury count: {len(data)}")
+        elif len(data) < 10:
+            warnings.append(f"Unusually low injury count: {len(data)}")
+        
+        return ValidationResult(errors=errors, warnings=warnings)
 ```
 
 ## ESPN Data Integration (Optional)
