@@ -50,12 +50,6 @@ uv.lock
 .env.local
 .env.*.local
 
-# Database
-*.db
-*.sqlite
-*.sqlite3
-data/database/*.db
-
 # Logs
 *.log
 /logs/  # Only ignore top-level logs directory
