@@ -61,7 +61,7 @@ format:
 	@echo "Sorting imports with isort..."
 	$(UV) run isort src/ tests/ scripts/
 	@echo "Formatting Markdown files..."
-	$(UV) run mdformat docs/ *.md
+	$(UV) run mdformat --compact-tables docs/ *.md
 	@echo "Formatting complete!"
 
 # Run linters

@@ -2,9 +2,7 @@
 
 ## Overview
 
-This document details the component architecture of the NFL DFS system, defining the structure,
-responsibilities, and interactions of each major component. The system follows a modular,
-loosely-coupled design enabling independent development and testing.
+This document details the component architecture of the NFL DFS system, defining the structure, responsibilities, and interactions of each major component. The system follows a modular, loosely-coupled design enabling independent development and testing.
 
 ## Component Hierarchy
 

@@ -1,4 +1,24 @@
-"""Position-specific ML models for NFL DFS predictions."""
+"""Position-specific ML models for NFL DFS predictions.
+
+This file implements different machine learning models tailored to each NFL position's
+statistical patterns and scoring characteristics:
+
+- QBModel: Uses XGBoost with auxiliary models for rushing and primetime adjustments
+- RBModel: Uses LightGBM with workload-based clustering for different RB archetypes
+- WRModel: Uses XGBoost optimized for target share and air yards patterns
+- TEModel: Uses LightGBM for more consistent TE scoring patterns
+- DEFModel: Uses Random Forest to handle the high variance of defensive scoring
+
+Each model inherits from BaseModel but implements position-specific:
+- Hyperparameter tuning optimized for that position's variance patterns
+- Feature weighting strategies (recent games, target share, etc.)
+- Prediction adjustments (floor/ceiling calculations, confidence scores)
+- Auxiliary models for position-specific factors (QB rushing, RB workload types)
+
+For beginners: Think of each position as having different "personalities" in terms
+of predictability and scoring patterns. QBs are fairly consistent, RBs depend on
+workload, WRs are high-variance, TEs are in between, and DEF/ST are chaotic.
+"""
 
 import logging
 import time
@@ -16,13 +36,47 @@ logger = logging.getLogger(__name__)
 
 
 class QBModel(BaseModel):
-    """Quarterback-specific prediction model using XGBoost."""
+    """Quarterback-specific prediction model using XGBoost.
+
+    QBs are generally the most predictable position in fantasy football because:
+    - They handle the ball on every play
+    - Passing volume is fairly consistent
+    - Game script heavily favors passing when behind
+
+    This model uses XGBoost (eXtreme Gradient Boosting) because:
+    - Handles both passing and rushing contributions well
+    - Good at capturing non-linear relationships (game script effects)
+    - Built-in regularization prevents overfitting
+    - Fast training and prediction
+
+    Special QB Features:
+    - Auxiliary rushing model: Some QBs get significant rushing upside
+    - Primetime adjustment: QBs may perform differently in nationally televised games
+    - Time-based weighting: Recent form matters more than season averages
+
+    For beginners: XGBoost builds many simple decision trees and combines them.
+    Each tree learns to correct the mistakes of the previous trees.
+    """
 
     def __init__(self, config: ModelConfig):
-        """Initialize QB model."""
-        super().__init__(config)
-        self.rushing_model = None  # Separate model for rushing upside
-        self.primetime_model = None  # Adjustment for primetime games
+        """Initialize QB model with auxiliary models.
+
+        The QB model uses a main model plus two auxiliary models:
+        - rushing_model: Predicts additional points from QB rushing
+        - primetime_model: Adjusts for primetime game effects
+
+        This ensemble approach allows us to model different aspects of QB
+        performance separately, then combine them for final predictions.
+        """
+        super().__init__(config)  # Initialize base model components
+
+        # Auxiliary models for QB-specific adjustments
+        self.rushing_model = (
+            None  # Separate model for rushing upside (Lamar Jackson, Josh Allen types)
+        )
+        self.primetime_model = (
+            None  # Adjustment for primetime games (Monday/Thursday night effects)
+        )
 
     def build_model(self) -> XGBRegressor:
         """Build XGBoost model optimized for QB predictions."""
@@ -216,7 +270,28 @@ class QBModel(BaseModel):
 
 
 class RBModel(BaseModel):
-    """Running back-specific prediction model using LightGBM with workload clustering."""
+    """Running back-specific prediction model using LightGBM with workload clustering.
+
+    RBs are challenging to predict because they fall into distinct archetypes:
+    - Workhorse backs: High volume, consistent touches (Derrick Henry types)
+    - Committee backs: Share carries, more volatile (many teams use RBBC)
+    - Pass-catching specialists: Fewer carries but many targets (James White types)
+    - Goal-line specialists: Low volume but high TD probability
+
+    This model uses clustering to identify these archetypes and train separate
+    models for each, improving prediction accuracy.
+
+    Why LightGBM for RBs?
+    - Faster training than XGBoost (important when training multiple cluster models)
+    - Better handling of categorical features (team, opponent, game situation)
+    - Memory efficient for large datasets
+    - Good performance on tabular data
+
+    Clustering Strategy:
+    - Use workload features (touches, snap share, target share) to identify archetypes
+    - Train separate models for each cluster
+    - Predict cluster membership for new players, then use appropriate model
+    """
 
     def __init__(self, config: ModelConfig):
         """Initialize RB model."""

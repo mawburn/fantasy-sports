@@ -1,137 +1,299 @@
-"""SQLAlchemy database models."""
+"""SQLAlchemy database models for NFL Daily Fantasy Sports system.
 
-from sqlalchemy import (
-    Boolean,
-    Column,
-    Date,
-    DateTime,
-    Float,
-    ForeignKey,
-    Index,
-    Integer,
-    String,
-    UniqueConstraint,
-)
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
+This file defines the complete database schema using SQLAlchemy ORM (Object-Relational Mapping).
+It covers the entire NFL DFS ecosystem from raw NFL data to ML predictions to contest optimization.
 
+For beginners:
+
+SQLAlchemy ORM: A Python toolkit that lets you work with databases using Python classes
+instead of raw SQL. Each class represents a database table, and instances represent rows.
+
+Database Design Principles Applied:
+1. Normalization: Data is organized to reduce redundancy and improve integrity
+2. Foreign Keys: Links between tables that maintain referential integrity
+3. Indexes: Speed up common query patterns
+4. Constraints: Enforce business rules at the database level
+5. Timestamps: Track when records are created and updated
+
+Model Categories:
+1. Core NFL Data: Teams, Players, Games, Statistics
+2. DraftKings Integration: Contests, Salaries, Lineups, Entries
+3. Machine Learning: Features, Models, Predictions, Training Data
+4. Analytics: Injury Reports, Scoring Rules, Backtesting
+
+Design Patterns:
+- Base declarative class for all models
+- Consistent primary key and timestamp patterns
+- Strategic use of indexes for query performance
+- JSON columns for flexible schema evolution
+- Comprehensive relationship definitions
+"""
+
+# SQLAlchemy imports for database column types and ORM functionality
+from sqlalchemy import Boolean  # True/False values (game_finished, is_active)
+from sqlalchemy import Column  # Defines table columns with types and constraints
+from sqlalchemy import Date  # Date values without time (birthdate, report_date)
+from sqlalchemy import DateTime  # Full timestamp values (game_date, created_at)
+from sqlalchemy import Float  # Decimal numbers (fantasy_points, salary, probabilities)
+from sqlalchemy import ForeignKey  # References to other tables' primary keys
+from sqlalchemy import Index  # Database indexes for query performance
+from sqlalchemy import Integer  # Whole numbers (id, yards, touchdowns)
+from sqlalchemy import String  # Text fields with length limits (name, position)
+from sqlalchemy import UniqueConstraint  # Ensures no duplicate combinations exist
+from sqlalchemy.ext.declarative import declarative_base  # Base class for all models
+from sqlalchemy.orm import relationship  # Defines how tables are related
+from sqlalchemy.sql import func  # SQL functions like now(), count(), etc.
+
+# Base class for all database models
+# All our model classes will inherit from this to get SQLAlchemy ORM functionality
 Base = declarative_base()
 
 
 class Team(Base):
-    """NFL team model."""
+    """NFL team model representing the 32 NFL franchises.
 
-    __tablename__ = "teams"
+    This is the foundation of our data model - all other entities (players, games)
+    reference teams. Teams are relatively static but can change names, divisions,
+    or relocate cities (though rarely).
 
+    Design Decisions:
+    - Uses team_abbr as natural key ("KC", "TB") for human readability
+    - Separate home/away game relationships for performance and clarity
+    - Includes conference/division for divisional rivalry analysis
+
+    For beginners:
+
+    Primary Key: A unique identifier (id) that SQLAlchemy auto-generates.
+    Every table needs one to uniquely identify each row.
+
+    Indexes: Database structures that speed up queries. We index frequently
+    searched columns like team_abbr.
+
+    Relationships: SQLAlchemy's way of linking tables together. The relationship()
+    function creates Python attributes that let you navigate between related objects.
+
+    Timestamps: created_at and updated_at automatically track when records
+    are inserted and modified.
+    """
+
+    __tablename__ = "teams"  # Actual table name in the database
+
+    # Primary key - unique identifier for each team
     id = Column(Integer, primary_key=True, index=True)
-    team_abbr = Column(String(5), unique=True, nullable=False, index=True)
-    team_name = Column(String(50), nullable=False)
-    conference = Column(String(3), nullable=False)  # AFC/NFC
-    division = Column(String(10), nullable=False)  # North/South/East/West
 
-    # Relationships
+    # Team identifiers
+    team_abbr = Column(String(5), unique=True, nullable=False, index=True)  # "KC", "TB", "NE"
+    team_name = Column(String(50), nullable=False)  # "Kansas City Chiefs"
+
+    # NFL organizational structure
+    conference = Column(String(3), nullable=False)  # "AFC" or "NFC"
+    division = Column(String(10), nullable=False)  # "North", "South", "East", "West"
+
+    # Relationships to other tables
+    # These create Python attributes that let you access related data:
+    # team.home_games gives all games where this team played at home
+    # team.away_games gives all games where this team played away
+    # team.players gives all players currently on this team's roster
+
     home_games = relationship(
-        "Game", foreign_keys="[Game.home_team_id]", back_populates="home_team"
+        "Game",  # Target model class
+        foreign_keys="[Game.home_team_id]",  # Which foreign key to use
+        back_populates="home_team",  # Corresponding relationship in Game model
     )
     away_games = relationship(
         "Game", foreign_keys="[Game.away_team_id]", back_populates="away_team"
     )
     players = relationship("Player", back_populates="team")
 
-    created_at = Column(DateTime, default=func.now())
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    # Automatic timestamps for audit trail
+    created_at = Column(DateTime, default=func.now())  # Set when record is created
+    updated_at = Column(
+        DateTime, default=func.now(), onupdate=func.now()
+    )  # Updated on every change
 
 
 class Player(Base):
-    """NFL player model."""
+    """NFL player model representing individual NFL players.
+
+    This is the central entity for fantasy football - players generate statistics
+    that determine fantasy points. The model handles:
+    - Player identity and demographics
+    - Team affiliations (which change via trades/signings)
+    - Physical attributes relevant to performance
+    - Career information and status tracking
+
+    Key Design Features:
+    - Uses external player_id from nfl_data_py for data consistency
+    - Nullable team_id handles free agents and retired players
+    - Multiple name fields support various display preferences
+    - Status tracking for injury/roster management
+
+    Fantasy Relevance:
+    Each player can play multiple positions (e.g., RB/WR flex eligibility)
+    but has a primary position that determines their statistical expectations
+    and salary ranges in DFS contests.
+
+    For beginners:
+
+    Foreign Keys: team_id references the teams table, creating a link.
+    nullable=True means players can exist without a team (free agents).
+
+    Composite Indexes: __table_args__ defines multi-column indexes that
+    speed up queries filtering by multiple columns together.
+
+    Relationship Navigation: Once defined, you can use:
+    - player.team to get the Team object
+    - player.stats to get all PlayerStats records
+    - player.salaries to get all DraftKings salary records
+    """
 
     __tablename__ = "players"
 
+    # Primary key
     id = Column(Integer, primary_key=True, index=True)
-    player_id = Column(String(20), unique=True, nullable=False, index=True)  # nfl_data_py player_id
-    display_name = Column(String(100), nullable=False, index=True)
-    first_name = Column(String(50))
-    last_name = Column(String(50))
-    position = Column(String(5), nullable=False, index=True)  # QB, RB, WR, TE, K, DEF
-    jersey_number = Column(Integer)
 
-    # Team information
+    # External identifier for data consistency with nfl_data_py
+    player_id = Column(String(20), unique=True, nullable=False, index=True)  # e.g., "00-0023459"
+
+    # Name fields for display flexibility
+    display_name = Column(String(100), nullable=False, index=True)  # "Patrick Mahomes"
+    first_name = Column(String(50))  # "Patrick"
+    last_name = Column(String(50))  # "Mahomes"
+
+    # Fantasy-critical information
+    position = Column(String(5), nullable=False, index=True)  # "QB", "RB", "WR", "TE", "K", "DEF"
+    jersey_number = Column(Integer)  # 15, 87, 99, etc.
+
+    # Team affiliation - nullable because players can be free agents
     team_id = Column(Integer, ForeignKey("teams.id"), nullable=True, index=True)
     team = relationship("Team", back_populates="players")
 
-    # Physical attributes
-    height = Column(Integer)  # inches
-    weight = Column(Integer)  # pounds
-    age = Column(Integer)
-    birthdate = Column(Date)
+    # Physical attributes affecting performance predictions
+    height = Column(Integer)  # Height in inches (72 = 6'0")
+    weight = Column(Integer)  # Weight in pounds
+    age = Column(Integer)  # Current age
+    birthdate = Column(Date)  # Full birthdate for precise age calculation
 
-    # Career info
-    years_exp = Column(Integer)
-    college = Column(String(100))
-    rookie_year = Column(Integer)
+    # Career trajectory information
+    years_exp = Column(Integer)  # Years of NFL experience (0 for rookies)
+    college = Column(String(100))  # College attended
+    rookie_year = Column(Integer)  # Year entered NFL
 
-    # Status
-    status = Column(String(20), default="Active")  # Active, Inactive, IR, etc.
+    # Roster status for eligibility tracking
+    status = Column(String(20), default="Active")  # "Active", "Inactive", "IR", "PUP", etc.
 
-    # Relationships
-    stats = relationship("PlayerStats", back_populates="player")
-    salaries = relationship("DraftKingsSalary", back_populates="player")
+    # Relationships to dependent data
+    # These enable navigation to related records:
+    stats = relationship("PlayerStats", back_populates="player")  # All game statistics
+    salaries = relationship("DraftKingsSalary", back_populates="player")  # DFS pricing history
 
+    # Audit timestamps
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
-    # Indexes
+    # Performance-optimized indexes for common query patterns
     __table_args__ = (
+        # Speed up position + team filtering ("all KC running backs")
         Index("idx_player_position_team", "position", "team_id"),
+        # Speed up name searches for player lookup
         Index("idx_player_name", "display_name"),
     )
 
 
 class Game(Base):
-    """NFL game model."""
+    """NFL game model representing individual NFL games.
+
+    Games are the temporal context for all player statistics - every stat
+    occurs within a specific game. This model captures:
+    - When and where the game occurred
+    - Which teams played (home/away matters for fantasy)
+    - Environmental factors affecting performance
+    - Game outcomes for contextual analysis
+
+    Fantasy Significance:
+    - Home field advantage affects player performance
+    - Weather conditions impact passing vs rushing games
+    - Game script (winning/losing) changes play calling
+    - Stadium factors (dome vs outdoor) affect scoring
+
+    Design Features:
+    - Separate foreign keys for home/away teams enable complex queries
+    - Weather tracking for performance correlation analysis
+    - game_finished flag distinguishes completed vs future games
+    - Multiple constraint types ensure data integrity
+
+    For beginners:
+
+    Multiple Foreign Keys: A game involves two teams, so we need separate
+    foreign keys for home_team_id and away_team_id.
+
+    UniqueConstraint: Prevents duplicate games by ensuring no two games
+    can have the same season/week/teams combination.
+
+    Nullable vs Non-nullable: game_date is required (nullable=False) but
+    home_score can be empty (None) for future games.
+
+    Relationship Direction: The foreign_keys parameter tells SQLAlchemy
+    which foreign key to use when multiple exist.
+    """
 
     __tablename__ = "games"
 
+    # Primary key
     id = Column(Integer, primary_key=True, index=True)
-    game_id = Column(String(20), unique=True, nullable=False, index=True)  # nfl_data_py game_id
-    season = Column(Integer, nullable=False, index=True)
-    week = Column(Integer, nullable=False, index=True)
-    game_date = Column(DateTime, nullable=False, index=True)
 
-    # Teams
+    # External identifier for data consistency
+    game_id = Column(String(20), unique=True, nullable=False, index=True)  # e.g., "2023_01_KC_LV"
+
+    # Temporal organization
+    season = Column(Integer, nullable=False, index=True)  # 2023, 2024, etc.
+    week = Column(Integer, nullable=False, index=True)  # 1-18 regular season, 19+ playoffs
+    game_date = Column(DateTime, nullable=False, index=True)  # Exact game start time
+
+    # Team matchup - requires two foreign keys since each game has two teams
     home_team_id = Column(Integer, ForeignKey("teams.id"), nullable=False)
     away_team_id = Column(Integer, ForeignKey("teams.id"), nullable=False)
+
+    # Bidirectional relationships to teams
+    # foreign_keys parameter specifies which FK to use for each relationship
     home_team = relationship("Team", foreign_keys=[home_team_id], back_populates="home_games")
     away_team = relationship("Team", foreign_keys=[away_team_id], back_populates="away_games")
 
-    # Game info
-    game_type = Column(String(10), nullable=False)  # REG, POST, PRE
-    home_score = Column(Integer)
-    away_score = Column(Integer)
+    # Game classification and results
+    game_type = Column(
+        String(10), nullable=False
+    )  # "REG" (regular), "POST" (playoff), "PRE" (preseason)
+    home_score = Column(Integer)  # Final score - None for future games
+    away_score = Column(Integer)  # Final score - None for future games
 
-    # Weather (if available)
-    weather_temperature = Column(Integer)
-    weather_wind_speed = Column(Integer)
-    weather_description = Column(String(100))
+    # Environmental factors affecting fantasy performance
+    weather_temperature = Column(Integer)  # Degrees Fahrenheit
+    weather_wind_speed = Column(Integer)  # MPH - high wind affects passing
+    weather_description = Column(String(100))  # "Clear", "Rain", "Snow", etc.
 
-    # Stadium info
-    stadium = Column(String(100))
-    roof_type = Column(String(20))  # dome, outdoors, retractable
+    # Venue information
+    stadium = Column(String(100))  # "Arrowhead Stadium"
+    roof_type = Column(String(20))  # "dome", "outdoors", "retractable"
 
-    # Game status
-    game_finished = Column(Boolean, default=False)
+    # Game completion status
+    game_finished = Column(Boolean, default=False)  # False for future games, True when completed
 
-    # Relationships
-    player_stats = relationship("PlayerStats", back_populates="game")
+    # Relationships to dependent data
+    player_stats = relationship(
+        "PlayerStats", back_populates="game"
+    )  # All player stats from this game
 
+    # Audit timestamps
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
-    # Constraints
+    # Database constraints and indexes
     __table_args__ = (
+        # Prevent duplicate games - no team can play themselves or play twice in same week
         UniqueConstraint("season", "week", "home_team_id", "away_team_id"),
+        # Speed up queries by season/week ("all week 5 games")
         Index("idx_game_season_week", "season", "week"),
+        # Speed up date-based queries ("all games this weekend")
         Index("idx_game_date", "game_date"),
     )
 

@@ -2,10 +2,7 @@
 
 ## Project Overview
 
-Build a machine learning application for NFL DraftKings daily fantasy sports that predicts player
-performance and optimizes lineups. The system learns from comparing predictions against actual NFL
-game results to continuously improve accuracy. Contest selection helps identify interesting games to
-play for entertainment.
+Build a machine learning application for NFL DraftKings daily fantasy sports that predicts player performance and optimizes lineups. The system learns from comparing predictions against actual NFL game results to continuously improve accuracy. Contest selection helps identify interesting games to play for entertainment.
 
 **Core Focus:**
 
@@ -18,9 +15,7 @@ play for entertainment.
 
 ### Package Management with Poetry
 
-UV is the sole package manager for this project. UV is the fastest Python package manager available
-(10-100x faster than pip/poetry), written in Rust for maximum performance. It provides deterministic
-lockfiles and serves as a drop-in replacement for pip with minimal system resource usage.
+UV is the sole package manager for this project. UV is the fastest Python package manager available (10-100x faster than pip/poetry), written in Rust for maximum performance. It provides deterministic lockfiles and serves as a drop-in replacement for pip with minimal system resource usage.
 
 ```txt
 # requirements.txt - Managed by UV for blazing fast dependency resolution
@@ -567,13 +562,11 @@ POST /api/v1/nfl/results/update                    # Update with actual game res
 
 This NFL-specific design focuses on continuous improvement and entertainment:
 
-1. **Self-improving models** learn from comparing predictions to actual results, not contest
-   outcomes
+1. **Self-improving models** learn from comparing predictions to actual results, not contest outcomes
 1. **Backtesting** identifies which features and parameters improve prediction accuracy
 1. **Game selection** finds fun, interesting games rather than trying to maximize profit
 1. **Position-specific models** because QBs, RBs, and WRs have fundamentally different patterns
 1. **Correlation-based optimization** because stacking makes DFS more entertaining
 1. **Error analysis** helps understand and fix systematic prediction problems
 
-The system is designed for personal enjoyment of NFL DFS, with a focus on getting better at
-predictions over time rather than treating it as an investment vehicle.
+The system is designed for personal enjoyment of NFL DFS, with a focus on getting better at predictions over time rather than treating it as an investment vehicle.

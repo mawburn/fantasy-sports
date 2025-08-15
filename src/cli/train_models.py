@@ -1,4 +1,33 @@
-"""CLI commands for training ML models."""
+"""CLI commands for training ML models.
+
+This file provides command-line interface tools for training, evaluating, and managing
+ML models for fantasy sports predictions. It uses the Typer library to create a
+user-friendly CLI with proper argument parsing and help text.
+
+Key Benefits of CLI Training:
+
+1. Automation: Enable scheduled model retraining via cron jobs or CI/CD
+2. Reproducibility: Consistent training parameters and logging
+3. Experimentation: Easy parameter sweeps and model comparison
+4. Production Integration: Simple deployment pipeline integration
+5. User Experience: Non-programmers can retrain models
+
+Typer Library: Modern CLI framework for Python that provides:
+- Automatic help generation from docstrings and type hints
+- Type validation and conversion
+- Rich terminal output with colors and emojis
+- Intuitive command structure
+
+Commands Overview:
+- train_position: Train model for specific position (QB, RB, WR, TE, DEF)
+- train_all: Batch training for all positions
+- evaluate_model: Comprehensive model evaluation
+- deploy_model: Deploy trained models to production
+- backtest: Historical performance analysis
+
+For beginners: CLI (Command Line Interface) allows users to interact with
+the program through text commands rather than graphical interfaces.
+"""
 
 import logging
 from datetime import datetime
@@ -27,25 +56,83 @@ def train_position(
     evaluate: bool = typer.Option(True, help="Evaluate model performance"),
     backtest: bool = typer.Option(False, help="Run backtesting analysis"),
 ) -> None:
-    """Train a model for a specific position."""
-    try:
-        # Parse dates
-        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+    """Train a model for a specific position.
 
-        # Create model configuration
+    This is the main command for training individual position models. It provides
+    a complete training pipeline from data preparation through model evaluation.
+
+    Training Pipeline:
+    1. Parse and validate input parameters
+    2. Configure model training settings
+    3. Initialize trainer and execute training
+    4. Display core performance metrics
+    5. Optionally run comprehensive evaluation
+    6. Optionally run backtesting analysis
+
+    Parameter Explanation:
+
+    position: Which NFL position to train (QB, RB, WR, TE, DEF)
+    Each position has different statistical patterns and gets its own model.
+
+    start_date/end_date: Training data time range
+    - Use historical data for training (typically 2+ seasons)
+    - Ensure sufficient data volume for reliable training
+    - Leave recent data for testing if doing manual evaluation
+
+    model_name: Optional custom name for model identification
+    - Defaults to "{position}_model" if not specified
+    - Useful for experiments: "QB_model_v2" or "QB_model_ensemble"
+
+    save_model: Whether to persist trained model to disk
+    - True: Model saved for production use or later evaluation
+    - False: Training-only (useful for quick experiments)
+
+    evaluate: Whether to run comprehensive evaluation
+    - Generates detailed performance report beyond basic metrics
+    - Includes quality assessments and recommendations
+
+    backtest: Whether to run historical backtesting
+    - Tests model on historical predictions vs actual results
+    - More realistic performance assessment than holdout validation
+
+    Usage Examples:
+    python -m src.cli.train_models train-position QB
+    python -m src.cli.train_models train-position RB --start-date 2021-01-01 --backtest
+    python -m src.cli.train_models train-position WR --model-name WR_experiment_v1
+    """
+    try:
+        # Step 1: Parse and validate date parameters
+        # Convert string dates to datetime objects for model training
+        try:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        except ValueError as e:
+            typer.echo(f"❌ Invalid date format: {e}", err=True)
+            typer.echo("Please use YYYY-MM-DD format (e.g., 2020-09-01)", err=True)
+            raise typer.Exit(1) from e
+
+        # Validate date range makes sense
+        if start_dt >= end_dt:
+            typer.echo("❌ Start date must be before end date", err=True)
+            raise typer.Exit(1)
+
+        # Step 2: Create model configuration
+        # This object contains all training parameters and settings
         config = ModelConfig(
-            model_name=model_name or f"{position}_model",
-            position=position,
-            model_dir=Path("data/models"),
+            model_name=model_name or f"{position}_model",  # Default or custom name
+            position=position,  # Position being trained
+            model_dir=Path("data/models"),  # Where to save model files
         )
 
-        # Initialize trainer
+        # Step 3: Initialize trainer with database connection
         trainer = ModelTrainer()
 
+        # User feedback: Show what's happening
         typer.echo(f"🏈 Training {position} model from {start_date} to {end_date}")
+        typer.echo(f"📝 Model name: {config.model_name}")
 
-        # Train model
+        # Step 4: Execute main training pipeline
+        # This includes data preparation, training, and validation
         results = trainer.train_position_model(
             position=position,
             start_date=start_dt,
@@ -54,42 +141,106 @@ def train_position(
             save_model=save_model,
         )
 
-        # Display results
+        # Step 5: Display core training results
         test_metrics = results["test_metrics"]
         typer.echo("\n📊 Training Results:")
-        typer.echo(f"  Test MAE: {test_metrics.mae:.3f} points")
-        typer.echo(f"  Test RMSE: {test_metrics.rmse:.3f} points")
-        typer.echo(f"  Test R²: {test_metrics.r2:.3f}")
-        typer.echo(f"  Test MAPE: {test_metrics.mape:.1f}%")
 
-        # Run evaluation if requested
+        # Core performance metrics with explanations
+        typer.echo(f"  Test MAE: {test_metrics.mae:.3f} points (avg prediction error)")
+        typer.echo(f"  Test RMSE: {test_metrics.rmse:.3f} points (error magnitude)")
+        typer.echo(f"  Test R²: {test_metrics.r2:.3f} (variance explained, higher = better)")
+        typer.echo(f"  Test MAPE: {test_metrics.mape:.1f}% (percentage error)")
+
+        # Additional context for interpreting results
+        typer.echo("\n📈 Model Performance:")
+        if test_metrics.mae < 5.0:
+            typer.echo("  ✅ Excellent accuracy (MAE < 5.0)")
+        elif test_metrics.mae < 7.0:
+            typer.echo("  ✅ Good accuracy (MAE < 7.0)")
+        else:
+            typer.echo("  ⚠️  Consider improvements (MAE ≥ 7.0)")
+
+        if test_metrics.r2 > 0.3:
+            typer.echo("  ✅ Strong predictive power (R² > 0.3)")
+        elif test_metrics.r2 > 0.1:
+            typer.echo("  ✅ Moderate predictive power (R² > 0.1)")
+        else:
+            typer.echo("  ⚠️  Low predictive power (R² ≤ 0.1)")
+
+        # Step 6: Run comprehensive evaluation if requested
         if evaluate:
+            typer.echo("\n🔍 Running comprehensive evaluation...")
             evaluator = ModelEvaluator()
+
+            # Generate detailed performance report
             report = evaluator.generate_evaluation_report(results["model"], position, test_metrics)
-            typer.echo("\n📋 Evaluation Report:")
+            typer.echo("\n📋 Comprehensive Evaluation Report:")
             typer.echo(report)
 
-        # Run backtest if requested
+        # Step 7: Run backtesting analysis if requested
         if backtest:
             typer.echo("\n🔄 Running backtest analysis...")
+            typer.echo("   (Testing model on historical predictions vs actual results)")
+
             from src.ml.models.evaluation import BacktestConfiguration
 
+            # Configure backtesting parameters
             backtest_config = BacktestConfiguration(
                 start_date=start_dt,
                 end_date=end_dt,
+                save_detailed_results=True,  # Store detailed results for analysis
             )
 
-            backtest_results = evaluator.backtest_model(results["model"], position, backtest_config)
+            # Execute backtesting (requires historical prediction data)
+            try:
+                backtest_results = evaluator.backtest_model(
+                    results["model"], position, backtest_config
+                )
 
-            financial = backtest_results["financial_metrics"]
-            typer.echo(f"  Hit Rate: {financial.get('hit_rate', 0):.1f}%")
-            typer.echo(f"  Simulated ROI: {financial.get('simulated_roi', 0):.2f}")
+                # Display key business metrics
+                financial = backtest_results["financial_metrics"]
+                typer.echo("\n💰 Backtesting Results:")
+                typer.echo(f"  Hit Rate: {financial.get('hit_rate', 0):.1f}% (successful picks)")
+                typer.echo(
+                    f"  Simulated ROI: {financial.get('simulated_roi', 0):.2f} (return on investment)"
+                )
+                typer.echo(
+                    f"  Total Weeks: {financial.get('total_weeks_analyzed', 0)} weeks analyzed"
+                )
 
+            except Exception as backtest_error:
+                typer.echo(f"⚠️  Backtesting failed: {backtest_error}")
+                typer.echo("   This usually means no historical prediction data is available")
+
+        # Success message with next steps
         typer.echo("\n✅ Training completed successfully!")
 
+        if save_model:
+            typer.echo(f"💾 Model saved as: {config.model_name}")
+            typer.echo("   Use 'deploy-model' command to activate for predictions")
+
+        typer.echo("\n🎯 Next steps:")
+        typer.echo("   1. Review evaluation metrics above")
+        typer.echo("   2. Compare with previous model versions")
+        typer.echo("   3. Deploy if performance is satisfactory")
+        typer.echo("   4. Monitor performance in production")
+
+    except KeyboardInterrupt:
+        # Handle Ctrl+C gracefully
+        typer.echo("\n⚠️  Training interrupted by user", err=True)
+        raise typer.Exit(1) from None
     except Exception as e:
-        logger.exception("Training failed")
-        typer.echo(f"❌ Training failed: {e}", err=True)
+        # Log detailed error for debugging
+        logger.exception("Training failed with unexpected error")
+
+        # User-friendly error message
+        typer.echo(f"\n❌ Training failed: {e}", err=True)
+        typer.echo("\n🔧 Troubleshooting tips:")
+        typer.echo("   1. Check database connection and data availability")
+        typer.echo("   2. Verify date range contains sufficient training data")
+        typer.echo("   3. Ensure position is valid (QB, RB, WR, TE, DEF)")
+        typer.echo("   4. Check logs for detailed error information")
+
         raise typer.Exit(1) from e
 
 

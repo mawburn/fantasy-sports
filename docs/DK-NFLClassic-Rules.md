@@ -1,8 +1,6 @@
 # NFL Classic — DraftKings Rules & Settings
 
-In salary cap contests, participants will create a lineup by selecting players listed in the Player Pool.
-Contest results are determined by the total points accumulated by each individual lineup entry (scoring rules summarized below).
-Participation must follow the Terms of Use; violations may result in disqualification and, if applicable, prize forfeiture.
+In salary cap contests, participants will create a lineup by selecting players listed in the Player Pool. Contest results are determined by the total points accumulated by each individual lineup entry (scoring rules summarized below). Participation must follow the Terms of Use; violations may result in disqualification and, if applicable, prize forfeiture.
 
 ______________________________________________________________________
 
@@ -11,7 +9,7 @@ ______________________________________________________________________
 ### Offense
 
 | Event | Points |
-| ---------------------------------------- | --------------------: |
+| -- | -: |
 | Passing TD | +4 |
 | 25 Passing Yards | +1 (≈ +0.04 per yard) |
 | 300+ Yard Passing Game | +3 |
@@ -33,7 +31,7 @@ ______________________________________________________________________
 **Events**
 
 | Event | Points |
-| --------------------------------------- | -----: |
+| -- | -: |
 | Sack | +1 |
 | Interception | +2 |
 | Fumble Recovery | +2 |
@@ -48,7 +46,7 @@ ______________________________________________________________________
 **Points Allowed (DST)**
 
 | Opponent Points Allowed | Points |
-| ----------------------- | -----: |
+| -- | -: |
 | 0 | +10 |
 | 1–6 | +7 |
 | 7–13 | +4 |
@@ -75,7 +73,7 @@ ______________________________________________________________________
 Lineups consist of **9 players** and must include players from **at least 2 different NFL games**.
 
 | Roster Slot | Count |
-| --------------- | ----: |
+| -- | -: |
 | QB | 1 |
 | RB | 2 |
 | WR | 3 |

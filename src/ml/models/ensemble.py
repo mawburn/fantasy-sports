@@ -1,13 +1,45 @@
-"""Ensemble model for combining multiple base models."""
+"""Ensemble model for combining multiple base models to improve predictions.
 
-import logging
+Ensemble Methods in Machine Learning:
 
-import numpy as np
-from sklearn.linear_model import Ridge
-from sklearn.metrics import mean_absolute_error
+Ensemble methods combine multiple individual models (called "base learners" or "weak learners")
+to create a stronger, more robust prediction system. The key insight is that different models
+make different types of errors, and by combining them intelligently, we can:
+1. Reduce overfitting (variance reduction)
+2. Improve generalization to new data
+3. Increase prediction accuracy and reliability
+4. Provide better uncertainty estimates
 
-from .base import BaseModel, PredictionResult
+Types of Ensemble Methods:
+1. Bagging: Train models on different data samples (Random Forest)
+2. Boosting: Train models sequentially, focusing on previous errors (XGBoost)
+3. Stacking: Use a meta-model to learn how to combine base model predictions
+4. Voting/Averaging: Simple combination by voting or weighted averaging
 
+This Implementation:
+Combines stacking (meta-model) with weighted averaging for robust predictions.
+The ensemble learns optimal weights based on each model's validation performance
+and uses a Ridge regression meta-model to capture non-linear combinations.
+
+For Fantasy Sports:
+Different models excel at different aspects:
+- XGBoost: Captures feature interactions well
+- LightGBM: Handles categorical features effectively
+- Random Forest: Robust to outliers and noise
+- Neural Networks: Can learn complex patterns
+
+Combining them provides more reliable player projections.
+"""
+
+import logging  # For tracking ensemble training and prediction processes
+
+import numpy as np  # Numerical operations for combining predictions
+from sklearn.linear_model import Ridge  # Meta-model for stacking ensemble
+from sklearn.metrics import mean_absolute_error  # Evaluation metric
+
+from .base import BaseModel, PredictionResult  # Base model interface and result structure
+
+# Set up logging for ensemble operations
 logger = logging.getLogger(__name__)
 
 

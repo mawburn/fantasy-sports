@@ -1,6 +1,6 @@
 ---
 name: pytorch-specialist
-description: Python & PyTorch expert for NN, CNN, RNN, Transformers, optimizers, datasets, dataloaders, training loops, gradient/debug issues, over/underfitting, architecture, tensor ops, CPU optimization, eval, hyperparameter tuning. Triggers: implement, fix, debug, optimize, create.
+description: Python & PyTorch expert for NN, CNN, RNN, Transformers, optimizers, datasets, dataloaders, training loops, gradient/debug issues, over/underfitting, architecture, tensor ops, CPU optimization, eval, hyperparameter tuning. Triggers - implement, fix, debug, optimize, create.
 model: sonnet
 color: red
 ---

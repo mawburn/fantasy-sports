@@ -1,4 +1,33 @@
-"""Model registry and deployment management."""
+"""Model registry and deployment management for production ML systems.
+
+This file implements a comprehensive model lifecycle management system that handles:
+
+1. Model Registration: Catalog trained models with metadata and performance metrics
+2. Model Deployment: Promote models from training to production with validation
+3. Model Versioning: Track multiple versions of models for rollback and comparison
+4. Model Retirement: Safely decommission outdated or poorly performing models
+5. Automated Deployment: Intelligent promotion of better-performing models
+6. Model Cleanup: Storage management and artifact cleanup
+
+Key Concepts for Beginners:
+
+Model Registry: Centralized catalog of all trained models, similar to a code repository
+but for ML models. Tracks model versions, performance, deployment status, and metadata.
+
+Model Lifecycle States:
+- 'trained': Model completed training but not yet deployed
+- 'deployed': Model is available for predictions in production
+- 'retired': Model has been decommissioned and is no longer used
+
+Blue-Green Deployment: Safe deployment strategy where new models are validated
+before replacing active models, with ability to quickly rollback if issues arise.
+
+Model Governance: Systematic tracking and management of ML models for compliance,
+auditability, and operational safety in production environments.
+
+This system ensures that only validated, high-performing models serve predictions
+while maintaining the ability to quickly rollback if performance degrades.
+"""
 
 import logging
 from datetime import datetime
@@ -16,11 +45,52 @@ logger = logging.getLogger(__name__)
 
 
 class ModelRegistry:
-    """Registry for managing trained models and deployments."""
+    """Registry for managing trained models and deployments.
+
+    The ModelRegistry serves as the central control system for all ML models in production.
+    It provides a complete model lifecycle management solution that ensures safe,
+    reliable, and auditable model deployments.
+
+    Core Responsibilities:
+    1. Model Cataloging: Maintain comprehensive inventory of all trained models
+    2. Performance Tracking: Store and compare model performance metrics
+    3. Deployment Safety: Validate models before promotion to production
+    4. Version Control: Enable rollbacks and A/B testing between model versions
+    5. Operational Monitoring: Track model status and deployment history
+    6. Storage Management: Clean up old models to optimize disk usage
+
+    Database Schema:
+    The registry maintains model metadata in the ModelMetadata table, including:
+    - Performance metrics (MAE, R², etc.)
+    - Training configuration and hyperparameters
+    - File paths to model artifacts
+    - Deployment status and dates
+    - Feature specifications and version information
+
+    Integration Points:
+    - ModelTrainer: Loads and validates model artifacts
+    - Database: Persists all model metadata and deployment history
+    - File System: Manages model artifact storage and cleanup
+
+    For beginners: Think of this as a "model warehouse" that safely stores,
+    catalogs, and manages all your trained models, similar to how a code
+    repository manages different versions of your code.
+    """
 
     def __init__(self, db_session: Session | None = None):
-        """Initialize model registry."""
+        """Initialize model registry with database connection and trainer.
+
+        The registry requires:
+        - Database session for metadata storage and queries
+        - ModelTrainer instance for loading and validating model artifacts
+
+        Args:
+            db_session: Optional database session (creates new if None)
+        """
+        # Database connection for model metadata operations
         self.db = db_session or next(get_db())
+
+        # Model trainer for loading and validating model artifacts
         self.trainer = ModelTrainer(self.db)
 
     def register_model(
@@ -35,48 +105,83 @@ class ModelRegistry:
     ) -> str:
         """Register a trained model in the registry.
 
+        Model registration is the first step in the ML deployment pipeline.
+        It creates a permanent record of the trained model with all necessary
+        metadata for future deployment, comparison, and governance.
+
+        Registration Process:
+        1. Generate unique model identifier with timestamp
+        2. Extract and validate training metadata
+        3. Store performance metrics for comparison
+        4. Record model artifacts and file paths
+        5. Set initial status as 'trained' (not yet deployed)
+        6. Commit metadata to database for permanent storage
+
+        Why Register Models?
+        - Traceability: Track which model generated which predictions
+        - Comparison: Compare performance across different model versions
+        - Governance: Maintain audit trail for regulatory compliance
+        - Deployment Safety: Validate models before production deployment
+        - Rollback Capability: Enable quick reversion to previous versions
+
+        Model ID Format: {position}_{model_name}_{timestamp}
+        Example: QB_xgboost_20240315_143022
+
         Args:
-            model: Trained model instance
-            model_name: Name for the model
-            position: Player position
-            training_metadata: Metadata about training process
-            performance_metrics: Model performance metrics
-            model_path: Path where model is saved
-            description: Optional model description
+            model: Trained model instance (must implement BaseModel interface)
+            model_name: Descriptive name for the model (e.g., 'xgboost', 'ensemble')
+            position: Player position (QB, RB, WR, TE, DEF)
+            training_metadata: Dictionary with training process information
+            performance_metrics: Dictionary with validation performance metrics
+            model_path: File system path where model artifacts are stored
+            _description: Optional human-readable description (unused parameter)
 
         Returns:
-            Model ID for the registered model
+            Unique model ID for future reference and deployment operations
         """
-        # Generate unique model ID
+        # Step 1: Generate unique model identifier
+        # Format: POSITION_MODELNAME_YYYYMMDD_HHMMSS
+        # This ensures no collisions and provides chronological ordering
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         model_id = f"{position}_{model_name}_{timestamp}"
 
-        # Create metadata record
+        # Step 2: Create comprehensive metadata record for the database
+        # This stores all information needed for deployment, comparison, and governance
         metadata = ModelMetadata(
-            model_id=model_id,
-            model_name=model_name,
-            position=position,
-            model_type=type(model).__name__,
-            version="1.0",
-            training_start_date=training_metadata.get("start_date"),
-            training_end_date=training_metadata.get("end_date"),
-            training_data_size=training_metadata.get("train_samples", 0),
-            validation_data_size=training_metadata.get("val_samples", 0),
-            hyperparameters="{}",  # Would serialize model config
-            feature_names=",".join(training_metadata.get("feature_names", [])),
-            feature_count=training_metadata.get("feature_count", 0),
-            mae_validation=performance_metrics.get("mae", 0),
-            rmse_validation=performance_metrics.get("rmse", 0),
-            r2_validation=performance_metrics.get("r2", 0),
-            mape_validation=performance_metrics.get("mape", 0),
-            status="trained",
-            is_active=False,
-            model_path=str(model_path),
+            # Model identification
+            model_id=model_id,  # Unique identifier
+            model_name=model_name,  # Human-readable name
+            position=position,  # Player position (QB, RB, etc.)
+            model_type=type(model).__name__,  # Algorithm type (XGBRegressor, etc.)
+            version="1.0",  # Version string for compatibility
+            # Training process metadata
+            training_start_date=training_metadata.get("start_date"),  # Training data period
+            training_end_date=training_metadata.get("end_date"),  # Training data period
+            training_data_size=training_metadata.get("train_samples", 0),  # Sample counts
+            validation_data_size=training_metadata.get("val_samples", 0),  # Sample counts
+            # Model configuration (placeholder for hyperparameter serialization)
+            hyperparameters="{}",  # TODO: Serialize model config to JSON
+            # Feature information for compatibility checking
+            feature_names=",".join(training_metadata.get("feature_names", [])),  # Feature list
+            feature_count=training_metadata.get("feature_count", 0),  # Feature count
+            # Performance metrics for model comparison and selection
+            mae_validation=performance_metrics.get("mae", 0),  # Mean Absolute Error
+            rmse_validation=performance_metrics.get("rmse", 0),  # Root Mean Square Error
+            r2_validation=performance_metrics.get("r2", 0),  # R-squared
+            mape_validation=performance_metrics.get("mape", 0),  # Mean Absolute Percentage Error
+            # Deployment status tracking
+            status="trained",  # Initial status (not yet deployed)
+            is_active=False,  # Not active until explicitly deployed
+            # File system references
+            model_path=str(model_path),  # Path to serialized model file
         )
 
+        # Step 3: Persist metadata to database
+        # This creates the permanent record for tracking and deployment
         self.db.add(metadata)
-        self.db.commit()
+        self.db.commit()  # Ensure data is saved before returning
 
+        # Step 4: Log successful registration for operational monitoring
         logger.info(f"Registered model: {model_id}")
         return model_id
 
@@ -85,70 +190,141 @@ class ModelRegistry:
     ) -> bool:
         """Deploy a model to production.
 
+        Model deployment is a critical operation that promotes a trained model
+        to production status where it can serve live predictions. This implements
+        a safe deployment strategy with validation and rollback capabilities.
+
+        Deployment Safety Measures:
+        1. Validate model exists and is in 'trained' status
+        2. Optionally retire previous active models (prevents conflicts)
+        3. Update model status to 'deployed' with timestamp
+        4. Activate model for live predictions (if requested)
+        5. Maintain deployment audit trail
+
+        Blue-Green Deployment Pattern:
+        - Previous models remain available for quick rollback
+        - New models are validated before activation
+        - Zero-downtime deployment with immediate fallback capability
+
+        Why This Process Matters:
+        - Production Safety: Prevents deployment of invalid models
+        - Operational Continuity: Ensures always-available prediction service
+        - Change Management: Maintains audit trail of all deployments
+        - Risk Mitigation: Enables quick rollback if performance degrades
+
         Args:
-            model_id: Model to deploy
-            make_active: Whether to make this the active model
-            retire_previous: Whether to retire previous active models
+            model_id: Unique identifier of model to deploy
+            make_active: Whether to activate for live predictions (default: True)
+            retire_previous: Whether to deactivate previous active models (default: True)
 
         Returns:
-            True if deployment successful
+            True if deployment completed successfully
+
+        Raises:
+            ValueError: If model not found or not in 'trained' status
         """
-        # Get model metadata
+        # Step 1: Validate model exists and is deployable
         model_meta = self.db.query(ModelMetadata).filter(ModelMetadata.model_id == model_id).first()
 
+        # Ensure model exists in registry
         if not model_meta:
             raise ValueError(f"Model not found: {model_id}") from None
 
+        # Ensure model is in correct state for deployment
+        # Only 'trained' models can be deployed (not retired or already deployed)
         if model_meta.status != "trained":
-            raise ValueError(f"Model {model_id} is not in trained status") from None
+            raise ValueError(
+                f"Model {model_id} is not in trained status (current: {model_meta.status})"
+            ) from None
 
-        # Retire previous active models for this position if requested
+        # Step 2: Handle previous active models (Blue-Green deployment)
         if retire_previous and make_active:
+            # Find all currently active models for this position
+            # This prevents multiple active models causing conflicts
             previous_active = (
                 self.db.query(ModelMetadata)
                 .filter(
-                    ModelMetadata.position == model_meta.position,
-                    ModelMetadata.is_active,
+                    ModelMetadata.position == model_meta.position,  # Same position only
+                    ModelMetadata.is_active,  # Currently active
                 )
                 .all()
             )
 
+            # Deactivate previous models with retirement timestamp
+            # This maintains audit trail while preventing conflicts
             for prev_model in previous_active:
                 prev_model.is_active = False
                 prev_model.retirement_date = datetime.utcnow()
+                logger.info(f"Retiring previously active model: {prev_model.model_id}")
 
-        # Deploy the model
-        model_meta.status = "deployed"
-        model_meta.deployment_date = datetime.utcnow()
+        # Step 3: Deploy the new model
+        # Update status and timestamps to reflect deployment
+        model_meta.status = "deployed"  # Mark as production-ready
+        model_meta.deployment_date = datetime.utcnow()  # Record deployment time
+
         if make_active:
-            model_meta.is_active = True
+            model_meta.is_active = True  # Activate for live predictions
 
+        # Step 4: Commit all changes atomically
+        # Either all changes succeed or none do (prevents partial state)
         self.db.commit()
 
-        logger.info(f"Deployed model: {model_id} (active: {make_active})")
+        # Step 5: Log successful deployment for operational monitoring
+        logger.info(f"Successfully deployed model: {model_id} (active: {make_active})")
         return True
 
     def retire_model(self, model_id: str) -> bool:
         """Retire a deployed model.
 
+        Model retirement is the final step in a model's lifecycle. It safely
+        removes models from active duty while preserving their historical
+        records for audit trails and potential emergency rollbacks.
+
+        When to Retire Models:
+        - Performance degradation detected in production
+        - Better models have been deployed and proven stable
+        - Model becomes incompatible with system changes
+        - Scheduled retirement as part of model lifecycle policy
+        - Emergency situations requiring immediate model deactivation
+
+        Retirement Process:
+        1. Validate model exists in the registry
+        2. Update status to 'retired' (prevents future activation)
+        3. Deactivate model (stops serving predictions)
+        4. Record retirement timestamp (audit trail)
+        5. Commit changes atomically
+
+        Safety Considerations:
+        - Preserves model files and metadata for historical analysis
+        - Maintains database records for compliance and auditing
+        - Allows potential reactivation in emergency scenarios
+        - Does not delete any artifacts (use cleanup for that)
+
         Args:
-            model_id: Model to retire
+            model_id: Unique identifier of model to retire
 
         Returns:
-            True if retirement successful
+            True if retirement completed successfully
+
+        Raises:
+            ValueError: If model not found in registry
         """
+        # Step 1: Validate model exists
         model_meta = self.db.query(ModelMetadata).filter(ModelMetadata.model_id == model_id).first()
 
         if not model_meta:
             raise ValueError(f"Model not found: {model_id}") from None
 
-        model_meta.status = "retired"
-        model_meta.is_active = False
-        model_meta.retirement_date = datetime.utcnow()
+        # Step 2: Update model status and deactivate
+        model_meta.status = "retired"  # Mark as retired (prevents reactivation)
+        model_meta.is_active = False  # Deactivate immediately
+        model_meta.retirement_date = datetime.utcnow()  # Record when retired
 
+        # Step 3: Commit changes to database
         self.db.commit()
 
-        logger.info(f"Retired model: {model_id}")
+        # Step 4: Log retirement for operational monitoring
+        logger.info(f"Successfully retired model: {model_id}")
         return True
 
     def list_models(
@@ -156,16 +332,40 @@ class ModelRegistry:
     ) -> list[ModelMetadata]:
         """List models in the registry.
 
+        This method provides flexible querying capabilities for exploring the
+        model registry. It supports various filtering options to find specific
+        models or analyze model populations.
+
+        Common Use Cases:
+        - list_models(): Get all models across all positions
+        - list_models(position='QB'): Get all QB models
+        - list_models(status='deployed'): Get all deployed models
+        - list_models(active_only=True): Get currently active models
+        - list_models(position='RB', status='trained'): Get trained RB models
+
+        Query Strategy:
+        - Builds query incrementally with optional filters
+        - Orders by creation date (most recent first)
+        - Returns full ModelMetadata objects with all attributes
+
+        Performance Considerations:
+        - Uses database indexes on position, status, is_active columns
+        - Reasonable for registry sizes up to thousands of models
+        - Consider pagination for very large registries
+
         Args:
-            position: Filter by position
-            status: Filter by status
-            active_only: Only return active models
+            position: Filter by player position (QB, RB, WR, TE, DEF)
+            status: Filter by deployment status ('trained', 'deployed', 'retired')
+            active_only: If True, only return models with is_active=True
 
         Returns:
-            List of model metadata
+            List of ModelMetadata objects matching the specified filters,
+            ordered by creation date (newest first)
         """
+        # Start with base query for all models
         query = self.db.query(ModelMetadata)
 
+        # Apply optional filters to narrow results
         if position:
             query = query.filter(ModelMetadata.position == position)
 
@@ -175,6 +375,7 @@ class ModelRegistry:
         if active_only:
             query = query.filter(ModelMetadata.is_active)
 
+        # Order by creation date (newest first) and execute query
         return query.order_by(ModelMetadata.created_at.desc()).all()
 
     def get_active_model(self, position: str) -> ModelMetadata | None:

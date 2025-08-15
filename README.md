@@ -1,7 +1,6 @@
 # NFL DFS System
 
-A comprehensive NFL Daily Fantasy Sports (DFS) prediction and optimization system focused on
-DraftKings contests. Built with Python, PyTorch, and modern ML practices.
+A comprehensive NFL Daily Fantasy Sports (DFS) prediction and optimization system focused on DraftKings contests. Built with Python, PyTorch, and modern ML practices.
 
 ## Features
 

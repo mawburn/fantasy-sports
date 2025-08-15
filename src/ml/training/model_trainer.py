@@ -1,4 +1,31 @@
-"""Model training coordinator for position-specific models."""
+"""Model training coordinator for position-specific models.
+
+This file orchestrates the entire ML model training pipeline:
+
+1. Model Selection: Choose appropriate model class for each position
+2. Data Preparation: Coordinate with DataPreparator for clean datasets
+3. Training Execution: Run training with proper validation and early stopping
+4. Model Evaluation: Comprehensive testing on held-out data
+5. Model Persistence: Save trained models and metadata to database
+6. Ensemble Training: Coordinate multiple models for improved accuracy
+
+Key Concepts for Beginners:
+
+Training Pipeline: The systematic process of turning raw data into a
+deployed ML model. Includes data prep, model training, evaluation, and deployment.
+
+Model Registry: Centralized tracking of model versions, performance metrics,
+and metadata. Critical for production ML systems.
+
+Early Stopping: Technique to prevent overfitting by stopping training when
+validation performance stops improving.
+
+Ensemble Methods: Combining multiple models for better performance than
+any individual model. Common in competitive ML.
+
+Hyperparameter Tuning: Finding optimal model settings (learning rate,
+max depth, etc.) through systematic search or expert knowledge.
+"""
 
 import json
 import logging
@@ -22,27 +49,57 @@ logger = logging.getLogger(__name__)
 
 
 class ModelTrainer:
-    """Coordinate training of position-specific models."""
+    """Coordinate training of position-specific models.
 
+    This class serves as the central coordinator for all model training activities.
+    It handles the complexity of training different types of models for different
+    positions while maintaining consistent interfaces and quality standards.
+
+    Architecture Pattern: Strategy + Factory
+    - Factory: MODEL_CLASSES maps position strings to model classes
+    - Strategy: Each position uses different algorithms/hyperparameters
+
+    Responsibilities:
+    - Instantiate appropriate model classes for each position
+    - Coordinate data preparation and model training
+    - Manage model evaluation and performance tracking
+    - Handle model persistence and metadata recording
+    - Support both individual and ensemble model training
+
+    The class maintains database connections for loading training data
+    and storing model artifacts/metadata.
+    """
+
+    # Factory pattern: Map position strings to model classes
+    # ClassVar indicates this is a class-level constant shared by all instances
     MODEL_CLASSES: ClassVar[dict[str, type]] = {
-        "QB": QBModel,
-        "RB": RBModel,
-        "WR": WRModel,
-        "TE": TEModel,
-        "DEF": DEFModel,
+        "QB": QBModel,  # Quarterback model using XGBoost
+        "RB": RBModel,  # Running back model using LightGBM with clustering
+        "WR": WRModel,  # Wide receiver model using XGBoost
+        "TE": TEModel,  # Tight end model using LightGBM
+        "DEF": DEFModel,  # Defense/Special teams model using Random Forest
     }
 
     def __init__(self, db_session: Session | None = None, model_dir: Path | None = None):
-        """Initialize model trainer.
+        """Initialize model trainer with database connection and file system setup.
+
+        The trainer needs:
+        - Database session for loading data and storing model metadata
+        - File system directory for saving trained model artifacts
+        - Data preparator for consistent data preprocessing pipeline
 
         Args:
-            db_session: Optional database session
-            model_dir: Directory to save trained models
+            db_session: Optional database session (creates new if None)
+            model_dir: Directory to save trained models (defaults to "models/")
         """
+        # Database connection for data loading and metadata storage
         self.db = db_session or next(get_db())
-        self.model_dir = model_dir or Path("models")
-        self.model_dir.mkdir(parents=True, exist_ok=True)
 
+        # File system setup for model artifacts
+        self.model_dir = model_dir or Path("models")
+        self.model_dir.mkdir(parents=True, exist_ok=True)  # Create directory if it doesn't exist
+
+        # Data preparation pipeline (handles feature extraction, cleaning, scaling)
         self.data_preparator = DataPreparator(self.db)
 
     def train_position_model(
@@ -55,70 +112,106 @@ class ModelTrainer:
     ) -> dict:
         """Train a model for a specific position.
 
+        This is the main entry point for training individual position models.
+        It coordinates the entire training pipeline from data extraction to
+        model deployment.
+
+        Training Pipeline:
+        1. Validate position and create default config if needed
+        2. Prepare training data (extract, clean, split)
+        3. Instantiate appropriate model class for position
+        4. Train model with validation and early stopping
+        5. Evaluate on held-out test set
+        6. Save model artifacts and metadata to database
+        7. Return comprehensive training results
+
+        Error Handling:
+        - Validates position against supported types
+        - Handles data preparation failures gracefully
+        - Logs comprehensive training progress and results
+
         Args:
             position: Player position (QB, RB, WR, TE, DEF)
-            start_date: Training data start date
-            end_date: Training data end date
-            config: Optional model configuration
-            save_model: Whether to save the trained model
+            start_date: Training data start date (earliest games to include)
+            end_date: Training data end date (latest games to include)
+            config: Optional model configuration (uses defaults if None)
+            save_model: Whether to save the trained model (True for production)
 
         Returns:
-            Dictionary with training results and model metadata
+            Dictionary containing:
+            - model: Trained model instance
+            - training_result: Metrics from training process
+            - test_metrics: Performance on held-out test set
+            - data_metadata: Information about training dataset
+            - model_metadata: Database record for model tracking
         """
+        # Validate that we support this position
         if position not in self.MODEL_CLASSES:
-            raise ValueError(f"Unsupported position: {position}") from None
+            raise ValueError(
+                f"Unsupported position: {position}. Supported: {list(self.MODEL_CLASSES.keys())}"
+            ) from None
 
-        logger.info(f"Starting training for {position} model")
+        logger.info(f"Starting training for {position} model from {start_date} to {end_date}")
 
-        # Create default config if none provided
+        # Create default configuration if none provided
+        # This ensures consistent defaults while allowing customization
         if config is None:
             config = ModelConfig(
-                model_name=f"{position}_model", position=position, model_dir=self.model_dir
+                model_name=f"{position}_model",  # Descriptive model name
+                position=position,  # Position identifier
+                model_dir=self.model_dir,  # Where to save model files
             )
 
-        # Prepare training data
+        # Step 1: Prepare training data using consistent pipeline
+        # This handles all data preprocessing: extraction, cleaning, splitting, scaling
         data = self.data_preparator.prepare_training_data(
             position=position, start_date=start_date, end_date=end_date
         )
 
-        # Initialize model
+        # Step 2: Initialize position-appropriate model
+        # Use factory pattern to get the right model class for this position
         model_class = self.MODEL_CLASSES[position]
         model = model_class(config)
 
-        # Train model
+        # Step 3: Train model with validation monitoring
+        # Each model implements position-specific training strategies
         training_result = model.train(
-            X_train=data["X_train"],
-            y_train=data["y_train"],
-            X_val=data["X_val"],
-            y_val=data["y_val"],
+            X_train=data["X_train"],  # Training features
+            y_train=data["y_train"],  # Training targets (fantasy points)
+            X_val=data["X_val"],  # Validation features (for monitoring)
+            y_val=data["y_val"],  # Validation targets (for early stopping)
         )
 
-        # Evaluate on test set
+        # Step 4: Evaluate on held-out test set
+        # This gives unbiased estimate of real-world performance
         test_metrics = model.evaluate(data["X_test"], data["y_test"])
 
-        # Save model and metadata
+        # Step 5: Save model artifacts and metadata (if requested)
         model_metadata = None
         if save_model:
+            # Save both the model files and database metadata for tracking
             model_metadata = self._save_model_artifacts(
-                model=model,
-                training_result=training_result,
-                test_metrics=test_metrics,
-                data_metadata=data["metadata"],
-                preprocessor=data.get("scaler"),
+                model=model,  # Trained model instance
+                training_result=training_result,  # Training process metrics
+                test_metrics=test_metrics,  # Final performance metrics
+                data_metadata=data["metadata"],  # Dataset information
+                preprocessor=data.get("scaler"),  # Data preprocessing pipeline
             )
 
+        # Step 6: Package comprehensive results for return
         results = {
-            "model": model,
-            "training_result": training_result,
-            "test_metrics": test_metrics,
-            "data_metadata": data["metadata"],
-            "model_metadata": model_metadata,
+            "model": model,  # Trained model ready for predictions
+            "training_result": training_result,  # Training process details
+            "test_metrics": test_metrics,  # Performance on unseen data
+            "data_metadata": data["metadata"],  # Dataset characteristics
+            "model_metadata": model_metadata,  # Database record (if saved)
         }
 
-        logger.info(f"{position} model training completed:")
-        logger.info(f"  Test MAE: {test_metrics.mae:.3f}")
-        logger.info(f"  Test R²: {test_metrics.r2:.3f}")
-        logger.info(f"  Test MAPE: {test_metrics.mape:.1f}%")
+        # Log training completion with key performance metrics
+        logger.info(f"{position} model training completed successfully:")
+        logger.info(f"  Test MAE: {test_metrics.mae:.3f} points")  # Average error
+        logger.info(f"  Test R²: {test_metrics.r2:.3f}")  # Variance explained
+        logger.info(f"  Test MAPE: {test_metrics.mape:.1f}%")  # Percentage error
 
         return results
 
@@ -132,38 +225,64 @@ class ModelTrainer:
     ) -> dict:
         """Train an ensemble model for a position.
 
+        Ensemble Learning: Combine multiple models to achieve better performance
+        than any individual model. Common ensemble strategies:
+        - Bagging: Train models on different data subsets (Random Forest)
+        - Boosting: Train models sequentially to correct errors (XGBoost)
+        - Voting: Combine predictions from diverse models (this implementation)
+
+        Why Ensembles Work:
+        - Individual models have different biases and blind spots
+        - Combining diverse models reduces overall error
+        - Robust to outliers and data quality issues
+        - Often used in competitions and production systems
+
+        Ensemble Training Process:
+        1. Train multiple base models with different configurations
+        2. Combine their predictions using weighted averaging
+        3. Train meta-model to learn optimal combination weights
+        4. Evaluate ensemble vs best individual model
+
+        Trade-offs:
+        - Better accuracy vs increased complexity
+        - Slower inference vs more robust predictions
+        - Harder to interpret vs better performance
+
         Args:
-            position: Player position
-            model_configs: List of configurations for base models
+            position: Player position (QB, RB, WR, TE, DEF)
+            model_configs: List of configurations for base models (diversity is key)
             start_date: Training data start date
             end_date: Training data end date
-            save_model: Whether to save the ensemble
+            save_model: Whether to save the ensemble (recommended for production)
 
         Returns:
-            Dictionary with ensemble results
+            Dictionary with ensemble training results and performance comparison
         """
         logger.info(f"Training ensemble model for {position} with {len(model_configs)} base models")
 
-        # Prepare data once for all models
+        # Prepare data once and share across all base models (efficiency)
+        # This ensures all models train on identical data for fair comparison
         data = self.data_preparator.prepare_training_data(
             position=position, start_date=start_date, end_date=end_date
         )
 
-        # Train base models
+        # Initialize ensemble and train base models
         ensemble = EnsembleModel(position)
-        base_models = []
+        base_models = []  # Track individual model performance for analysis
 
+        # Train each base model with different configuration
         for i, config in enumerate(model_configs):
             logger.info(f"Training base model {i + 1}/{len(model_configs)}")
 
-            # Update config for this specific model
+            # Customize config for this specific base model
             config.model_name = f"{position}_base_{i}"
-            config.save_model = False  # Don't save individual models
+            config.save_model = False  # Don't save individual models (only ensemble)
 
-            # Train model
+            # Instantiate and train base model
             model_class = self.MODEL_CLASSES[position]
             model = model_class(config)
 
+            # Train on shared dataset
             training_result = model.train(
                 X_train=data["X_train"],
                 y_train=data["y_train"],
@@ -171,16 +290,17 @@ class ModelTrainer:
                 y_val=data["y_val"],
             )
 
-            # Add to ensemble
+            # Add trained model to ensemble
             ensemble.add_model(model, name=f"{config.model_name}")
-            base_models.append((model, training_result))
+            base_models.append((model, training_result))  # Track for analysis
 
-        # Train ensemble
+        # Train the meta-learner (ensemble combination weights)
+        # This learns how to optimally combine the base model predictions
         ensemble_metrics = ensemble.train_ensemble(
-            X_train=data["X_train"],
-            y_train=data["y_train"],
-            X_val=data["X_val"],
-            y_val=data["y_val"],
+            X_train=data["X_train"],  # Same training data
+            y_train=data["y_train"],  # Same training targets
+            X_val=data["X_val"],  # Same validation data
+            y_val=data["y_val"],  # Same validation targets
         )
 
         # Evaluate ensemble on test set
@@ -211,11 +331,20 @@ class ModelTrainer:
             "ensemble_metadata": ensemble_metadata,
         }
 
+        # Log ensemble performance vs individual models
         logger.info("Ensemble training completed:")
-        logger.info(f"  Test MAE: {test_mae:.3f}")
-        logger.info(f"  Test R²: {test_r2:.3f}")
-        logger.info(f"  Best individual: {ensemble_metrics['best_individual_mae']:.3f}")
-        logger.info(f"  Improvement: {ensemble_metrics['ensemble_improvement']:.3f}")
+        logger.info(f"  Ensemble Test MAE: {test_mae:.3f} points")
+        logger.info(f"  Ensemble Test R²: {test_r2:.3f}")
+        logger.info(f"  Best Individual MAE: {ensemble_metrics['best_individual_mae']:.3f} points")
+        logger.info(
+            f"  Ensemble Improvement: {ensemble_metrics['ensemble_improvement']:.3f} points"
+        )
+
+        # Performance analysis
+        if ensemble_metrics["ensemble_improvement"] > 0:
+            logger.info("✅ Ensemble outperformed best individual model")
+        else:
+            logger.warning("⚠️ Ensemble did not improve over best individual model")
 
         return results
 
@@ -267,29 +396,55 @@ class ModelTrainer:
     ) -> ModelMetadata:
         """Save model artifacts and metadata to database.
 
+        Model persistence is critical for production ML systems:
+
+        Artifacts Saved:
+        - Model file: Serialized model object (pickle format)
+        - Preprocessor: Data scaling/transformation pipeline
+        - Metadata: Training metrics, data info, hyperparameters
+
+        Why Save Metadata?
+        - Track model performance over time
+        - Enable model comparison and selection
+        - Debug production issues
+        - Comply with ML governance requirements
+        - Enable model rollback if needed
+
+        File Naming Convention:
+        {position}_{model_name}_{timestamp}.pkl
+        Example: QB_model_20240315_143022.pkl
+
+        Database Record:
+        - Links to file paths for artifacts
+        - Stores performance metrics for quick lookup
+        - Tracks training configuration for reproducibility
+
         Args:
-            model: Trained model
-            training_result: Training results
-            test_metrics: Test evaluation metrics
-            data_metadata: Training data metadata
-            preprocessor: Optional data preprocessor
+            model: Trained model instance
+            training_result: Training process results and metrics
+            test_metrics: Performance on held-out test set
+            data_metadata: Information about training dataset
+            preprocessor: Optional data preprocessing pipeline
 
         Returns:
-            Model metadata record
+            ModelMetadata: Database record for tracking and retrieval
         """
-        # Generate unique model ID
+        # Generate unique model identifier with timestamp
+        # Format: POSITION_MODELNAME_YYYYMMDD_HHMMSS
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         model_id = f"{model.config.position}_{model.config.model_name}_{timestamp}"
 
-        # Save model file
+        # Save model artifact to disk
         model_path = self.model_dir / f"{model_id}.pkl"
         model.save_model(model_path)
+        logger.info(f"Saved model artifact: {model_path}")
 
-        # Save preprocessor if provided
+        # Save data preprocessor if provided (critical for consistent inference)
         preprocessor_path = None
         if preprocessor is not None:
             preprocessor_path = self.model_dir / f"{model_id}_preprocessor.pkl"
             joblib.dump(preprocessor, preprocessor_path)
+            logger.info(f"Saved preprocessor: {preprocessor_path}")
 
         # Create database record
         metadata = ModelMetadata(

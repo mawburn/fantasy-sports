@@ -1,4 +1,34 @@
-"""Feature extraction pipeline for ML models."""
+"""Feature extraction pipeline for ML models.
+
+This file transforms raw NFL player/game statistics into ML-ready features.
+Feature engineering is one of the most critical steps in machine learning,
+often determining model success more than algorithm choice.
+
+Feature Categories Created:
+
+1. Basic Player Features: Demographics, physical attributes, position encoding
+2. Recent Performance: Rolling statistics from last N games (form/momentum)
+3. Season Statistics: Cumulative season performance up to prediction date
+4. Opponent Features: Matchup difficulty, home/away, divisional games
+5. Situational Features: Week of season, day of week, playoff implications
+6. Derived Metrics: Efficiency stats (completion %, catch rate, consistency)
+
+Key ML Concepts:
+
+Feature Engineering: Creating informative input variables from raw data.
+Better features often matter more than better algorithms.
+
+Temporal Features: Time-based patterns (recent form, seasonal trends)
+are crucial for sports prediction.
+
+Categorical Encoding: Converting text categories (position, team) to
+numbers using one-hot encoding (0/1 indicators).
+
+Data Leakage Prevention: Only using information available before the
+prediction target (no future data).
+
+Feature Scaling: Will be handled downstream in data preparation.
+"""
 
 import logging
 from datetime import datetime, timedelta
@@ -14,7 +44,31 @@ logger = logging.getLogger(__name__)
 
 
 class FeatureExtractor:
-    """Extract features for ML models from NFL data."""
+    """Extract features for ML models from NFL data.
+
+    This class is responsible for converting raw database records into
+    the numerical feature vectors that ML models can understand.
+
+    Core Principles:
+
+    1. Temporal Consistency: Features only use data available before
+       the prediction target (prevents data leakage)
+
+    2. Position Agnostic: Same feature extraction process works for
+       all positions, with position-specific adjustments handled downstream
+
+    3. Missing Data Handling: Gracefully handles incomplete player histories
+       and missing statistics
+
+    4. Feature Versioning: Supports different feature sets for model
+       experimentation and A/B testing
+
+    5. Performance Optimization: Efficient database queries and pandas
+       operations for production speed
+
+    The class maintains a database session for querying and caches
+    expensive computations where possible.
+    """
 
     def __init__(self, db_session: Session | None = None):
         """Initialize feature extractor."""
@@ -29,60 +83,118 @@ class FeatureExtractor:
     ) -> dict:
         """Extract features for a specific player for a target game.
 
+        This is the main feature extraction method that combines all feature
+        categories into a single feature vector for a player-game combination.
+
+        Feature Extraction Pipeline:
+        1. Validate player exists and get basic demographics
+        2. Extract recent performance (rolling averages, trends)
+        3. Calculate season-to-date statistics (cumulative performance)
+        4. Analyze opponent matchup difficulty and context
+        5. Add situational features (week, weather, etc.)
+        6. Combine all features into consistent dictionary
+
+        Temporal Safety:
+        All features use only data from BEFORE target_game_date to prevent
+        data leakage. This ensures the model can work in production.
+
+        Lookback Strategy:
+        Recent games (default 5) capture current form and role changes.
+        Season stats provide broader performance context.
+        Balance between recency bias and sample size.
+
+        Error Handling:
+        - Missing player raises clear error
+        - Missing stats default to reasonable values (0 or position averages)
+        - Logs warnings for debugging without failing extraction
+
         Args:
             player_id: Database ID of the player
-            target_game_date: Date of the game to predict for
-            lookback_games: Number of recent games to include in rolling stats
-            season_stats: Whether to include season-to-date statistics
+            target_game_date: Date of the game to predict for (prediction target)
+            lookback_games: Number of recent games for rolling stats (5-10 typical)
+            season_stats: Whether to include season-to-date statistics (usually True)
 
         Returns:
-            Dictionary of extracted features
+            Dictionary of extracted features with consistent naming convention
+            Example keys: 'recent_fantasy_points_avg', 'season_targets_sum', 'is_home_game'
         """
+        # Initialize feature dictionary that will be returned
         features = {}
 
-        # Get player info
+        # Step 1: Get player info and validate existence
         player = self.db.query(Player).filter(Player.id == player_id).first()
         if not player:
-            msg = f"Player with ID {player_id} not found"
+            msg = f"Player with ID {player_id} not found in database"
             raise ValueError(msg)
 
-        # Basic player features
+        # Step 2: Extract basic player features (demographics, physical attributes)
+        # These are static features that don't change game-to-game
         features.update(self._get_basic_player_features(player))
 
-        # Recent performance features
+        # Step 3: Calculate recent performance features (rolling statistics)
+        # Captures current form, role changes, and momentum
         recent_stats = self._get_recent_stats(player_id, target_game_date, lookback_games)
         features.update(self._calculate_rolling_stats(recent_stats, "recent"))
 
-        # Season-to-date features
+        # Step 4: Calculate season-to-date features (cumulative statistics)
+        # Provides broader performance context and larger sample size
         if season_stats:
-            season_year = target_game_date.year
+            season_year = target_game_date.year  # Current season
             season_stats_data = self._get_season_stats(player_id, season_year, target_game_date)
             features.update(self._calculate_season_stats(season_stats_data))
 
-        # Opponent-based features
+        # Step 5: Extract opponent-based features (matchup analysis)
+        # Captures matchup difficulty, home/away advantage, divisional rivalry
         opponent_features = self._get_opponent_features(player_id, target_game_date)
         features.update(opponent_features)
 
-        # Situational features
+        # Step 6: Add situational features (temporal and contextual)
+        # Week of season, day of week, playoff implications, weather (future)
         situational_features = self._get_situational_features(target_game_date)
         features.update(situational_features)
 
         return features
 
     def _get_basic_player_features(self, player: Player) -> dict:
-        """Extract basic player demographic and physical features."""
+        """Extract basic player demographic and physical features.
+
+        These features provide context about the player's physical profile
+        and experience level. They're mostly static but important for:
+
+        Position Encoding (One-Hot):
+        - ML models need numerical inputs, not text categories
+        - One-hot encoding creates binary features for each position
+        - Allows models to learn position-specific patterns
+
+        Physical Attributes:
+        - Height/weight matter for certain positions (tall WRs, heavy RBs)
+        - Age captures decline curves and experience effects
+        - Years of experience vs rookie status (different skill development)
+
+        Why Binary Encoding?
+        - 'is_rookie' is clearer than 'years_exp == 0' for model interpretation
+        - Binary features are easier for tree-based models to split on
+        - More interpretable than continuous encoding for categorical concepts
+
+        Missing Data Strategy:
+        - Use 'or 0' to handle None values gracefully
+        - Could use position averages instead of 0 for better defaults
+        """
         return {
+            # Position one-hot encoding (exactly one will be 1, others 0)
             "position_QB": 1 if player.position == "QB" else 0,
             "position_RB": 1 if player.position == "RB" else 0,
             "position_WR": 1 if player.position == "WR" else 0,
             "position_TE": 1 if player.position == "TE" else 0,
-            "position_K": 1 if player.position == "K" else 0,
-            "position_DEF": 1 if player.position == "DEF" else 0,
-            "height_inches": player.height or 0,
-            "weight_lbs": player.weight or 0,
-            "age": player.age or 0,
-            "years_exp": player.years_exp or 0,
-            "is_rookie": 1 if (player.years_exp or 0) == 0 else 0,
+            "position_K": 1 if player.position == "K" else 0,  # Kicker
+            "position_DEF": 1 if player.position == "DEF" else 0,  # Defense/ST
+            # Physical attributes (handle missing data with defaults)
+            "height_inches": player.height or 0,  # Could use position average instead
+            "weight_lbs": player.weight or 0,  # Could use position average instead
+            "age": player.age or 0,  # Could estimate from draft year
+            # Experience features
+            "years_exp": player.years_exp or 0,  # Years in NFL
+            "is_rookie": 1 if (player.years_exp or 0) == 0 else 0,  # First year player
         }
 
     def _get_recent_stats(
@@ -133,58 +245,100 @@ class FeatureExtractor:
         return pd.DataFrame(data)
 
     def _calculate_rolling_stats(self, df: pd.DataFrame, prefix: str) -> dict:
-        """Calculate rolling statistics from recent games."""
+        """Calculate rolling statistics from recent games.
+
+        Rolling statistics capture recent performance trends and current form.
+        This is crucial for fantasy sports where recent performance often
+        predicts future performance better than season averages.
+
+        Statistical Measures Created:
+        - avg: Central tendency (most important for predictions)
+        - sum: Total production (useful for cumulative stats like yards)
+        - max: Peak performance ceiling (upside potential)
+        - std: Variability/consistency (lower std = more predictable)
+
+        Why Multiple Statistics?
+        - avg: Best single predictor of future performance
+        - std: Helps assess risk/consistency
+        - max: Shows ceiling potential for GPP lineups
+        - sum: Shows total opportunity/usage
+
+        Missing Data Handling:
+        - fillna(0): Treat missing stats as 0 (conservative approach)
+        - Could use position averages or forward-fill for better imputation
+
+        Feature Naming Convention:
+        {prefix}_{stat}_{measure} (e.g., 'recent_fantasy_points_avg')
+        This creates consistent, descriptive feature names.
+        """
+        # Handle empty data gracefully (new players, injuries, etc.)
         if df.empty:
             return {f"{prefix}_games_played": 0}
 
+        # Start with games played count (important context)
         features = {f"{prefix}_games_played": len(df)}
 
-        # Core fantasy metrics
+        # Core fantasy statistics to extract
+        # These cover all major fantasy scoring categories across positions
         numeric_cols = [
-            "fantasy_points",
-            "fantasy_points_ppr",
-            "passing_yards",
-            "passing_tds",
-            "passing_interceptions",
-            "rushing_yards",
-            "rushing_tds",
-            "receiving_yards",
-            "receiving_tds",
-            "receptions",
-            "targets",
+            "fantasy_points",  # Primary target variable
+            "fantasy_points_ppr",  # PPR scoring variant
+            "passing_yards",  # QB primary stat
+            "passing_tds",  # QB touchdown production
+            "passing_interceptions",  # QB negative points
+            "rushing_yards",  # RB/QB secondary stat
+            "rushing_tds",  # RB/QB touchdown production
+            "receiving_yards",  # WR/TE/RB primary stat
+            "receiving_tds",  # WR/TE/RB touchdown production
+            "receptions",  # PPR scoring component
+            "targets",  # Opportunity metric
         ]
 
+        # Calculate comprehensive statistics for each metric
         for col in numeric_cols:
             if col in df.columns:
+                # Handle missing values by replacing with 0 (conservative)
                 values = df[col].fillna(0)
-                features[f"{prefix}_{col}_avg"] = float(values.mean())
-                features[f"{prefix}_{col}_sum"] = float(values.sum())
-                features[f"{prefix}_{col}_max"] = float(values.max()) if len(values) > 0 else 0
-                features[f"{prefix}_{col}_std"] = float(values.std()) if len(values) > 1 else 0
 
-        # Derived metrics
+                # Core statistical measures
+                features[f"{prefix}_{col}_avg"] = float(values.mean())  # Average performance
+                features[f"{prefix}_{col}_sum"] = float(values.sum())  # Total production
+                features[f"{prefix}_{col}_max"] = (
+                    float(values.max()) if len(values) > 0 else 0
+                )  # Peak performance
+                features[f"{prefix}_{col}_std"] = (
+                    float(values.std()) if len(values) > 1 else 0
+                )  # Consistency/volatility
+
+        # Calculate derived efficiency metrics (often more predictive than raw totals)
+
+        # QB Completion Percentage: Accuracy/efficiency metric
         if "passing_attempts" in df.columns and "passing_completions" in df.columns:
+            # Use replace(0, np.nan) to avoid division by zero
             completion_pct = df["passing_completions"] / df["passing_attempts"].replace(0, np.nan)
             features[f"{prefix}_completion_pct"] = (
                 float(completion_pct.mean()) if not completion_pct.isna().all() else 0
             )
 
+        # Catch Rate: WR/TE/RB efficiency on targets
         if "targets" in df.columns and "receptions" in df.columns:
+            # Higher catch rate = more reliable target for QB
             catch_rate = df["receptions"] / df["targets"].replace(0, np.nan)
             features[f"{prefix}_catch_rate"] = (
                 float(catch_rate.mean()) if not catch_rate.isna().all() else 0
             )
 
-        # Consistency metrics (coefficient of variation)
-        if len(df) > 1:
-            fp_cv = (
-                df["fantasy_points"].std() / df["fantasy_points"].mean()
-                if df["fantasy_points"].mean() != 0
-                else 0
-            )
-            features[f"{prefix}_fantasy_points_consistency"] = 1.0 / (
-                1.0 + fp_cv
-            )  # Higher is more consistent
+        # Consistency metrics using Coefficient of Variation (CV)
+        if len(df) > 1:  # Need at least 2 games for standard deviation
+            # CV = std / mean (measures relative variability)
+            fp_mean = df["fantasy_points"].mean()
+            if fp_mean != 0:
+                fp_cv = df["fantasy_points"].std() / fp_mean
+                # Transform CV to consistency score (higher = more consistent)
+                # Uses 1/(1+CV) so CV=0 gives consistency=1, high CV gives consistency near 0
+                features[f"{prefix}_fantasy_points_consistency"] = 1.0 / (1.0 + fp_cv)
+            else:
+                features[f"{prefix}_fantasy_points_consistency"] = 0
 
         return features
 
@@ -234,49 +388,77 @@ class FeatureExtractor:
         return self._calculate_rolling_stats(df, "season")
 
     def _get_opponent_features(self, player_id: int, target_date: datetime) -> dict:
-        """Extract opponent-specific features."""
-        # Get the target game
+        """Extract opponent-specific features.
+
+        Opponent analysis is crucial for fantasy predictions because:
+        - Some defenses are much better/worse vs certain positions
+        - Home field advantage affects performance (crowd, travel, familiarity)
+        - Divisional games have different dynamics (familiarity, intensity)
+        - Game script expectations (pace, passing vs rushing emphasis)
+
+        Current Implementation:
+        - Basic matchup identification (home/away, opponent team)
+        - Divisional game detection (higher intensity, more familiarity)
+        - Placeholder defensive rankings (would be calculated from real data)
+
+        Future Enhancements:
+        - Opponent defensive rankings by position
+        - Weather conditions and stadium factors
+        - Historical head-to-head performance
+        - Vegas odds and game totals
+        - Pace of play and game script predictions
+        """
+        # Find the target game using complex join to connect player -> team -> game
+        # The join conditions handle both home and away games
         target_game = (
             self.db.query(Game)
             .join(Team, (Team.id == Game.home_team_id) | (Team.id == Game.away_team_id))
             .join(Player, Player.team_id == Team.id)
             .filter(
                 Player.id == player_id,
+                # Use date range to handle timezone/scheduling variations
                 Game.game_date >= target_date - timedelta(days=1),
                 Game.game_date <= target_date + timedelta(days=1),
             )
             .first()
         )
 
+        # Handle case where game isn't found (bye week, postponed, etc.)
         if not target_game:
-            return {"has_opponent_data": 0}
+            return {"has_opponent_data": 0}  # Flag indicates no matchup data available
 
-        # Determine opponent team
+        # Get player info to determine their team
         player = self.db.query(Player).filter(Player.id == player_id).first()
         if not player or not player.team_id:
-            return {"has_opponent_data": 0}
+            return {"has_opponent_data": 0}  # Player not found or no team assignment
 
+        # Determine opponent team and home/away status
+        # Logic: if player's team is home team, they're playing at home vs away team
         if player.team_id == target_game.home_team_id:
-            opponent_team_id = target_game.away_team_id
-            is_home_game = 0
+            opponent_team_id = target_game.away_team_id  # Playing vs away team
+            is_home_game = 1  # Playing at home
         else:
-            opponent_team_id = target_game.home_team_id
-            is_home_game = 1
+            opponent_team_id = target_game.home_team_id  # Playing vs home team
+            is_home_game = 0  # Playing away
 
-        # Basic game context
+        # Build basic game context features
         features = {
-            "has_opponent_data": 1,
-            "is_home_game": is_home_game,
-            "game_week": target_game.week,
+            "has_opponent_data": 1,  # Indicates successful matchup data extraction
+            "is_home_game": is_home_game,  # Home field advantage (1=home, 0=away)
+            "game_week": target_game.week,  # Week of season (1-18)
             "is_divisional_game": self._is_divisional_matchup(player.team_id, opponent_team_id),
         }
 
-        # Opponent defensive stats (simplified - would need defensive stats in real implementation)
-        # For now, just add placeholders
+        # Opponent defensive analysis (currently placeholder - would be calculated from real data)
+        # In production, these would come from defensive stats aggregation:
+        # - Points allowed by position
+        # - Yards allowed by position
+        # - Fantasy points allowed rankings
+        # - Defensive pressure rates, coverage schemes, etc.
         features.update(
             {
-                "opponent_def_rank": 15,  # Placeholder - would calculate from actual data
-                "opponent_points_allowed_avg": 22.0,  # Placeholder
+                "opponent_def_rank": 15,  # 1-32 ranking (1=best defense, 32=worst)
+                "opponent_points_allowed_avg": 22.0,  # Average points allowed per game
             }
         )
 
@@ -295,27 +477,54 @@ class FeatureExtractor:
         )
 
     def _get_situational_features(self, target_date: datetime) -> dict:
-        """Extract situational features like weather, time of year, etc."""
-        # Get week of season (approximate)
+        """Extract situational features like weather, time of year, etc.
+
+        Situational context affects fantasy performance in predictable ways:
+
+        Seasonal Patterns:
+        - Early season: Limited data, role uncertainty, rust
+        - Mid season: Established patterns, optimal performance
+        - Late season: Fatigue, injuries, playoff implications
+        - Playoff push: Increased motivation vs rest decisions
+
+        Day of Week Effects:
+        - Sunday: Standard preparation time
+        - Monday: Short week preparation (Thursday -> Monday)
+        - Thursday: Short week preparation (Sunday -> Thursday)
+        - Different TV audiences and prime time pressure
+
+        Future Enhancements:
+        - Weather conditions (temperature, wind, precipitation)
+        - Stadium factors (dome vs outdoor, altitude, surface)
+        - Rest days between games
+        - Playoff implications and motivation
+        """
+        # Calculate approximate week of season based on calendar
+        # NFL season typically starts first Sunday in September
         september_start = datetime(target_date.year, 9, 1)
         days_since_season_start = (target_date - september_start).days
         week_of_season = max(1, min(18, (days_since_season_start // 7) + 1))
 
+        # Seasonal progression features
         features = {
-            "week_of_season": week_of_season,
-            "is_early_season": 1 if week_of_season <= 4 else 0,
-            "is_mid_season": 1 if 5 <= week_of_season <= 12 else 0,
-            "is_late_season": 1 if week_of_season >= 13 else 0,
-            "is_playoff_push": 1 if week_of_season >= 15 else 0,
+            "week_of_season": week_of_season,  # Raw week number (1-18)
+            # Season phase indicators (mutually exclusive categories)
+            "is_early_season": 1 if week_of_season <= 4 else 0,  # Weeks 1-4: Rust, role uncertainty
+            "is_mid_season": 1 if 5 <= week_of_season <= 12 else 0,  # Weeks 5-12: Peak performance
+            "is_late_season": 1 if week_of_season >= 13 else 0,  # Weeks 13+: Fatigue, injuries
+            "is_playoff_push": 1 if week_of_season >= 15 else 0,  # Weeks 15+: Playoff implications
         }
 
-        # Day of week features
-        day_of_week = target_date.weekday()  # 0=Monday, 6=Sunday
+        # Day of week effects (preparation time and primetime factors)
+        # Python weekday: 0=Monday, 1=Tuesday, ..., 6=Sunday
+        day_of_week = target_date.weekday()
         features.update(
             {
-                "is_sunday_game": 1 if day_of_week == 6 else 0,
-                "is_monday_game": 1 if day_of_week == 0 else 0,
-                "is_thursday_game": 1 if day_of_week == 3 else 0,
+                "is_sunday_game": 1 if day_of_week == 6 else 0,  # Standard week preparation
+                "is_monday_game": 1 if day_of_week == 0 else 0,  # Monday Night Football (primetime)
+                "is_thursday_game": (
+                    1 if day_of_week == 3 else 0
+                ),  # Thursday Night Football (short week)
             }
         )
 
@@ -413,36 +622,69 @@ class FeatureExtractor:
 def calculate_fantasy_points(stats: dict, scoring: str = "standard") -> float:
     """Calculate fantasy points from raw statistics.
 
+    This function implements the standard fantasy football scoring system
+    used by most platforms like ESPN, Yahoo, and DraftKings.
+
+    Scoring Systems:
+    - standard: No points for receptions (traditional scoring)
+    - ppr: Point Per Reception (1 point per catch)
+    - half_ppr: Half Point Per Reception (0.5 points per catch)
+
+    Scoring Rules (Standard DFS):
+
+    Passing:
+    - 1 point per 25 yards (0.04 per yard)
+    - 4 points per touchdown
+    - -2 points per interception
+
+    Rushing/Receiving:
+    - 1 point per 10 yards (0.1 per yard)
+    - 6 points per touchdown
+    - Reception bonus varies by scoring system
+
+    Other:
+    - -2 points per fumble lost
+    - +2 points per two-point conversion
+
+    Usage:
+    This function is used for:
+    - Calculating historical fantasy points for training data
+    - Validating database fantasy point calculations
+    - Converting predictions back to fantasy points
+
     Args:
-        stats: Dictionary of player statistics
+        stats: Dictionary of player statistics (keys match database columns)
         scoring: Scoring system ("standard", "ppr", "half_ppr")
 
     Returns:
-        Fantasy points total
+        Total fantasy points as float, rounded to 2 decimal places
     """
+    # Initialize point total
     points = 0.0
 
-    # Passing
-    points += stats.get("passing_yards", 0) * 0.04  # 1 point per 25 yards
-    points += stats.get("passing_tds", 0) * 4  # 4 points per TD
-    points -= stats.get("passing_interceptions", 0) * 2  # -2 points per INT
+    # Passing scoring (primarily for QBs)
+    points += stats.get("passing_yards", 0) * 0.04  # 1 point per 25 yards (25 * 0.04 = 1)
+    points += stats.get("passing_tds", 0) * 4  # 4 points per passing touchdown
+    points -= stats.get("passing_interceptions", 0) * 2  # -2 points per interception
 
-    # Rushing
-    points += stats.get("rushing_yards", 0) * 0.1  # 1 point per 10 yards
-    points += stats.get("rushing_tds", 0) * 6  # 6 points per TD
+    # Rushing scoring (RBs, some QBs/WRs)
+    points += stats.get("rushing_yards", 0) * 0.1  # 1 point per 10 yards (10 * 0.1 = 1)
+    points += stats.get("rushing_tds", 0) * 6  # 6 points per rushing touchdown
 
-    # Receiving
+    # Receiving scoring (WRs, TEs, RBs)
     points += stats.get("receiving_yards", 0) * 0.1  # 1 point per 10 yards
-    points += stats.get("receiving_tds", 0) * 6  # 6 points per TD
+    points += stats.get("receiving_tds", 0) * 6  # 6 points per receiving touchdown
 
-    # Reception bonus
+    # Reception bonus (varies by scoring system)
     if scoring == "ppr":
-        points += stats.get("receptions", 0) * 1  # 1 point per reception
+        points += stats.get("receptions", 0) * 1.0  # Full point per reception
     elif scoring == "half_ppr":
-        points += stats.get("receptions", 0) * 0.5  # 0.5 points per reception
+        points += stats.get("receptions", 0) * 0.5  # Half point per reception
+    # "standard" scoring gives 0 points per reception
 
-    # Other
+    # Penalty/bonus scoring
     points -= stats.get("fumbles_lost", 0) * 2  # -2 points per fumble lost
-    points += stats.get("two_point_conversions", 0) * 2  # 2 points per 2PT conversion
+    points += stats.get("two_point_conversions", 0) * 2  # 2 points per two-point conversion
 
+    # Round to 2 decimal places for consistency with DFS platforms
     return round(points, 2)

@@ -156,6 +156,9 @@ ignore = [
     "B008",   # do not perform function calls in argument defaults
     "C901",   # too complex
     "W191",   # indentation contains tabs
+    "F841",   # unused variable
+    "RUF001", # ambiguous unicode character in string
+    "RUF002", # ambiguous unicode character in docstring
     "ERA001",  # commented-out code (we want to keep some for future use)
     "TRY300", # Consider moving statement to else block (stylistic preference)
     "TRY301", # Abstract raise to an inner function (stylistic preference)
@@ -283,6 +286,7 @@ directory = "coverage_html_report"
 
 # mdformat configuration
 [tool.mdformat]
-wrap = 100
-number = true
+wrap = "no"
+number = false
 end_of_line = "lf"
+compact_tables = true

@@ -2,17 +2,13 @@
 
 ## Executive Summary
 
-The NFL Daily Fantasy Sports (DFS) Machine Learning System is a comprehensive platform designed for
-personal use to predict NFL player performance, optimize DraftKings lineups, and continuously
-improve prediction accuracy through self-learning mechanisms. The system prioritizes entertainment
-value and fun-focused contest selection over profit maximization.
+The NFL Daily Fantasy Sports (DFS) Machine Learning System is a comprehensive platform designed for personal use to predict NFL player performance, optimize DraftKings lineups, and continuously improve prediction accuracy through self-learning mechanisms. The system prioritizes entertainment value and fun-focused contest selection over profit maximization.
 
 ## System Goals
 
 ### Primary Objectives
 
-- **Accurate NFL Player Predictions**: Leverage machine learning to forecast player performance
-  using DraftKings scoring
+- **Accurate NFL Player Predictions**: Leverage machine learning to forecast player performance using DraftKings scoring
 - **Self-Improving Models**: Continuously learn from prediction errors to enhance accuracy
 - **Optimal Lineup Generation**: Create mathematically optimized lineups for various contest types
 - **Entertainment-Focused Game Selection**: Identify engaging games based on personal preferences
@@ -151,28 +147,23 @@ graph TB
 
 ### 1. Position-Specific Modeling
 
-Each NFL position has unique statistical patterns and scoring characteristics, requiring specialized
-models and features.
+Each NFL position has unique statistical patterns and scoring characteristics, requiring specialized models and features.
 
 ### 2. Self-Improvement Through Feedback
 
-The system learns from prediction errors, continuously adjusting weights and parameters to improve
-accuracy.
+The system learns from prediction errors, continuously adjusting weights and parameters to improve accuracy.
 
 ### 3. Local-First Architecture
 
-All data processing and storage occurs locally, ensuring privacy and eliminating external
-dependencies.
+All data processing and storage occurs locally, ensuring privacy and eliminating external dependencies.
 
 ### 4. Entertainment Over Profit
 
-Game selection and lineup optimization prioritize fun and engagement rather than expected value
-maximization.
+Game selection and lineup optimization prioritize fun and engagement rather than expected value maximization.
 
 ### 5. Modular Component Design
 
-Each component operates independently with well-defined interfaces, enabling isolated testing and
-development.
+Each component operates independently with well-defined interfaces, enabling isolated testing and development.
 
 ## Data Flow Architecture
 
@@ -215,8 +206,7 @@ sequenceDiagram
 - **CPU**: 4+ cores recommended for model training (8+ cores for optimal performance)
 - **RAM**: 16GB minimum, 32GB recommended
 - **Storage**: 50GB for historical data and models
-- **GPU**: Not currently required. System optimized for CPU-based training with provisions for
-  future GPU acceleration
+- **GPU**: Not currently required. System optimized for CPU-based training with provisions for future GPU acceleration
 
 ## System Constraints
 
@@ -252,27 +242,19 @@ sequenceDiagram
 
 ### ADR-001: SQLite for Data Storage
 
-**Decision**: Use SQLite instead of PostgreSQL **Rationale**: Simplicity, zero configuration,
-sufficient for single-user load **Trade-offs**: Limited concurrency, no network access
+**Decision**: Use SQLite instead of PostgreSQL **Rationale**: Simplicity, zero configuration, sufficient for single-user load **Trade-offs**: Limited concurrency, no network access
 
 ### ADR-002: Position-Specific Models
 
-**Decision**: Separate models per position vs unified model **Rationale**: Different positions have
-unique statistical patterns **Trade-offs**: More models to maintain, increased complexity
+**Decision**: Separate models per position vs unified model **Rationale**: Different positions have unique statistical patterns **Trade-offs**: More models to maintain, increased complexity
 
 ### ADR-003: Local-First Design
 
-**Decision**: All processing and storage local **Rationale**: Privacy, no external dependencies,
-cost-free operation **Trade-offs**: Limited scalability, manual updates required
+**Decision**: All processing and storage local **Rationale**: Privacy, no external dependencies, cost-free operation **Trade-offs**: Limited scalability, manual updates required
 
 ### ADR-004: UV for Dependency Management
 
-**Decision**: Use UV instead of pip/poetry/requirements.txt **Rationale**: UV is the fastest Python
-package manager available (10-100x faster than pip/poetry), written in Rust for maximum performance.
-Provides deterministic lockfiles, drop-in pip replacement, and minimal system resource usage while
-maintaining compatibility with existing Python workflows. **Trade-offs**: Newer tool with growing
-ecosystem, but rapidly becoming the standard for modern Python projects due to its exceptional
-performance
+**Decision**: Use UV instead of pip/poetry/requirements.txt **Rationale**: UV is the fastest Python package manager available (10-100x faster than pip/poetry), written in Rust for maximum performance. Provides deterministic lockfiles, drop-in pip replacement, and minimal system resource usage while maintaining compatibility with existing Python workflows. **Trade-offs**: Newer tool with growing ecosystem, but rapidly becoming the standard for modern Python projects due to its exceptional performance
 
 ## Success Criteria
 

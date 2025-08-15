@@ -2,9 +2,7 @@
 
 ## Overview
 
-This document outlines the package management strategy for the NFL DFS system using UV, the fastest
-Python package manager available. UV is written in Rust and provides 10-100x faster dependency
-resolution compared to traditional tools like pip and Poetry.
+This document outlines the package management strategy for the NFL DFS system using UV, the fastest Python package manager available. UV is written in Rust and provides 10-100x faster dependency resolution compared to traditional tools like pip and Poetry.
 
 ## Why UV?
 
@@ -472,8 +470,7 @@ benchmarks = {
 
 ## Conclusion
 
-UV represents a paradigm shift in Python package management, offering unprecedented speed and
-reliability. For the NFL DFS system, this translates to:
+UV represents a paradigm shift in Python package management, offering unprecedented speed and reliability. For the NFL DFS system, this translates to:
 
 - **Faster Development Cycles**: Reduced waiting time for dependency installation
 - **Improved CI/CD Performance**: Faster build times in continuous integration
@@ -481,5 +478,4 @@ reliability. For the NFL DFS system, this translates to:
 - **Enhanced Security**: Built-in vulnerability scanning keeps dependencies secure
 - **Lower Resource Usage**: Minimal memory and CPU footprint
 
-The adoption of UV aligns with the project's goal of maintaining a high-performance, efficient
-system while keeping development velocity high and operational overhead low.
+The adoption of UV aligns with the project's goal of maintaining a high-performance, efficient system while keeping development velocity high and operational overhead low.

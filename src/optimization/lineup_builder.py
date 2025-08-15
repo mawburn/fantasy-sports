@@ -1,4 +1,32 @@
-"""Foundation for DFS lineup optimization."""
+"""Foundation for DFS lineup optimization using mathematical optimization techniques.
+
+This file implements several optimization algorithms to build optimal fantasy sports lineups:
+
+1. Linear Programming (LP): Guaranteed optimal solutions for linear objectives
+2. Greedy Algorithm: Fast heuristic approach for baseline solutions
+3. Genetic Algorithm: Evolutionary approach for complex constraints
+4. Stacking Optimization: Correlated player selection strategies
+5. Tournament Optimization: High-ceiling focused for GPP contests
+
+Key Concepts for Beginners:
+
+Linear Programming: Mathematical optimization technique that finds the best solution
+to a problem with linear constraints and objectives. Perfect for DFS because:
+- Objective: Maximize fantasy points (linear in player selection)
+- Constraints: Salary cap, position requirements (all linear)
+- Variables: Binary (select player or don't)
+
+Optimization Problem Structure:
+- Decision Variables: Binary variables for each player (1 = selected, 0 = not selected)
+- Objective Function: Maximize sum of (player_points * selection_variable)
+- Constraints: Sum of (player_salary * selection_variable) <= salary_cap
+
+PuLP Library: Python library for linear programming that interfaces with
+optimization solvers like CBC, GLPK, and Gurobi.
+
+Stacking Strategy: Selecting correlated players (QB + WR from same team)
+to capture upside when offenses perform well together.
+"""
 
 import logging
 from dataclasses import dataclass
@@ -16,7 +44,28 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PlayerProjection:
-    """Player projection for optimization."""
+    """Player projection for optimization.
+
+    This dataclass represents a player in the optimization problem with all
+    the information needed for decision making:
+
+    Core Data:
+    - player_id, name, position: Player identification
+    - salary: Cost in salary cap (constraint)
+    - projected_points: Expected fantasy points (objective)
+
+    Uncertainty Quantification:
+    - floor: Conservative projection (25th percentile)
+    - ceiling: Optimistic projection (75th percentile)
+
+    Strategic Information:
+    - ownership_projection: Expected % of contest entries using this player
+    - value: Points per $1000 salary (efficiency metric)
+    - team_abbr: For stacking and correlation analysis
+
+    The __post_init__ method automatically calculates derived metrics
+    like value (points per dollar) when the object is created.
+    """
 
     player_id: int
     name: str
@@ -30,14 +79,39 @@ class PlayerProjection:
     team_abbr: str = ""  # Team abbreviation for stacking logic
 
     def __post_init__(self):
-        """Calculate derived metrics."""
+        """Calculate derived metrics after object creation.
+
+        This method automatically calculates value (points per $1000) when
+        a PlayerProjection is created. This is more efficient than calculating
+        it repeatedly and ensures consistency.
+
+        Value calculation: projected_points / (salary / 1000)
+        Example: 20 projected points at $8000 salary = 20 / 8 = 2.5 value
+        """
         if self.salary > 0:
             self.value = self.projected_points / (self.salary / 1000)
 
 
 @dataclass
 class LineupConstraints:
-    """Constraints for lineup optimization."""
+    """Constraints for lineup optimization.
+
+    This dataclass defines all the rules and restrictions for building lineups.
+    In optimization terminology, these are the "constraints" that must be satisfied.
+
+    DraftKings NFL Constraints:
+    - salary_cap: Maximum total salary (usually $50,000)
+    - positions: Required number of each position (QB:1, RB:2, WR:3, TE:1, FLEX:1, DEF:1)
+    - FLEX: Can be filled by RB, WR, or TE (adds flexibility)
+
+    Strategic Constraints:
+    - Stacking options: Allow/forbid correlated player selections
+    - Exposure limits: Maximum % of lineups a player can be in (multi-lineup)
+
+    The constraints define the "feasible region" - all possible lineups that
+    satisfy the rules. The optimization algorithm searches this region for
+    the lineup with maximum projected points.
+    """
 
     salary_cap: int = 50000
     positions: dict[str, int] = None  # {"QB": 1, "RB": 2, "WR": 3, "TE": 1, "FLEX": 1, "DEF": 1}
@@ -52,15 +126,29 @@ class LineupConstraints:
     max_exposure: dict[int, float] = None  # {player_id: max_exposure_pct}
 
     def __post_init__(self):
-        """Set default positions if not provided."""
+        """Set default DraftKings NFL lineup positions if not provided.
+
+        DraftKings NFL lineup requirements:
+        - 1 QB: Quarterback
+        - 2 RB: Running Backs
+        - 3 WR: Wide Receivers
+        - 1 TE: Tight End
+        - 1 FLEX: Additional RB/WR/TE (provides flexibility)
+        - 1 DEF: Defense/Special Teams
+
+        Total: 9 players, $50,000 salary cap
+
+        The FLEX position allows for strategic lineup construction
+        based on value and matchups at RB/WR/TE positions.
+        """
         if self.positions is None:
             self.positions = {
-                "QB": 1,
-                "RB": 2,
-                "WR": 3,
-                "TE": 1,
-                "FLEX": 1,  # RB/WR/TE
-                "DEF": 1,
+                "QB": 1,  # Quarterback
+                "RB": 2,  # Running Backs
+                "WR": 3,  # Wide Receivers
+                "TE": 1,  # Tight End
+                "FLEX": 1,  # Flex position (RB/WR/TE)
+                "DEF": 1,  # Defense/Special Teams
             }
 
 
@@ -77,12 +165,48 @@ class OptimizationResult:
 
     @property
     def is_valid(self) -> bool:
-        """Check if lineup is valid."""
+        """Check if lineup is valid (has no constraint violations).
+
+        A valid lineup satisfies all DFS constraints:
+        - Under salary cap
+        - Correct number of each position
+        - No duplicate players
+        - Meets minimum salary requirements
+
+        Returns:
+            True if lineup is valid, False if any constraints are violated
+        """
         return len(self.constraint_violations) == 0
 
 
 class LineupBuilder:
-    """Foundation class for building DFS lineups."""
+    """Foundation class for building DFS lineups using multiple optimization algorithms.
+
+    This class implements several optimization approaches:
+
+    1. Greedy Algorithm:
+       - Fast and simple
+       - Sorts players by value (points/$), picks best available
+       - No guarantee of optimality but good baseline
+
+    2. Linear Programming:
+       - Guaranteed optimal solution
+       - Handles complex constraints efficiently
+       - Uses PuLP library with CBC solver
+
+    3. Genetic Algorithm:
+       - Evolutionary optimization
+       - Good for non-linear objectives
+       - Handles complex constraints through population evolution
+
+    4. Specialized Methods:
+       - Stacking optimization (correlated players)
+       - Tournament optimization (maximize ceiling)
+       - Ownership-aware optimization (contrarian strategies)
+
+    The class maintains database connections for accessing player pools
+    and salaries, then applies ML predictions to create optimized lineups.
+    """
 
     def __init__(self, db_session: Session | None = None):
         """Initialize lineup builder."""
@@ -97,31 +221,49 @@ class LineupBuilder:
     ) -> list[PlayerProjection]:
         """Get available players for optimization.
 
+        This method queries the database to get all players available for
+        a specific DraftKings contest, along with their salaries and team info.
+
+        Filtering Strategy:
+        - Only active players (not injured/inactive)
+        - Only specified positions
+        - Only players within salary range (removes extreme values)
+
+        The salary filtering helps optimization performance by removing:
+        - Very cheap players (likely backups with no projection)
+        - Very expensive players (may not provide value)
+
+        Returns PlayerProjection objects with placeholders for projections
+        that will be filled in by ML models later.
+
         Args:
-            contest_id: DraftKings contest ID
-            positions: Positions to include
-            min_salary: Minimum salary threshold
-            max_salary: Maximum salary threshold
+            contest_id: DraftKings contest ID from database
+            positions: Positions to include (default: QB, RB, WR, TE, DEF)
+            min_salary: Minimum salary threshold (removes cheap backups)
+            max_salary: Maximum salary threshold (removes extreme prices)
 
         Returns:
-            List of player projections
+            List of PlayerProjection objects ready for ML projections
         """
         if positions is None:
             positions = ["QB", "RB", "WR", "TE", "DEF"]
 
-        # Get players, salaries, and team info from database
+        # Build database query to get all relevant player data
         from src.database.models import Team
 
+        # Complex join to get player info + salary + team data in one query
         query = (
             self.db.query(DraftKingsSalary, Player, Team)
-            .join(Player, DraftKingsSalary.player_id == Player.id)
-            .join(Team, Player.team_id == Team.id, isouter=True)
+            .join(Player, DraftKingsSalary.player_id == Player.id)  # Get player details
+            .join(
+                Team, Player.team_id == Team.id, isouter=True
+            )  # Get team info (outer join for safety)
             .filter(
-                DraftKingsSalary.contest_id == contest_id,
-                DraftKingsSalary.salary >= min_salary,
-                DraftKingsSalary.salary <= max_salary,
-                Player.position.in_(positions),
-                Player.status == "Active",
+                DraftKingsSalary.contest_id == contest_id,  # Specific contest
+                DraftKingsSalary.salary >= min_salary,  # Remove too-cheap players
+                DraftKingsSalary.salary <= max_salary,  # Remove too-expensive players
+                Player.position.in_(positions),  # Only requested positions
+                Player.status == "Active",  # Only active (non-injured) players
             )
         )
 
@@ -131,17 +273,20 @@ class LineupBuilder:
             logger.warning(f"No players found for contest {contest_id}")
             return []
 
+        # Convert database results to PlayerProjection objects
         player_pool = []
         for salary_data, player_data, team_data in results:
             projection = PlayerProjection(
-                player_id=player_data.id,
-                name=player_data.display_name,
-                position=player_data.position,
-                salary=salary_data.salary,
-                projected_points=0.0,  # Will be filled by prediction service
-                floor=0.0,
-                ceiling=0.0,
-                team_abbr=team_data.team_abbr if team_data else "",
+                player_id=player_data.id,  # Database ID
+                name=player_data.display_name,  # Player name for display
+                position=player_data.position,  # Position (QB, RB, etc.)
+                salary=salary_data.salary,  # DraftKings salary
+                projected_points=0.0,  # Placeholder - filled by ML models
+                floor=0.0,  # Placeholder - filled by ML models
+                ceiling=0.0,  # Placeholder - filled by ML models
+                team_abbr=(
+                    team_data.team_abbr if team_data else ""
+                ),  # Team abbreviation for stacking
             )
             player_pool.append(projection)
 
