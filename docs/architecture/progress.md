@@ -220,6 +220,53 @@
 - [x] DEF prediction service
 - [x] DEF model evaluation
 
+### Neural Network Models (Deep Learning)
+
+**See**: [ML Pipeline - Neural Networks](./07-ml-pipeline.md#neural-networks)
+
+#### PyTorch Implementation
+
+- [x] BaseNeuralModel abstract class with training pipeline
+- [x] Position-specific neural architectures
+- [x] CPU-optimized training with early stopping
+- [x] Integration with existing model infrastructure
+- [x] CLI support with `--use-neural` flag
+
+#### QB Neural Model
+
+- [x] Multi-task learning architecture (passing + rushing)
+- [x] Attention mechanism for feature importance
+- [x] Separate processing branches for different skills
+- [x] Training validation with synthetic data
+
+#### RB Neural Model
+
+- [x] Workload-aware network with clustering embeddings
+- [x] Separate branches for workload vs efficiency
+- [x] BatchNorm for stable training
+- [x] Training validation with synthetic data
+
+#### WR Neural Model
+
+- [x] Target competition modeling with attention
+- [x] High dropout for volatile position
+- [x] Big play potential branch
+- [x] Training validation with synthetic data
+
+#### TE Neural Model
+
+- [x] Dual-role network (receiving + blocking importance)
+- [x] Simplified architecture for moderate variance
+- [x] BatchNorm layers for stability
+- [x] Training validation with synthetic data
+
+#### DEF Neural Model
+
+- [x] Multi-head ensemble architecture
+- [x] Separate branches for pressure, turnovers, points
+- [x] High variance modeling with specialized dropout
+- [x] Training validation with synthetic data
+
 ### Model Infrastructure
 
 **See**: [ML Pipeline - Model Management](./07-ml-pipeline.md#model-management) | [Component Architecture - ML Layer](./04-component-architecture.md#ml-layer)
@@ -278,11 +325,11 @@
 
 **See**: [Optimization - Game Selection](./08-optimization-algorithms.md#game-selection-algorithm)
 
-- [ ] Contest analyzer
-- [ ] Fun score calculator
-- [ ] Expected value calculator
-- [ ] Risk assessment
-- [ ] Recommendation engine
+- [x] Contest analyzer
+- [x] Fun score calculator
+- [x] Expected value calculator
+- [x] Risk assessment
+- [x] Recommendation engine
 
 ## API & Services
 
@@ -491,6 +538,9 @@
 - [x] Build prediction services
 - [x] Create model evaluation framework
 - [x] Develop model registry and deployment pipeline
+- [x] Implement PyTorch neural network models
+- [x] Create position-specific deep learning architectures
+- [x] Integrate neural models with existing infrastructure
 - [ ] Develop self-learning system (moved to Phase 6)
 
 ### Phase 4: Optimization & API (🚧 IN PROGRESS)
@@ -498,7 +548,7 @@
 - [x] Build lineup optimizer foundation
 - [x] Create prediction API endpoints
 - [x] Implement advanced optimization algorithms
-- [ ] Build game selection engine
+- [x] Build game selection engine
 - [ ] Develop WebSocket services
 - [ ] Add authentication/authorization
 

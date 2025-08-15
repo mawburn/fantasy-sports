@@ -29,6 +29,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import RobustScaler
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from src.data.processing.feature_extractor import FeatureExtractor
@@ -228,7 +229,7 @@ class DataPreparator:
         """
 
         result = self.db.execute(
-            query, {"position": position, "start_date": start_date, "end_date": end_date}
+            text(query), {"position": position, "start_date": start_date, "end_date": end_date}
         )
 
         df = pd.DataFrame(result.fetchall())

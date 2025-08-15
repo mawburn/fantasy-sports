@@ -23,7 +23,7 @@ from fastapi import FastAPI  # Main framework class
 from fastapi.middleware.cors import CORSMiddleware  # Cross-Origin Resource Sharing
 
 # Import our custom routers that define API endpoints
-from src.api.routers import data, predictions
+from src.api.routers import data, game_selection, predictions
 
 # Import application settings/configuration
 from src.config import settings
@@ -145,6 +145,13 @@ app.include_router(
     predictions.router,  # The router object containing prediction endpoints
     prefix="/api",  # URL prefix - routes will start with /api
     tags=["predictions"],  # OpenAPI tags for documentation grouping
+)
+
+# Game selection router - handles contest recommendation and analysis
+app.include_router(
+    game_selection.router,  # The router object containing game selection endpoints
+    prefix="/api",  # URL prefix - routes will start with /api
+    tags=["game-selection"],  # OpenAPI tags for documentation grouping
 )
 
 # Future routers to be added when those features are implemented:

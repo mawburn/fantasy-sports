@@ -55,6 +55,9 @@ def train_position(
     save_model: bool = typer.Option(True, help="Save trained model"),
     evaluate: bool = typer.Option(True, help="Evaluate model performance"),
     backtest: bool = typer.Option(False, help="Run backtesting analysis"),
+    use_neural: bool = typer.Option(
+        False, help="Use neural network model instead of traditional ML"
+    ),
 ) -> None:
     """Train a model for a specific position.
 
@@ -95,10 +98,15 @@ def train_position(
     - Tests model on historical predictions vs actual results
     - More realistic performance assessment than holdout validation
 
+    use_neural: Whether to use PyTorch neural networks instead of traditional ML
+    - True: Use deep learning models with position-specific architectures
+    - False: Use traditional ML (XGBoost, LightGBM, RandomForest)
+    - Neural models can capture more complex patterns but take longer to train
+
     Usage Examples:
     python -m src.cli.train_models train-position QB
     python -m src.cli.train_models train-position RB --start-date 2021-01-01 --backtest
-    python -m src.cli.train_models train-position WR --model-name WR_experiment_v1
+    python -m src.cli.train_models train-position WR --model-name WR_experiment_v1 --use-neural
     """
     try:
         # Step 1: Parse and validate date parameters
@@ -128,8 +136,13 @@ def train_position(
         trainer = ModelTrainer()
 
         # User feedback: Show what's happening
-        typer.echo(f"🏈 Training {position} model from {start_date} to {end_date}")
+        model_type = "neural network" if use_neural else "traditional ML"
+        typer.echo(f"🏈 Training {position} {model_type} model from {start_date} to {end_date}")
         typer.echo(f"📝 Model name: {config.model_name}")
+
+        if use_neural:
+            typer.echo("🧠 Using PyTorch deep learning architecture")
+            typer.echo("   (Training may take longer but can capture more complex patterns)")
 
         # Step 4: Execute main training pipeline
         # This includes data preparation, training, and validation
@@ -139,6 +152,7 @@ def train_position(
             end_date=end_dt,
             config=config,
             save_model=save_model,
+            use_neural=use_neural,
         )
 
         # Step 5: Display core training results

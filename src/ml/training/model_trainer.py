@@ -41,6 +41,13 @@ from src.database.connection import get_db
 from src.database.models import ModelMetadata
 from src.ml.models.base import BaseModel, ModelConfig
 from src.ml.models.ensemble import EnsembleModel
+from src.ml.models.neural_models import (
+    DEFNeuralModel,
+    QBNeuralModel,
+    RBNeuralModel,
+    TENeuralModel,
+    WRNeuralModel,
+)
 from src.ml.models.position_models import DEFModel, QBModel, RBModel, TEModel, WRModel
 
 from .data_preparation import DataPreparator
@@ -80,6 +87,15 @@ class ModelTrainer:
         "DEF": DEFModel,  # Defense/Special teams model using Random Forest
     }
 
+    # Neural network model classes for deep learning alternatives
+    NEURAL_MODEL_CLASSES: ClassVar[dict[str, type]] = {
+        "QB": QBNeuralModel,  # Neural QB model with multi-task learning
+        "RB": RBNeuralModel,  # Neural RB model with workload clustering
+        "WR": WRNeuralModel,  # Neural WR model with target competition attention
+        "TE": TENeuralModel,  # Neural TE model with dual-role processing
+        "DEF": DEFNeuralModel,  # Neural DEF model with multi-head ensemble
+    }
+
     def __init__(self, db_session: Session | None = None, model_dir: Path | None = None):
         """Initialize model trainer with database connection and file system setup.
 
@@ -109,6 +125,7 @@ class ModelTrainer:
         end_date: datetime,
         config: ModelConfig | None = None,
         save_model: bool = True,
+        use_neural: bool = False,
     ) -> dict:
         """Train a model for a specific position.
 
@@ -136,6 +153,7 @@ class ModelTrainer:
             end_date: Training data end date (latest games to include)
             config: Optional model configuration (uses defaults if None)
             save_model: Whether to save the trained model (True for production)
+            use_neural: Whether to use neural network model instead of traditional ML
 
         Returns:
             Dictionary containing:
@@ -145,19 +163,26 @@ class ModelTrainer:
             - data_metadata: Information about training dataset
             - model_metadata: Database record for model tracking
         """
+        # Select appropriate model classes based on neural flag
+        model_classes = self.NEURAL_MODEL_CLASSES if use_neural else self.MODEL_CLASSES
+
         # Validate that we support this position
-        if position not in self.MODEL_CLASSES:
+        if position not in model_classes:
             raise ValueError(
-                f"Unsupported position: {position}. Supported: {list(self.MODEL_CLASSES.keys())}"
+                f"Unsupported position: {position}. Supported: {list(model_classes.keys())}"
             ) from None
 
-        logger.info(f"Starting training for {position} model from {start_date} to {end_date}")
+        model_type = "neural" if use_neural else "traditional"
+        logger.info(
+            f"Starting {model_type} training for {position} model from {start_date} to {end_date}"
+        )
 
         # Create default configuration if none provided
         # This ensures consistent defaults while allowing customization
         if config is None:
+            model_name_suffix = "_neural" if use_neural else "_model"
             config = ModelConfig(
-                model_name=f"{position}_model",  # Descriptive model name
+                model_name=f"{position}{model_name_suffix}",  # Descriptive model name
                 position=position,  # Position identifier
                 model_dir=self.model_dir,  # Where to save model files
             )
@@ -170,7 +195,7 @@ class ModelTrainer:
 
         # Step 2: Initialize position-appropriate model
         # Use factory pattern to get the right model class for this position
-        model_class = self.MODEL_CLASSES[position]
+        model_class = model_classes[position]
         model = model_class(config)
 
         # Step 3: Train model with validation monitoring
@@ -222,6 +247,7 @@ class ModelTrainer:
         start_date: datetime,
         end_date: datetime,
         save_model: bool = True,
+        include_neural: bool = True,
     ) -> dict:
         """Train an ensemble model for a position.
 
@@ -254,6 +280,7 @@ class ModelTrainer:
             start_date: Training data start date
             end_date: Training data end date
             save_model: Whether to save the ensemble (recommended for production)
+            include_neural: Whether to include neural network models in ensemble
 
         Returns:
             Dictionary with ensemble training results and performance comparison
@@ -270,15 +297,15 @@ class ModelTrainer:
         ensemble = EnsembleModel(position)
         base_models = []  # Track individual model performance for analysis
 
-        # Train each base model with different configuration
+        # Train traditional ML models
         for i, config in enumerate(model_configs):
-            logger.info(f"Training base model {i + 1}/{len(model_configs)}")
+            logger.info(f"Training traditional base model {i + 1}/{len(model_configs)}")
 
             # Customize config for this specific base model
-            config.model_name = f"{position}_base_{i}"
+            config.model_name = f"{position}_trad_{i}"
             config.save_model = False  # Don't save individual models (only ensemble)
 
-            # Instantiate and train base model
+            # Instantiate and train traditional model
             model_class = self.MODEL_CLASSES[position]
             model = model_class(config)
 
@@ -291,8 +318,49 @@ class ModelTrainer:
             )
 
             # Add trained model to ensemble
-            ensemble.add_model(model, name=f"{config.model_name}")
+            ensemble.add_model(model, name=f"traditional_{config.model_name}")
             base_models.append((model, training_result))  # Track for analysis
+
+        # Train neural network models if requested
+        if include_neural:
+            logger.info("Training neural network models for ensemble")
+
+            # Create neural model configs (fewer variants due to longer training time)
+            neural_configs = [
+                ModelConfig(
+                    model_name=f"{position}_neural_1",
+                    position=position,
+                    model_dir=self.model_dir,
+                    random_state=42,
+                    save_model=False,
+                ),
+                ModelConfig(
+                    model_name=f"{position}_neural_2",
+                    position=position,
+                    model_dir=self.model_dir,
+                    random_state=123,
+                    save_model=False,
+                ),
+            ]
+
+            for i, config in enumerate(neural_configs):
+                logger.info(f"Training neural base model {i + 1}/{len(neural_configs)}")
+
+                # Instantiate and train neural model
+                neural_class = self.NEURAL_MODEL_CLASSES[position]
+                neural_model = neural_class(config)
+
+                # Train neural model
+                neural_result = neural_model.train(
+                    X_train=data["X_train"],
+                    y_train=data["y_train"],
+                    X_val=data["X_val"],
+                    y_val=data["y_val"],
+                )
+
+                # Add to ensemble
+                ensemble.add_model(neural_model, name=f"neural_{config.model_name}")
+                base_models.append((neural_model, neural_result))
 
         # Train the meta-learner (ensemble combination weights)
         # This learns how to optimally combine the base model predictions

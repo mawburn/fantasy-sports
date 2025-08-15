@@ -342,13 +342,15 @@ def status():
     try:
         # Import database components
         from src.database.connection import SessionLocal
-        from src.database.models import DraftKingsContest  # DraftKings contest information
-        from src.database.models import DraftKingsSalary  # Player salary data
-        from src.database.models import Game  # NFL game/schedule data
-        from src.database.models import PlayByPlay  # Detailed play-by-play data
-        from src.database.models import Player  # Player information
-        from src.database.models import PlayerStats  # Player performance statistics
-        from src.database.models import Team  # NFL team data
+        from src.database.models import (
+            DraftKingsContest,  # DraftKings contest information
+            DraftKingsSalary,  # Player salary data
+            Game,  # NFL game/schedule data
+            PlayByPlay,  # Detailed play-by-play data
+            Player,  # Player information
+            PlayerStats,  # Player performance statistics
+            Team,  # NFL team data
+        )
 
         # Create database session
         session = SessionLocal()
