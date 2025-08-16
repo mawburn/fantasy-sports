@@ -34,7 +34,6 @@ from datetime import datetime
 import nfl_data_py as nfl  # Free NFL data API library
 import pandas as pd  # Data manipulation and analysis library
 
-from ...config.settings import settings  # Application configuration
 from ...database.connection import SessionLocal  # Database session factory
 from ...database.models import Game, PlayByPlay, Player, PlayerStats, Team  # SQLAlchemy models
 
@@ -187,7 +186,8 @@ class NFLDataCollector:
             Number of new players added to database
         """
         if seasons is None:
-            seasons = [self.current_season]
+            # Default to collecting data from 2018 onwards for comprehensive ML training
+            seasons = list(range(2018, self.current_season + 1))
 
         logger.info(f"Collecting player data for seasons: {seasons}")
 
@@ -290,7 +290,8 @@ class NFLDataCollector:
             Number of new games added to database
         """
         if seasons is None:
-            seasons = [self.current_season]
+            # Default to collecting data from 2018 onwards for comprehensive ML training
+            seasons = list(range(2018, self.current_season + 1))
 
         logger.info(f"Collecting schedule data for seasons: {seasons}")
 
@@ -393,14 +394,15 @@ class NFLDataCollector:
         since statistical absence typically means zero performance.
 
         Args:
-            seasons: Seasons to collect (defaults to current season)
+            seasons: Seasons to collect (defaults to 2018 onwards)
             weeks: Specific weeks to collect (None = all weeks)
 
         Returns:
             Number of new statistical records added
         """
         if seasons is None:
-            seasons = [self.current_season]
+            # Default to collecting data from 2018 onwards (about 7 seasons) for comprehensive ML training
+            seasons = list(range(2018, self.current_season + 1))
 
         logger.info(f"Collecting player stats for seasons: {seasons}")
 
@@ -420,15 +422,51 @@ class NFLDataCollector:
                     # Create lookup dictionaries for foreign key mapping
                     # This avoids database queries for each statistical record
                     players = {p.player_id: p.id for p in session.query(Player).all()}
-                    games = {
-                        g.game_id: g.id for g in session.query(Game).filter_by(season=season).all()
-                    }
+
+                    # Create team abbreviation to ID mapping (fix: use team_abbr not abbreviation)
+                    teams = {t.team_abbr: t.id for t in session.query(Team).all()}
+
+                    # Create game lookup by season, week, and teams
+                    # Multiple keys per game to handle both home/away scenarios
+                    games = {}
+                    for g in session.query(Game).filter_by(season=season).all():
+                        # Get team abbreviations from the database
+                        home_team = session.query(Team).filter_by(id=g.home_team_id).first()
+                        away_team = session.query(Team).filter_by(id=g.away_team_id).first()
+
+                        if home_team and away_team:
+                            home_abbrev = home_team.team_abbr
+                            away_abbrev = away_team.team_abbr
+
+                            # Create lookup keys for both team perspectives
+                            # Format: "season_week_team_opponent" -> game_id
+                            home_key = f"{g.season}_{g.week}_{home_abbrev}_{away_abbrev}"
+                            away_key = f"{g.season}_{g.week}_{away_abbrev}_{home_abbrev}"
+
+                            games[home_key] = g.id
+                            games[away_key] = g.id
 
                     for _, row in weekly_df.iterrows():
                         player_id = players.get(row["player_id"])
-                        game_id = games.get(row["game_id"])
 
-                        if not player_id or not game_id:
+                        # Find game_id using available columns: season, week, recent_team, opponent_team
+                        season_val = row["season"]
+                        week_val = row["week"]
+                        player_team = row["recent_team"]
+                        opponent_team = row["opponent_team"]
+
+                        # Create lookup key: "season_week_playerteam_opponentteam"
+                        game_key = f"{season_val}_{week_val}_{player_team}_{opponent_team}"
+                        game_id = games.get(game_key)
+
+                        if not player_id:
+                            logger.debug(f"Player not found: {row['player_id']}")
+                            continue
+
+                        if not game_id:
+                            logger.debug(
+                                f"Game not found for key: {game_key} (season={season_val}, week={week_val}, team={player_team}, opponent={opponent_team})"
+                            )
                             continue
 
                         # Check if stats already exist
@@ -509,7 +547,8 @@ class NFLDataCollector:
     ) -> int:
         """Collect NFL play-by-play data and store in database."""
         if seasons is None:
-            seasons = [self.current_season]
+            # Default to collecting data from 2018 onwards for comprehensive ML training
+            seasons = list(range(2018, self.current_season + 1))
 
         logger.info(f"Collecting play-by-play data for seasons: {seasons}")
 
@@ -597,11 +636,8 @@ class NFLDataCollector:
     def collect_all_data(self, seasons: list[int] | None = None) -> dict[str, int]:
         """Collect all NFL data (teams, players, schedules, stats)."""
         if seasons is None:
-            seasons = list(
-                range(
-                    self.current_season - settings.nfl_seasons_to_load + 1, self.current_season + 1
-                )
-            )
+            # Default to collecting data from 2018 onwards for comprehensive ML training
+            seasons = list(range(2018, self.current_season + 1))
 
         logger.info(f"Starting full data collection for seasons: {seasons}")
 

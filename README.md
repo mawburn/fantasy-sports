@@ -1,6 +1,7 @@
 # NFL DFS System
 
-A comprehensive NFL Daily Fantasy Sports (DFS) prediction and optimization system focused on DraftKings contests. Built with Python, PyTorch, and modern ML practices.
+A comprehensive NFL Daily Fantasy Sports (DFS) prediction and optimization system focused on
+DraftKings contests. Built with Python, PyTorch, and modern ML practices.
 
 ## Features
 
@@ -53,7 +54,34 @@ cp .env.example .env
 make db-init
 ```
 
-6. Start the development server:
+6. **Collect NFL Data** (Required for ML training):
+
+```bash
+# Option 1: Collect all data at once (recommended)
+uv run python -m src.cli.collect_data collect-all
+
+# Option 2: Collect data step by step
+uv run python -m src.cli.collect_data collect-teams
+uv run python -m src.cli.collect_data collect-players
+uv run python -m src.cli.collect_data collect-schedules
+uv run python -m src.cli.collect_data collect-stats
+
+# Option 3: Collect specific seasons (2018-2024 for comprehensive training)
+uv run python -m src.cli.collect_data collect-schedules -s 2018 -s 2019 -s 2020 -s 2021 -s 2022 -s 2023 -s 2024
+uv run python -m src.cli.collect_data collect-stats -s 2018 -s 2019 -s 2020 -s 2021 -s 2022 -s 2023 -s 2024
+
+# Check data collection status
+uv run python -m src.cli.collect_data status
+```
+
+**Expected Data Volume:**
+
+- Teams: ~36 NFL teams
+- Players: ~3,800+ current/historical players
+- Games: ~1,900+ games (2018-2024)
+- Player Stats: ~30,000+ performance records
+
+7. Start the development server:
 
 ```bash
 make run
@@ -71,6 +99,38 @@ make format         # Format code with Ruff/Black
 make lint           # Run linters
 make test           # Run tests
 make test-cov       # Run tests with coverage
+```
+
+### Data Collection Commands
+
+```bash
+# Data collection (run after database initialization)
+uv run python -m src.cli.collect_data collect-all          # Collect all NFL data
+uv run python -m src.cli.collect_data collect-teams        # Collect team data
+uv run python -m src.cli.collect_data collect-players      # Collect player rosters
+uv run python -m src.cli.collect_data collect-schedules    # Collect game schedules
+uv run python -m src.cli.collect_data collect-stats        # Collect player statistics
+uv run python -m src.cli.collect_data status               # Check database status
+
+# Collect specific seasons (useful for updates)
+uv run python -m src.cli.collect_data collect-stats -s 2024
+```
+
+### ML Model Training Commands
+
+```bash
+# Train position-specific models
+uv run python -m src.cli.train_models train-position QB    # Train quarterback model
+uv run python -m src.cli.train_models train-position RB    # Train running back model
+uv run python -m src.cli.train_models train-position WR    # Train wide receiver model
+uv run python -m src.cli.train_models train-position TE    # Train tight end model
+uv run python -m src.cli.train_models train-position DEF   # Train defense model
+
+# Train with neural networks (PyTorch models)
+uv run python -m src.cli.train_models train-position QB --use-neural
+
+# Train all position models at once
+uv run python -m src.cli.train_models train-all-positions
 ```
 
 ### Code Quality Tools

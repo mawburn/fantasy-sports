@@ -14,7 +14,7 @@ from .lineup_builder import LineupBuilder, PlayerProjection
 
 __all__ = [
     "ContestAnalyzer",
-    "ContestMetrics", 
+    "ContestMetrics",
     "ContestType",
     "ExpectedValueCalculator",
     "GameSelectionEngine",

@@ -441,20 +441,6 @@ class BaseNeuralModel(BaseModel):
             model_version=self.config.version,
         )
 
-    def build_network(self, input_size: int) -> nn.Module:
-        """Build neural network architecture.
-
-        This method must be implemented by each position-specific model
-        to define the appropriate architecture for that position.
-
-        Args:
-            input_size: Number of input features
-
-        Returns:
-            PyTorch neural network module
-        """
-        raise NotImplementedError("Each neural model must implement build_network()")
-
 
 class QBNeuralModel(BaseNeuralModel):
     """Neural network model for quarterback predictions.

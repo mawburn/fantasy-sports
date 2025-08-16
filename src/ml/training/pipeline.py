@@ -83,7 +83,7 @@ class TrainingPipeline:
             )
 
         except Exception as e:
-            logger.error(f"Training pipeline failed: {e}")
+            logger.exception("Training pipeline failed")
             results["error"] = str(e)
             results["success"] = False
 
@@ -125,15 +125,15 @@ class TrainingPipeline:
 
                 training_results[position] = {
                     "status": "success",
-                    "model_type": "ensemble"
-                    if ensemble
-                    else ("neural" if use_neural else "traditional"),
+                    "model_type": (
+                        "ensemble" if ensemble else ("neural" if use_neural else "traditional")
+                    ),
                     "metrics": result.get("metrics", {}),
                     "model_id": result.get("model_id"),
                 }
 
             except Exception as e:
-                logger.error(f"Failed to train {position} model: {e}")
+                logger.exception(f"Failed to train {position} model")
                 training_results[position] = {"status": "failed", "error": str(e)}
 
         return training_results

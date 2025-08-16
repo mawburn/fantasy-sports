@@ -43,6 +43,42 @@ from src.database.models import Game, Player, PlayerStats, Team
 logger = logging.getLogger(__name__)
 
 
+def _ensure_datetime(date_input: datetime | str) -> datetime:
+    """Convert string dates to datetime objects safely.
+
+    This function handles the case where dates come from SQLite as strings
+    instead of datetime objects. It ensures consistent datetime handling
+    throughout the feature extraction pipeline.
+
+    Args:
+        date_input: Either a datetime object or string representation
+
+    Returns:
+        datetime object
+
+    Raises:
+        ValueError: If string cannot be parsed as a date
+    """
+    if isinstance(date_input, datetime):
+        return date_input
+    elif isinstance(date_input, str):
+        try:
+            # Handle common SQLite datetime formats
+            # Try parsing with microseconds first, then without
+            try:
+                return datetime.strptime(date_input, "%Y-%m-%d %H:%M:%S.%f")
+            except ValueError:
+                return datetime.strptime(date_input, "%Y-%m-%d %H:%M:%S")
+        except ValueError as e:
+            try:
+                # Try date-only format
+                return datetime.strptime(date_input, "%Y-%m-%d")
+            except ValueError:
+                raise ValueError(f"Unable to parse date string: {date_input}") from e
+    else:
+        raise TypeError(f"Expected datetime or string, got {type(date_input)}: {date_input}")
+
+
 class FeatureExtractor:
     """Extract features for ML models from NFL data.
 
@@ -77,7 +113,7 @@ class FeatureExtractor:
     def extract_player_features(
         self,
         player_id: int,
-        target_game_date: datetime,
+        target_game_date: datetime | str,
         lookback_games: int = 5,
         season_stats: bool = True,
     ) -> dict:
@@ -118,6 +154,9 @@ class FeatureExtractor:
             Dictionary of extracted features with consistent naming convention
             Example keys: 'recent_fantasy_points_avg', 'season_targets_sum', 'is_home_game'
         """
+        # Convert target_game_date to datetime if it's a string (handles SQLite string dates)
+        target_game_date = _ensure_datetime(target_game_date)
+
         # Initialize feature dictionary that will be returned
         features = {}
 
@@ -198,9 +237,10 @@ class FeatureExtractor:
         }
 
     def _get_recent_stats(
-        self, player_id: int, target_date: datetime, num_games: int
+        self, player_id: int, target_date: datetime | str, num_games: int
     ) -> pd.DataFrame:
         """Get recent game statistics for a player."""
+        target_date = _ensure_datetime(target_date)
         stats_query = (
             self.db.query(PlayerStats)
             .join(Game)
@@ -270,13 +310,12 @@ class FeatureExtractor:
         Feature Naming Convention:
         {prefix}_{stat}_{measure} (e.g., 'recent_fantasy_points_avg')
         This creates consistent, descriptive feature names.
-        """
-        # Handle empty data gracefully (new players, injuries, etc.)
-        if df.empty:
-            return {f"{prefix}_games_played": 0}
 
+        CRITICAL FIX: Always return the same feature set regardless of data availability
+        to ensure consistent feature vectors for ML model training.
+        """
         # Start with games played count (important context)
-        features = {f"{prefix}_games_played": len(df)}
+        features = {f"{prefix}_games_played": len(df) if not df.empty else 0}
 
         # Core fantasy statistics to extract
         # These cover all major fantasy scoring categories across positions
@@ -295,8 +334,9 @@ class FeatureExtractor:
         ]
 
         # Calculate comprehensive statistics for each metric
+        # ALWAYS generate all features, even if data is empty (use 0 as default)
         for col in numeric_cols:
-            if col in df.columns:
+            if not df.empty and col in df.columns:
                 # Handle missing values by replacing with 0 (conservative)
                 values = df[col].fillna(0)
 
@@ -309,27 +349,42 @@ class FeatureExtractor:
                 features[f"{prefix}_{col}_std"] = (
                     float(values.std()) if len(values) > 1 else 0
                 )  # Consistency/volatility
+            else:
+                # No data available - use zeros for all statistics
+                features[f"{prefix}_{col}_avg"] = 0.0
+                features[f"{prefix}_{col}_sum"] = 0.0
+                features[f"{prefix}_{col}_max"] = 0.0
+                features[f"{prefix}_{col}_std"] = 0.0
 
         # Calculate derived efficiency metrics (often more predictive than raw totals)
+        # ALWAYS add these features for consistency
 
         # QB Completion Percentage: Accuracy/efficiency metric
-        if "passing_attempts" in df.columns and "passing_completions" in df.columns:
+        if (
+            not df.empty
+            and "passing_attempts" in df.columns
+            and "passing_completions" in df.columns
+        ):
             # Use replace(0, np.nan) to avoid division by zero
             completion_pct = df["passing_completions"] / df["passing_attempts"].replace(0, np.nan)
             features[f"{prefix}_completion_pct"] = (
                 float(completion_pct.mean()) if not completion_pct.isna().all() else 0
             )
+        else:
+            features[f"{prefix}_completion_pct"] = 0.0
 
         # Catch Rate: WR/TE/RB efficiency on targets
-        if "targets" in df.columns and "receptions" in df.columns:
+        if not df.empty and "targets" in df.columns and "receptions" in df.columns:
             # Higher catch rate = more reliable target for QB
             catch_rate = df["receptions"] / df["targets"].replace(0, np.nan)
             features[f"{prefix}_catch_rate"] = (
                 float(catch_rate.mean()) if not catch_rate.isna().all() else 0
             )
+        else:
+            features[f"{prefix}_catch_rate"] = 0.0
 
         # Consistency metrics using Coefficient of Variation (CV)
-        if len(df) > 1:  # Need at least 2 games for standard deviation
+        if not df.empty and len(df) > 1:  # Need at least 2 games for standard deviation
             # CV = std / mean (measures relative variability)
             fp_mean = df["fantasy_points"].mean()
             if fp_mean != 0:
@@ -338,12 +393,17 @@ class FeatureExtractor:
                 # Uses 1/(1+CV) so CV=0 gives consistency=1, high CV gives consistency near 0
                 features[f"{prefix}_fantasy_points_consistency"] = 1.0 / (1.0 + fp_cv)
             else:
-                features[f"{prefix}_fantasy_points_consistency"] = 0
+                features[f"{prefix}_fantasy_points_consistency"] = 0.0
+        else:
+            features[f"{prefix}_fantasy_points_consistency"] = 0.0
 
         return features
 
-    def _get_season_stats(self, player_id: int, season: int, before_date: datetime) -> pd.DataFrame:
+    def _get_season_stats(
+        self, player_id: int, season: int, before_date: datetime | str
+    ) -> pd.DataFrame:
         """Get season-to-date statistics."""
+        before_date = _ensure_datetime(before_date)
         stats_query = (
             self.db.query(PlayerStats)
             .join(Game)
@@ -381,13 +441,14 @@ class FeatureExtractor:
         return pd.DataFrame(data)
 
     def _calculate_season_stats(self, df: pd.DataFrame) -> dict:
-        """Calculate season-to-date statistics."""
-        if df.empty:
-            return {"season_games_played": 0}
+        """Calculate season-to-date statistics.
 
+        This method simply delegates to _calculate_rolling_stats with 'season' prefix
+        to ensure consistent feature generation regardless of data availability.
+        """
         return self._calculate_rolling_stats(df, "season")
 
-    def _get_opponent_features(self, player_id: int, target_date: datetime) -> dict:
+    def _get_opponent_features(self, player_id: int, target_date: datetime | str) -> dict:
         """Extract opponent-specific features.
 
         Opponent analysis is crucial for fantasy predictions because:
@@ -408,6 +469,7 @@ class FeatureExtractor:
         - Vegas odds and game totals
         - Pace of play and game script predictions
         """
+        target_date = _ensure_datetime(target_date)
         # Find the target game using complex join to connect player -> team -> game
         # The join conditions handle both home and away games
         target_game = (
@@ -423,14 +485,21 @@ class FeatureExtractor:
             .first()
         )
 
-        # Handle case where game isn't found (bye week, postponed, etc.)
-        if not target_game:
-            return {"has_opponent_data": 0}  # Flag indicates no matchup data available
-
-        # Get player info to determine their team
+        # Get player info first (needed for both success and failure cases)
         player = self.db.query(Player).filter(Player.id == player_id).first()
-        if not player or not player.team_id:
-            return {"has_opponent_data": 0}  # Player not found or no team assignment
+
+        # Handle cases where game isn't found or player data is missing
+        # ALWAYS return the same feature set for consistency
+        if not target_game or not player or not player.team_id:
+            # Return default values for all opponent features to maintain consistency
+            return {
+                "has_opponent_data": 0,  # Flag indicates no matchup data available
+                "is_home_game": 0,  # Default to away game
+                "game_week": 1,  # Default to week 1
+                "is_divisional_game": 0,  # Default to non-divisional
+                "opponent_def_rank": 15,  # Default to middle ranking
+                "opponent_points_allowed_avg": 22.0,  # Default to league average
+            }
 
         # Determine opponent team and home/away status
         # Logic: if player's team is home team, they're playing at home vs away team
@@ -476,7 +545,7 @@ class FeatureExtractor:
             1 if (team1.conference == team2.conference and team1.division == team2.division) else 0
         )
 
-    def _get_situational_features(self, target_date: datetime) -> dict:
+    def _get_situational_features(self, target_date: datetime | str) -> dict:
         """Extract situational features like weather, time of year, etc.
 
         Situational context affects fantasy performance in predictable ways:
@@ -499,6 +568,7 @@ class FeatureExtractor:
         - Rest days between games
         - Playoff implications and motivation
         """
+        target_date = _ensure_datetime(target_date)
         # Calculate approximate week of season based on calendar
         # NFL season typically starts first Sunday in September
         september_start = datetime(target_date.year, 9, 1)
@@ -560,7 +630,7 @@ class FeatureExtractor:
         return features
 
     def extract_slate_features(
-        self, game_date: datetime, positions: list[str] | None = None
+        self, game_date: datetime | str, positions: list[str] | None = None
     ) -> pd.DataFrame:
         """Extract features for all players in a game slate.
 
@@ -571,6 +641,7 @@ class FeatureExtractor:
         Returns:
             DataFrame with features for all eligible players
         """
+        game_date = _ensure_datetime(game_date)
         if positions is None:
             positions = ["QB", "RB", "WR", "TE", "K", "DEF"]
 

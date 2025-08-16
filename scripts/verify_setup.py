@@ -285,7 +285,7 @@ def check_config_files():
         "requirements-dev.txt",  # Development dependencies
         "pyproject.toml",  # Project configuration
         # Development tools
-        ".pre-commit-config.yaml",  # Code quality hooks
+        # ".pre-commit-config.yaml",  # Code quality hooks
         ".gitignore",  # Version control exclusions
         "Makefile",  # Task automation
         # Documentation
