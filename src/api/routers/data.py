@@ -19,13 +19,14 @@ Database Patterns:
 """
 
 # FastAPI imports for routing and request handling
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 # SQLAlchemy for database operations
 from sqlalchemy.orm import Session
 
 # Import Pydantic response schemas that define API response structure
 from src.api.schemas import ContestResponse  # DraftKings contest information
+from src.api.schemas import CSVUploadResponse  # File upload response
 from src.api.schemas import GameResponse  # NFL game details
 from src.api.schemas import PlayerResponse  # Player information
 from src.api.schemas import PlayerStatsResponse  # Player performance statistics
@@ -601,6 +602,155 @@ async def get_contest_salaries(
         raise HTTPException(status_code=404, detail="No salaries found for this contest")
 
     return salaries
+
+
+# ========== FILE UPLOAD ENDPOINTS ==========
+
+
+@router.post("/upload/draftkings", response_model=CSVUploadResponse)
+async def upload_draftkings_csv(
+    file: UploadFile = File(..., description="DraftKings salary CSV file"),
+    contest_name: str | None = Query(
+        None, description="Custom contest name (defaults to filename)"
+    ),
+):
+    """
+    Upload and process a DraftKings salary CSV file.
+
+    This endpoint provides a web interface for uploading DraftKings CSV files,
+    complementing the existing CLI functionality. It handles:
+    - File validation and format checking
+    - CSV parsing and data extraction
+    - Player matching and database storage
+    - Comprehensive error reporting and feedback
+
+    The endpoint maintains compatibility with the existing CLI workflow while
+    providing a user-friendly web interface for data uploads.
+
+    CSV Format Requirements:
+    - Must contain required columns: Name, Position, Team, Salary, etc.
+    - Should follow standard DraftKings export format
+    - Encoding should be UTF-8 or UTF-8 with BOM
+
+    Processing Pipeline:
+    1. Validate file format and extension
+    2. Read and parse CSV content using existing DKCSVParser
+    3. Validate data integrity using DKSalaryValidator
+    4. Match players to database records using fuzzy matching
+    5. Store contest and salary data in database
+    6. Return detailed processing results
+
+    Args:
+        file: Uploaded CSV file from DraftKings export
+        contest_name: Optional custom contest name (derives from filename if not provided)
+
+    Returns:
+        CSVUploadResponse with processing results, counts, and any warnings/errors
+
+    Raises:
+        HTTPException: 400 for file validation errors, 500 for processing errors
+    """
+    import tempfile
+    from pathlib import Path
+
+    # Import the DraftKings collector and exception types
+    from src.data.collection.dk_collector import (
+        CSVParsingError,
+        DataValidationError,
+        DraftKingsCollector,
+        MissingColumnsError,
+    )
+
+    # Step 1: Validate file before processing
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+
+    # Check file extension
+    if not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Invalid file type. Please upload a CSV file.")
+
+    # Check file size (reasonable limit for CSV files)
+    # Read file content to check size and validate format
+    try:
+        content = await file.read()
+        if len(content) == 0:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+        # Reset file pointer for subsequent reading
+        await file.seek(0)
+
+        # Basic size check (10MB limit for CSV files)
+        if len(content) > 10 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="File too large. Maximum size is 10MB.")
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error reading uploaded file: {e!s}") from e
+
+    # Step 2: Process the CSV file using existing DraftKings collector
+    try:
+        # Create temporary file to save uploaded content
+        # Using tempfile ensures proper cleanup and secure file handling
+        with tempfile.NamedTemporaryFile(mode="wb", suffix=".csv", delete=False) as temp_file:
+            # Write uploaded content to temporary file
+            await file.seek(0)  # Ensure we're at the beginning
+            content = await file.read()
+            temp_file.write(content)
+            temp_path = Path(temp_file.name)
+
+        # Process the file using existing DraftKings collector
+        collector = DraftKingsCollector()
+
+        # Derive contest name from filename if not provided
+        final_contest_name = contest_name or Path(file.filename).stem
+
+        # Use the existing process_salary_file method
+        results = collector.process_salary_file(temp_path, final_contest_name)
+
+        # Clean up temporary file
+        temp_path.unlink()
+
+        # Step 3: Return success response with detailed results
+        return CSVUploadResponse(
+            success=True,
+            message=f"Successfully processed {file.filename}",
+            contests_created=results.get("contests", 0),
+            salaries_processed=results.get("salaries", 0),
+            unmatched_players=results.get("unmatched_players", 0),
+            filename=file.filename,
+            contest_name=final_contest_name,
+            warnings=None,  # Validation warnings would be captured here
+            errors=None,
+        )
+
+    except (CSVParsingError, MissingColumnsError) as e:
+        # Handle file format and parsing errors
+        # Clean up temp file if it exists
+        if "temp_path" in locals() and temp_path.exists():
+            temp_path.unlink()
+
+        raise HTTPException(status_code=400, detail=f"CSV parsing error: {e!s}") from e
+
+    except DataValidationError as e:
+        # Handle data validation errors
+        if "temp_path" in locals() and temp_path.exists():
+            temp_path.unlink()
+
+        raise HTTPException(status_code=400, detail=f"Data validation error: {e!s}") from e
+
+    except Exception as e:
+        # Handle unexpected errors
+        if "temp_path" in locals() and temp_path.exists():
+            temp_path.unlink()
+
+        # Log the full error for debugging while returning safe message to user
+        import logging
+
+        logger = logging.getLogger(__name__)
+        logger.exception(f"Unexpected error processing {file.filename}")
+
+        raise HTTPException(
+            status_code=500, detail=f"Internal server error processing file: {e!s}"
+        ) from e
 
 
 # ========== STATISTICAL ANALYSIS ENDPOINTS ==========

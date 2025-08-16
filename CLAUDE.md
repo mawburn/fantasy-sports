@@ -31,11 +31,7 @@ The project uses UV, a fast Rust-based Python package manager:
 
 ### CLI Tools
 
-The project includes CLI commands for data collection and ML training:
-
-- `uv run python -m src.cli.collect_data init-db` - Initialize database
-- `uv run python -m src.cli.collect_data collect-teams` - Collect NFL team data
-- `uv run python -m src.cli.train_models train-position QB` - Train QB model
+The project includes CLI commands for data collection and ML training. See README.md for complete command documentation.
 
 ### Code Quality
 
@@ -74,8 +70,9 @@ This is an NFL Daily Fantasy Sports (DFS) prediction and optimization system bui
 **API (`src/api/`)**:
 
 - FastAPI-based REST API with automatic OpenAPI docs
-- `routers/data.py` - Data access endpoints
+- `routers/data.py` - Data access endpoints and DraftKings CSV upload
 - `routers/predictions.py` - ML prediction endpoints
+- DraftKings salary updates: `POST /api/data/upload/draftkings` (web upload)
 
 **Database (`src/database/`)**:
 

@@ -110,7 +110,8 @@
 - [x] Scoring rules parser
 - [x] Contest type classifier
 - [ ] Historical results collector
-- [x] Manual CSV upload system for current season DraftKings salary data
+- [x] CSV upload system for DraftKings salary data (CLI + Web API)
+- [x] Default directory processing (data/draftkings/salaries)
 
 ### External Data Sources
 
@@ -370,6 +371,7 @@
 - [x] `/api/data/stats` - Player statistics
 - [x] `/api/data/contests` - Contest data
 - [x] `/api/data/salaries` - Salary information
+- [x] `/api/data/upload/draftkings` - DraftKings CSV upload
 - [x] `/api/data/stats/summary/{player_id}` - Player statistical summaries
 
 ### WebSocket Services

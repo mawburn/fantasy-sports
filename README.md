@@ -113,6 +113,10 @@ uv run python -m src.cli.collect_data status               # Check database stat
 
 # Collect specific seasons (useful for updates)
 uv run python -m src.cli.collect_data collect-stats -s 2024
+
+# DraftKings salary data (CSV upload)
+uv run python -m src.cli.collect_data collect-dk           # Process all CSVs in data/draftkings/salaries/
+uv run python -m src.cli.collect_data collect-dk --file [path]  # Process single CSV file
 ```
 
 ### ML Model Training Commands
@@ -234,6 +238,19 @@ Once the server is running, visit:
 
 - API Documentation: <http://localhost:8000/docs>
 - Alternative API Docs: <http://localhost:8000/redoc>
+
+### DraftKings Data Upload
+
+Upload DraftKings salary CSV files via the web API:
+
+```bash
+# Upload CSV file via API
+curl -X POST "http://localhost:8000/api/data/upload/draftkings" \
+  -F "file=@path/to/salary.csv" \
+  -F "contest_name=contest-name-optional"
+```
+
+Or use the interactive API documentation at `/docs` for easy file uploads.
 
 ## Testing
 

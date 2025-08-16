@@ -268,7 +268,10 @@ def collect_injuries(
 def collect_dk(
     file: str = typer.Option(None, "--file", "-f", help="Path to DraftKings salary CSV file"),
     directory: str = typer.Option(
-        None, "--directory", "-d", help="Directory containing DraftKings CSV files"
+        "data/draftkings/salaries",
+        "--directory",
+        "-d",
+        help="Directory containing DraftKings CSV files",
     ),
     contest_name: str = typer.Option(
         None, "--contest-name", "-c", help="Contest name (derived from filename if not provided)"
@@ -277,12 +280,14 @@ def collect_dk(
     """Process DraftKings salary data from CSV files."""
     setup_logging()
 
-    if not file and not directory:
-        typer.echo("❌ Must specify either --file or --directory")
+    if file and directory != "data/draftkings/salaries":
+        typer.echo("❌ Cannot specify both --file and --directory")
         raise typer.Exit(1) from None
 
-    if file and directory:
-        typer.echo("❌ Cannot specify both --file and --directory")
+    if not file and not Path(directory).exists():
+        typer.echo(
+            f"❌ Directory {directory} does not exist. Use --file or create the directory first."
+        )
         raise typer.Exit(1) from None
 
     try:

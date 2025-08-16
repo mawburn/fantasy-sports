@@ -389,3 +389,38 @@ class SlatePredictionResponse(BaseModel):
 
     # Error reporting (None if all predictions succeeded)
     errors: list[str] | None = None  # Any errors encountered during processing
+
+
+# ========== FILE UPLOAD SCHEMAS ==========
+
+
+class CSVUploadResponse(BaseModel):
+    """
+    Response schema for DraftKings CSV file upload operations.
+
+    Contains comprehensive processing results including:
+    - Success/failure status
+    - Count of records processed
+    - Data validation warnings
+    - Error details for debugging
+
+    Used by the /api/data/upload/draftkings endpoint to provide
+    detailed feedback on CSV file processing operations.
+    """
+
+    # Processing status
+    success: bool  # True if file was processed successfully
+    message: str  # Human-readable status message
+
+    # Processing results (None if processing failed)
+    contests_created: int | None = None  # Number of new contests created
+    salaries_processed: int | None = None  # Number of salary records processed
+    unmatched_players: int | None = None  # Number of players that couldn't be matched
+
+    # Data quality feedback
+    warnings: list[str] | None = None  # Non-fatal validation warnings
+    errors: list[str] | None = None  # Processing errors that occurred
+
+    # File metadata
+    filename: str | None = None  # Original filename for reference
+    contest_name: str | None = None  # Derived or provided contest name

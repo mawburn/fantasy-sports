@@ -263,7 +263,19 @@ class DKCSVParser:
     - Logs warnings for data quality issues
     """
 
-    # Expected columns in DraftKings CSV exports
+    # Core required columns that must be present
+    # These are essential for processing and cannot be missing
+    REQUIRED_COLUMNS: ClassVar[list[str]] = [
+        "Name",  # Player full name
+        "Position",  # Position abbreviation (QB, RB, etc.)
+        "Salary",  # DraftKings salary for this contest
+        "ID",  # DraftKings internal player ID
+    ]
+
+    # Alternative team column names (use first available)
+    TEAM_COLUMNS: ClassVar[list[str]] = ["Team", "TeamAbbrev"]
+
+    # Expected columns in DraftKings CSV exports (for backward compatibility)
     # If DK changes format, this validation will catch it
     EXPECTED_COLUMNS: ClassVar[list[str]] = [
         "Name",  # Player full name
@@ -351,28 +363,50 @@ class DKCSVParser:
         - Missing critical columns would cause downstream errors
         - Early validation provides clear error messages
 
-        Validation Strategy:
-        - Check for exact column name matches
-        - Report all missing columns at once (not just first)
+        Flexible Validation Strategy:
+        - Check for core required columns (essential for processing)
+        - Allow alternative team column names (Team or TeamAbbrev)
+        - Log warnings for missing optional columns
         - Provide actionable error message for debugging
 
         Args:
             df: DataFrame to validate
 
         Raises:
-            MissingColumnsError: If any required columns are missing
+            MissingColumnsError: If any core required columns are missing
         """
-        # Find columns that are expected but not present in the CSV
-        missing_cols = set(self.EXPECTED_COLUMNS) - set(df.columns)
+        available_cols = set(df.columns)
 
-        if missing_cols:
-            # Log available columns for debugging
+        # Check for core required columns
+        missing_required = set(self.REQUIRED_COLUMNS) - available_cols
+
+        if missing_required:
             logger.error(f"Available columns: {list(df.columns)}")
-            logger.error(f"Expected columns: {self.EXPECTED_COLUMNS}")
+            logger.error(f"Required columns: {self.REQUIRED_COLUMNS}")
             raise MissingColumnsError(
-                f"Missing required columns: {sorted(missing_cols)}. "
-                f"This may indicate a format change in DraftKings exports."
+                f"Missing core required columns: {sorted(missing_required)}. "
+                f"Cannot process CSV without these essential fields."
             )
+
+        # Check for team column (flexible - either Team or TeamAbbrev)
+        team_col_found = any(col in available_cols for col in self.TEAM_COLUMNS)
+        if not team_col_found:
+            logger.error(f"No team column found. Expected one of: {self.TEAM_COLUMNS}")
+            raise MissingColumnsError(f"Missing team column. Expected one of: {self.TEAM_COLUMNS}")
+
+        # Log warnings for missing optional columns (for monitoring format changes)
+        optional_cols = (
+            set(self.EXPECTED_COLUMNS) - set(self.REQUIRED_COLUMNS) - set(self.TEAM_COLUMNS)
+        )
+        missing_optional = optional_cols - available_cols
+
+        if missing_optional:
+            logger.warning(
+                f"Missing optional columns: {sorted(missing_optional)}. "
+                f"Processing will continue with available data."
+            )
+
+        logger.info(f"Column validation passed. Available: {sorted(available_cols)}")
 
     def _clean_salary_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """Clean and standardize salary data.
@@ -432,13 +466,35 @@ class DKCSVParser:
         if not unmapped.empty:
             logger.warning(f"Unmapped positions found: {unmapped.unique()}")
 
-        # Step 4: Extract home/away status from game info
-        df = self._parse_game_info(df)
+        # Step 4: Standardize team column naming
+        # Handle flexible team column names (Team or TeamAbbrev)
+        team_col = None
+        for col_name in self.TEAM_COLUMNS:
+            if col_name in df.columns:
+                team_col = col_name
+                break
 
-        # Step 5: Remove rows with missing critical data
+        if team_col and team_col != "Team":
+            # Rename to standard "Team" column for consistency
+            df = df.rename(columns={team_col: "Team"})
+            logger.info(f"Renamed '{team_col}' column to 'Team' for consistency")
+
+        # Step 5: Extract home/away status from game info
+        if "Game Info" in df.columns:
+            df = self._parse_game_info(df)
+        else:
+            # If no Game Info column, default to away status
+            df["is_home"] = False
+            logger.warning("No 'Game Info' column found - defaulting all games to away status")
+
+        # Step 6: Remove rows with missing critical data
         # These fields are essential for player matching and processing
         initial_count = len(df)
-        df = df.dropna(subset=["Name", "Position", "Team"])
+        required_fields = ["Name", "Position"]
+        if "Team" in df.columns:
+            required_fields.append("Team")
+
+        df = df.dropna(subset=required_fields)
         dropped_count = initial_count - len(df)
 
         if dropped_count > 0:
