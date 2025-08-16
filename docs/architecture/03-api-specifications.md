@@ -798,9 +798,12 @@ GET /api/v1/metrics
 ### Python SDK Example
 
 ```python
-from nfl_dfs_client import NFLDFSClient
+import requests
 
-client = NFLDFSClient(base_url="http://localhost:8000")
+# Direct API client for NFL DFS system
+client = requests.Session()
+client.headers.update({'Content-Type': 'application/json'})
+base_url = "http://localhost:8000"
 
 # Get predictions
 predictions = client.predictions.get_weekly(

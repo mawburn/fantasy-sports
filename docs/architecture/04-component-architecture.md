@@ -99,29 +99,32 @@ nfl_data_collector:
   parallel_workers: 4
 ```
 
-### DraftKings Data Processor
+### DraftKings CSV Processor
 
 **Location:** `src/data/collection/dk_salary_processor.py`
 
 **Responsibilities:**
 
-- Parse DraftKings CSV files
+- Process manually uploaded DraftKings CSV files
 - Map players to database IDs
-- Validate salary constraints
-- Calculate value metrics
+- Validate current season salary data
+- Calculate value metrics for current contest slate
 
 **Key Classes:**
 
 ```python
 class DKSalaryProcessor:
     def process_salary_csv(self, file_path: Path) -> SalaryData:
-        """Process uploaded DraftKings salary file"""
+        """Process manually uploaded DraftKings salary CSV file"""
 
-    def validate_salary_data(self, data: pd.DataFrame) -> ValidationResult:
-        """Validate salary data integrity"""
+    def validate_current_salary_data(self, data: pd.DataFrame) -> ValidationResult:
+        """Validate current season salary data integrity"""
 
     def calculate_value_metrics(self, salaries: SalaryData) -> ValueMetrics:
-        """Calculate points per dollar and other metrics"""
+        """Calculate points per dollar and other value metrics"""
+        
+    def map_to_current_players(self, csv_data: pd.DataFrame) -> MappedData:
+        """Map CSV player names to current season player database IDs"""
 ```
 
 ### Schedule Manager

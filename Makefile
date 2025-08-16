@@ -53,37 +53,37 @@ setup-hooks: install-dev
 # Format code
 format:
 	@echo "Formatting Python code with Ruff..."
-	$(UV) run ruff format src/ tests/ scripts/
-	$(UV) run ruff check --fix src/ tests/ scripts/
+	@unset VIRTUAL_ENV && $(UV) run ruff format src/ tests/ scripts/
+	@unset VIRTUAL_ENV && $(UV) run ruff check --fix src/ tests/ scripts/
 	@echo "Formatting Python code with Black..."
-	$(UV) run black src/ tests/ scripts/
+	@unset VIRTUAL_ENV && $(UV) run black src/ tests/ scripts/
 	@echo "Sorting imports with isort..."
-	$(UV) run isort src/ tests/ scripts/
+	@unset VIRTUAL_ENV && $(UV) run isort src/ tests/ scripts/
 	@echo "Formatting Markdown files..."
-	$(UV) run mdformat --compact-tables docs/ *.md
+	@unset VIRTUAL_ENV && $(UV) run mdformat --compact-tables docs/ *.md
 	@echo "Formatting complete!"
 
 # Run linters
 lint:
 	@echo "Running Ruff linter..."
-	$(UV) run ruff check src/ tests/ scripts/
+	@unset VIRTUAL_ENV && $(UV) run ruff check src/ tests/ scripts/
 	@echo "Running Black check..."
-	$(UV) run black --check src/ tests/ scripts/
+	@unset VIRTUAL_ENV && $(UV) run black --check src/ tests/ scripts/
 	@echo "Running isort check..."
-	$(UV) run isort --check-only src/ tests/ scripts/
+	@unset VIRTUAL_ENV && $(UV) run isort --check-only src/ tests/ scripts/
 	@echo "Running mypy..."
-	$(UV) run mypy src/
+	@unset VIRTUAL_ENV && $(UV) run mypy src/
 	@echo "Running bandit security checks..."
-	$(UV) run bandit -r src/ -ll
+	@unset VIRTUAL_ENV && $(UV) run bandit -r src/ -ll
 	@echo "Linting complete!"
 
 # Run tests
 test:
-	$(UV) run pytest tests/ -v
+	@unset VIRTUAL_ENV && $(UV) run pytest tests/ -v
 
 # Run tests with coverage
 test-cov:
-	$(UV) run pytest tests/ --cov=src --cov-report=term-missing --cov-report=html
+	@unset VIRTUAL_ENV && $(UV) run pytest tests/ --cov=src --cov-report=term-missing --cov-report=html
 
 # Clean build artifacts and cache
 clean:
@@ -107,25 +107,25 @@ freeze: $(VENV)
 
 # Start development server
 run:
-	$(UV) run uvicorn src.api.main:app --reload --host 127.0.0.1 --port 8000
+	@$(UV) run uvicorn src.api.main:app --reload --host 127.0.0.1 --port 8000
 
 # Build documentation
 docs:
-	$(UV) run mkdocs build
+	@$(UV) run mkdocs build
 
 # Serve documentation locally
 docs-serve:
-	$(UV) run mkdocs serve
+	@$(UV) run mkdocs serve
 
 # Database operations
 db-init:
-	$(UV) run python scripts/init_database.py
+	@$(UV) run python scripts/init_database.py
 
 db-migrate:
-	$(UV) run alembic upgrade head
+	@$(UV) run alembic upgrade head
 
 db-backup:
-	$(UV) run python scripts/backup_system.py
+	@$(UV) run python scripts/backup_system.py
 
 # Install everything and setup for first use
 setup: install-dev setup-hooks

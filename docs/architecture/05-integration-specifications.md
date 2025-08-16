@@ -195,163 +195,219 @@ class NFLDataTransformer:
 
 ## DraftKings Integration
 
-### Historical DFS Salaries (Kaggle)
+### Commercial Data Provider Options
 
-**Kaggle datasets for historical DraftKings NFL salary data**
+**Professional-grade DFS salary data sources for potential future integration**
 
-#### Data Source Configuration
+#### SportsDataIO
+
+**Comprehensive NFL DFS data solution**
+
+**Features:**
+
+- Complete DFS salary data for DraftKings, FanDuel, Yahoo
+- Historical database with decades of NFL data
+- API access with CSV export capabilities
+- Professional-grade data reliability
+- Real-time salary updates
+- Historical charting and analysis tools
+
+**Integration Approach:**
 
 ```python
-class KaggleHistoricalConfig:
-    KAGGLE_DATASETS = [
-        "jacobchapman91/draftkings-nfl-salaries-2009-2023",
-        "tobycrabtree/draftkings-nfl-salaries-2020-2024", 
-        "chrisfeller/draftkings-nfl-contest-data-2018-2023"
-    ]
+class SportsDataIOConfig:
+    BASE_URL = "https://api.sportsdata.io"
+    API_ENDPOINTS = {
+        'dfs_salaries': '/v3/nfl/scores/json/DfsSlatesByWeek/{season}/{week}',
+        'player_stats': '/v3/nfl/stats/json/PlayerGameStatsByWeek/{season}/{week}',
+        'historical': '/v3/nfl/scores/json/DfsSlatesByDate/{date}'
+    }
     
-    DATA_COLUMNS = [
-        'Name', 'Position', 'Team', 'Opponent', 'Salary', 
-        'AvgPointsPerGame', 'Week', 'Season', 'Game_Date'
-    ]
+    # Subscription tiers available
+    PRICING_TIERS = {
+        'trial': {'requests_per_month': 1000, 'cost': 0},
+        'basic': {'requests_per_month': 10000, 'cost': 49},
+        'premium': {'requests_per_month': 100000, 'cost': 199}
+    }
     
-    DOWNLOAD_PATH = "data/raw/kaggle/dfs_salaries/"
-    BATCH_SIZE = 10000
-    COMPRESSION = 'gzip'
+    SUPPORTED_SITES = ['draftkings', 'fanduel', 'yahoo', 'superdraft']
 ```
 
-#### Kaggle Data Collector
+#### FTN Data
+
+**Specialized fantasy sports data provider**
+
+**Features:**
+
+- Daily API feeds for DraftKings & FanDuel
+- CSV access includes last 3+ seasons of historical data
+- Historical charting data available since 2019
+- Starts at $599 for CSV access tier
+- Real-time lineup optimization data
+- Player ownership projections
+
+**Data Structure:**
 
 ```python
-class KaggleHistoricalCollector:
-    def __init__(self, config: KaggleHistoricalConfig):
-        self.kaggle_api = kaggle.KaggleApi()
-        self.kaggle_api.authenticate()
-        self.config = config
-        self.validator = HistoricalSalaryValidator()
-
-    async def download_historical_salaries(self, seasons: List[int]) -> pd.DataFrame:
-        """
-        Download historical DFS salary data from Kaggle
-        """
-        all_data = []
-        
-        for dataset in self.config.KAGGLE_DATASETS:
-            try:
-                # Download dataset
-                dataset_path = await self._download_dataset(dataset)
-                
-                # Load and process CSV files
-                csv_files = glob.glob(f"{dataset_path}/*.csv")
-                
-                for csv_file in csv_files:
-                    df = pd.read_csv(csv_file, encoding='utf-8-sig')
-                    
-                    # Filter by requested seasons
-                    if 'Season' in df.columns:
-                        df = df[df['Season'].isin(seasons)]
-                    
-                    # Validate and clean data
-                    df = self.validator.validate_historical_data(df)
-                    
-                    all_data.append(df)
-                    
-            except Exception as e:
-                logger.warning(f"Failed to process dataset {dataset}: {e}")
-        
-        # Combine all datasets
-        combined_data = pd.concat(all_data, ignore_index=True)
-        
-        # Remove duplicates based on player, week, season
-        combined_data = combined_data.drop_duplicates(
-            subset=['Name', 'Position', 'Team', 'Week', 'Season']
-        )
-        
-        return combined_data
-
-    async def _download_dataset(self, dataset: str) -> Path:
-        """
-        Download Kaggle dataset to local directory
-        """
-        download_path = Path(self.config.DOWNLOAD_PATH) / dataset.split('/')[-1]
-        download_path.mkdir(parents=True, exist_ok=True)
-        
-        self.kaggle_api.dataset_download_files(
-            dataset, 
-            path=str(download_path),
-            unzip=True,
-            quiet=False
-        )
-        
-        return download_path
+class FTNDataConfig:
+    BASE_URL = "https://api.ftndata.com"
+    SUBSCRIPTION_REQUIRED = True
+    MIN_COST = 599  # USD per season
+    
+    DATA_FORMATS = {
+        'csv': 'Direct CSV downloads',
+        'api': 'REST API access',
+        'json': 'JSON formatted responses'
+    }
+    
+    HISTORICAL_COVERAGE = {
+        'start_season': 2019,
+        'end_season': 2024,
+        'weekly_granularity': True,
+        'daily_updates': True
+    }
 ```
 
-#### Historical Data Validation
+#### FantasyData (SportsDataIO Integration)
+
+**Daily fantasy projections and salary data**
+
+**Features:**
+
+- Now integrated with SportsDataIO platform
+- Daily fantasy projections and salary information
+- CSV/XLS export functionality
+- Historical data access
+- Multi-platform DFS support
+
+**Migration Path:**
 
 ```python
-class HistoricalSalaryValidator:
-    def validate_historical_data(self, data: pd.DataFrame) -> pd.DataFrame:
-        """
-        Validate historical salary data from Kaggle
-        """
-        # Check for required columns
-        required_cols = ['Name', 'Position', 'Team', 'Salary']
-        missing_cols = set(required_cols) - set(data.columns)
-        if missing_cols:
-            raise ValidationError(f"Missing required columns: {missing_cols}")
-        
-        # Standardize position names
-        data['Position'] = data['Position'].map({
-            'QB': 'QB', 'RB': 'RB', 'WR': 'WR', 'TE': 'TE',
-            'DST': 'DST', 'DEF': 'DST', 'K': 'K'
-        })
-        
-        # Validate salary ranges (historical context)
-        data = self._validate_historical_salary_ranges(data)
-        
-        # Clean player names
-        data['Name'] = data['Name'].str.strip()
-        data['Name'] = data['Name'].str.replace(r'[^\w\s\-\.]', '', regex=True)
-        
-        # Standardize team abbreviations
-        data['Team'] = data['Team'].str.upper()
-        
-        return data
+class FantasyDataMigration:
+    # FantasyData has been acquired by SportsDataIO
+    NEW_PLATFORM = "SportsDataIO"
+    LEGACY_ENDPOINTS = {
+        'deprecated': True,
+        'redirect_to': 'SportsDataIO API'
+    }
     
-    def _validate_historical_salary_ranges(self, data: pd.DataFrame) -> pd.DataFrame:
+    MIGRATION_TIMELINE = {
+        'legacy_support_end': '2024-12-31',
+        'new_api_available': True
+    }
+```
+
+#### Commercial Integration Strategy
+
+**Recommended Implementation Approach:**
+
+```python
+class CommercialDataStrategy:
+    def __init__(self):
+        self.current_approach = "csv_upload"  # Manual CSV uploads
+        self.future_options = [
+            "sportsdata_io",  # Most comprehensive
+            "ftn_data",       # Specialized DFS focus
+            "hybrid_approach"  # Combine sources
+        ]
+    
+    def evaluate_upgrade_path(self) -> UpgradeRecommendation:
         """
-        Validate salary ranges considering historical inflation
+        Evaluate when to move from CSV uploads to commercial API
         """
-        # Define historical salary ranges by season
-        historical_ranges = {
-            2018: {'QB': (4000, 8500), 'RB': (3000, 9500), 'WR': (3000, 9000)},
-            2019: {'QB': (4200, 8700), 'RB': (3200, 9700), 'WR': (3200, 9200)},
-            2020: {'QB': (4400, 8900), 'RB': (3400, 9900), 'WR': (3400, 9400)},
-            2021: {'QB': (4600, 9100), 'RB': (3600, 10100), 'WR': (3600, 9600)},
-            2022: {'QB': (4800, 9300), 'RB': (3800, 10300), 'WR': (3800, 9800)},
-            2023: {'QB': (5000, 9500), 'RB': (4000, 10500), 'WR': (4000, 10000)},
-            2024: {'QB': (5200, 9700), 'RB': (4200, 10700), 'WR': (4200, 10200)}
+        factors = {
+            'data_volume_needs': 'Current CSV uploads sufficient for personal use',
+            'automation_benefits': 'APIs enable automated data collection',
+            'cost_justification': 'Evaluate based on time savings vs subscription cost',
+            'data_reliability': 'Commercial APIs provide higher reliability'
         }
         
-        # Flag unusual salaries for manual review
-        for season, ranges in historical_ranges.items():
-            season_data = data[data.get('Season', 2024) == season]
-            
-            for position, (min_sal, max_sal) in ranges.items():
-                pos_data = season_data[season_data['Position'] == position]
-                outliers = pos_data[
-                    (pos_data['Salary'] < min_sal * 0.5) | 
-                    (pos_data['Salary'] > max_sal * 1.5)
-                ]
-                
-                if not outliers.empty:
-                    logger.warning(f"Salary outliers in {season} {position}: {len(outliers)} players")
-        
-        return data
+        return UpgradeRecommendation(
+            recommended_provider="SportsDataIO",
+            justification="Most comprehensive data coverage with reasonable pricing",
+            timeline="When manual CSV process becomes too time-consuming"
+        )
+    
+    def get_cost_benefit_analysis(self) -> CostBenefitAnalysis:
+        """
+        Compare current CSV approach vs commercial options
+        """
+        return CostBenefitAnalysis(
+            current_cost=0,  # Free CSV uploads
+            current_time_cost="~30 minutes per week manual upload",
+            commercial_cost_range=(49, 599),  # Monthly/seasonal costs
+            automation_time_savings="~25 minutes per week",
+            additional_benefits=[
+                "Real-time salary updates",
+                "Historical data access",
+                "API reliability",
+                "Advanced analytics integration"
+            ]
+        )
 ```
 
-### CSV File Processing
+#### Implementation Priority
 
-**Manual upload and processing of DraftKings salary files**
+**Current State:**
+
+- Manual CSV upload system handles current needs effectively
+- Zero cost for salary data collection
+- Manual process manageable for personal use
+
+**Future Considerations:**
+
+- **SportsDataIO**: Best overall value and feature set
+- **FTN Data**: Specialized for serious DFS players
+- **Hybrid Approach**: Use free data for development, upgrade for production
+
+**Decision Factors:**
+
+```python
+class CommercialDataDecisionMatrix:
+    EVALUATION_CRITERIA = {
+        'cost_effectiveness': {
+            'csv_upload': 'High (free)',
+            'sportsdata_io': 'Medium ($49+/month)',
+            'ftn_data': 'Low ($599+/season)'
+        },
+        'automation_level': {
+            'csv_upload': 'Low (manual)',
+            'sportsdata_io': 'High (full API)',
+            'ftn_data': 'High (full API)'
+        },
+        'data_comprehensiveness': {
+            'csv_upload': 'Medium (current season only)',
+            'sportsdata_io': 'High (multi-year historical)',
+            'ftn_data': 'High (3+ seasons)'
+        },
+        'reliability': {
+            'csv_upload': 'Medium (depends on manual process)',
+            'sportsdata_io': 'High (commercial SLA)',
+            'ftn_data': 'High (commercial SLA)'
+        }
+    }
+```
+
+### Current Data Strategy: CSV File Processing
+
+**Primary method for DraftKings salary data collection via manual CSV uploads**
+
+**Current Implementation:**
+
+The system uses manual CSV upload as the primary method for collecting DraftKings salary data. This approach provides several advantages for personal use:
+
+- **Zero Cost**: No subscription fees or API costs
+- **Reliable Access**: Not dependent on external API availability
+- **Data Control**: Full control over data timing and quality
+- **Privacy**: No external API keys or authentication required
+- **Sufficient Coverage**: Covers current season needs effectively
+
+**Use Cases:**
+
+- Personal DFS research and lineup optimization
+- Current season salary tracking
+- Real-time contest preparation
+- Historical analysis of uploaded data
 
 #### File Format Specification
 

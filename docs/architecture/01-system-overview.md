@@ -72,7 +72,7 @@ graph TB
 ### 1. Data Collection & Storage
 
 - **NFL Data Pipeline**: Automated collection from nfl_data_py
-- **DraftKings Integration**: Manual salary CSV uploads and processing
+- **DraftKings Integration**: Manual CSV upload system for current season salary data
 - **SQLite Database**: Persistent storage for structured data
 - **Tensor Storage**: Pre-processed PyTorch tensors for fast model training
 
@@ -140,7 +140,7 @@ graph TB
 ### External Integrations
 
 - nfl_data_py API (read-only)
-- DraftKings CSV imports (manual)
+- DraftKings CSV uploads (manual current season data)
 - No external APIs or cloud services required
 
 ## Key Design Principles
@@ -214,7 +214,7 @@ sequenceDiagram
 
 - **SQLite Limitations**: Single-writer, limited concurrent access
 - **Local Processing**: Bounded by single machine resources
-- **Manual Data Entry**: DraftKings salaries require manual upload
+- **Manual Data Entry**: DraftKings salaries require manual CSV upload
 
 ### Business Constraints
 

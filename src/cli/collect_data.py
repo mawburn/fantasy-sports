@@ -220,6 +220,51 @@ def collect_pbp(
 
 
 @app.command()
+def collect_injuries(
+    seasons: list[int] = typer.Option(
+        [], "--season", "-s", help="Seasons to collect (e.g., -s 2023 -s 2024)"
+    ),
+    weeks: list[int] = typer.Option([], "--week", "-w", help="Weeks to collect (e.g., -w 1 -w 2)"),
+):
+    """
+    Collect NFL injury report data from nfl_data_py.
+
+    Injury reports provide crucial information for fantasy predictions including:
+    - Player availability status (Out, Doubtful, Questionable, Probable)
+    - Practice participation levels (DNP, Limited, Full)
+    - Specific injury types and affected body parts
+    - Historical injury patterns for trend analysis
+
+    The system uses nfl_data_py to collect comprehensive injury data that includes
+    both official injury reports and practice participation status.
+
+    Examples:
+        python -m src.cli.collect_data collect-injuries
+        python -m src.cli.collect_data collect-injuries -s 2024
+        python -m src.cli.collect_data collect-injuries -s 2024 -w 1 -w 2
+
+    Args:
+        seasons: List of specific seasons to collect (defaults to current season)
+        weeks: List of specific weeks to collect (defaults to all weeks)
+    """
+    setup_logging()
+    seasons_list = seasons if seasons else None
+    weeks_list = weeks if weeks else None
+
+    typer.echo(
+        f"Collecting NFL injury data for seasons: {seasons_list or 'current season'}, weeks: {weeks_list or 'all weeks'}..."
+    )
+
+    try:
+        collector = NFLDataCollector()
+        injuries_added = collector.collect_injuries(seasons_list, weeks_list)
+        typer.echo(f"✅ Injury collection complete! Added {injuries_added} new injury reports.")
+    except Exception as e:
+        typer.echo(f"❌ Injury collection failed: {e}")
+        raise typer.Exit(1) from e
+
+
+@app.command()
 def collect_dk(
     file: str = typer.Option(None, "--file", "-f", help="Path to DraftKings salary CSV file"),
     directory: str = typer.Option(
@@ -345,6 +390,7 @@ def status():
         from src.database.models import DraftKingsContest  # DraftKings contest information
         from src.database.models import DraftKingsSalary  # Player salary data
         from src.database.models import Game  # NFL game/schedule data
+        from src.database.models import InjuryReport  # NFL injury reports
         from src.database.models import PlayByPlay  # Detailed play-by-play data
         from src.database.models import Player  # Player information
         from src.database.models import PlayerStats  # Player performance statistics
@@ -359,6 +405,7 @@ def status():
             games_count = session.query(Game).count()
             stats_count = session.query(PlayerStats).count()
             pbp_count = session.query(PlayByPlay).count()
+            injuries_count = session.query(InjuryReport).count()
             contests_count = session.query(DraftKingsContest).count()
             salaries_count = session.query(DraftKingsSalary).count()
 
@@ -369,6 +416,7 @@ def status():
             typer.echo(f"  Games: {games_count:,}")  # Scheduled/completed games
             typer.echo(f"  Player Stats: {stats_count:,}")  # Individual game performances
             typer.echo(f"  Play-by-Play: {pbp_count:,}")  # Detailed play data
+            typer.echo(f"  Injury Reports: {injuries_count:,}")  # Player injury data
             typer.echo(f"  DK Contests: {contests_count:,}")  # DraftKings contests
             typer.echo(f"  DK Salaries: {salaries_count:,}")  # Player pricing data
 

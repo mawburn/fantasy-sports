@@ -110,14 +110,14 @@
 - [x] Scoring rules parser
 - [x] Contest type classifier
 - [ ] Historical results collector
-- [ ] Kaggle historical DFS salaries collector
+- [x] Manual CSV upload system for current season DraftKings salary data
 
 ### External Data Sources
 
 **See**: [Integration - External APIs](./05-integration-specifications.md#external-apis)
 
 - [ ] Weather API integration
-- [ ] Injury report collector (DraftKings scraping)
+- [x] Injury report collector (nfl_data_py integration, 2018-2024 complete)
 - [ ] Vegas odds collector
 - [ ] Stadium data collector
 - [ ] News/sentiment collector (optional)
@@ -340,8 +340,6 @@
 **See**: [API - Core Framework](./03-api-specifications.md#api-framework) | [Security Design](./09-security-design.md#api-security)
 
 - [x] FastAPI application setup
-- [ ] Authentication/authorization (not required for MVP)
-- [ ] Rate limiting (not required for MVP)
 - [x] Request validation
 - [x] Error handling
 
@@ -352,7 +350,6 @@
 - [x] `/api/predictions/player` - Individual player predictions
 - [x] `/api/predictions/slate` - Full slate predictions
 - [x] `/api/predictions/batch` - Batch predictions
-- [ ] `/api/predictions/live` - Live game updates
 
 ### Optimization Endpoints
 
@@ -386,16 +383,6 @@
 
 **See**: [Component Architecture - UI Layer](./04-component-architecture.md#ui-layer)
 
-### Web Dashboard
-
-**See**: [System Overview - UI Components](./01-system-overview.md#user-interface-components)
-
-- [ ] React/Vue.js setup
-- [ ] Dashboard layout
-- [ ] Authentication UI
-- [ ] Navigation system
-- [ ] Responsive design
-
 ### Core Features
 
 - [ ] Player prediction viewer
@@ -406,7 +393,6 @@
 
 ### Advanced Features
 
-- [ ] Live scoring dashboard
 - [ ] Model performance charts
 - [ ] Historical analysis tools
 - [ ] Export functionality
@@ -471,16 +457,6 @@
 
 **See**: [Deployment & Infrastructure](./13-deployment-infrastructure.md)
 
-### Local Deployment
-
-**See**: [Deployment - Local Setup](./13-deployment-infrastructure.md#local-deployment)
-
-- [ ] Docker containerization
-- [ ] Docker Compose setup
-- [ ] Environment configuration
-- [ ] Volume management
-- [ ] Network configuration
-
 ### Automation & Scheduling
 
 **See**: [Deployment - Automation](./13-deployment-infrastructure.md#automation-scheduling)
@@ -509,7 +485,6 @@
 - [ ] User guide
 - [ ] Developer documentation
 - [ ] Model documentation
-- [ ] Deployment guide
 
 ## Implementation Phases
 
@@ -554,16 +529,12 @@
 
 ### Phase 5: UI & Polish
 
-- [ ] Build web dashboard
 - [x] Create CLI tools
 - [x] Implement testing suite
 - [ ] Complete documentation
-- [ ] Set up deployment automation
 
 ### Phase 6: Production Ready
 
 - [ ] Performance optimization
-- [ ] Security hardening
 - [ ] Comprehensive testing
 - [ ] User acceptance testing
-- [ ] Production deployment

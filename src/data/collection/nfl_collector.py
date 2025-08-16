@@ -35,7 +35,14 @@ import nfl_data_py as nfl  # Free NFL data API library
 import pandas as pd  # Data manipulation and analysis library
 
 from ...database.connection import SessionLocal  # Database session factory
-from ...database.models import Game, PlayByPlay, Player, PlayerStats, Team  # SQLAlchemy models
+from ...database.models import (
+    Game,
+    InjuryReport,
+    PlayByPlay,
+    Player,
+    PlayerStats,
+    Team,
+)
 
 # Set up logging for this module - helps track data collection progress and errors
 logger = logging.getLogger(__name__)
@@ -633,6 +640,223 @@ class NFLDataCollector:
             logger.exception("Error collecting play-by-play data")
             raise
 
+    def collect_injuries(
+        self, seasons: list[int] | None = None, weeks: list[int] | None = None
+    ) -> int:
+        """Collect NFL injury report data and store in database.
+
+        Injury reports are crucial for fantasy predictions because they provide:
+        1. Player availability status (Out, Doubtful, Questionable, Probable)
+        2. Practice participation levels (DNP, Limited, Full)
+        3. Specific injury types and body parts affected
+        4. Historical injury patterns for trend analysis
+
+        The nfl_data_py library provides comprehensive injury data including:
+        - Official injury report status and designations
+        - Practice participation status and injury details
+        - Regular updates throughout the week
+        - Historical injury data for pattern analysis
+
+        Data Mapping Strategy:
+        - Maps gsis_id to our internal player_id via Player table lookup
+        - Links injury reports to specific games using season/week/team context
+        - Stores both official report status and practice status
+        - Handles primary and secondary injury designations
+        - Tracks report dates for temporal analysis
+
+        Player Matching Logic: Uses gsis_id from nfl_data_py to find matching
+        players in our database. This ensures accurate player identification
+        across different data sources.
+
+        Game Context: Links injury reports to specific games by matching
+        season, week, and team information. This enables game-specific
+        injury impact analysis.
+
+        Args:
+            seasons: List of seasons to collect (defaults to current season)
+            weeks: Specific weeks to collect (None = all weeks)
+
+        Returns:
+            Number of new injury report records added to database
+        """
+        if seasons is None:
+            # Default to collecting data from current season for injury reports
+            # Injury data is most relevant for current/recent seasons
+            seasons = [self.current_season]
+
+        logger.info(f"Collecting injury data for seasons: {seasons}")
+
+        try:
+            injuries_added = 0
+
+            for season in seasons:
+                # Get injury data from nfl_data_py
+                injuries_df = nfl.import_injuries([season])
+
+                # Filter by weeks if specified
+                if weeks is not None:
+                    injuries_df = injuries_df[injuries_df["week"].isin(weeks)]
+
+                session = SessionLocal()  # Create database session
+                try:
+                    # Create lookup dictionaries for foreign key mapping
+                    # Map gsis_id (from nfl_data_py) to our internal database ID
+                    # Note: Player.player_id actually contains the gsis_id from nfl_data_py
+                    players = {p.player_id: p.id for p in session.query(Player).all()}
+
+                    # Create team abbreviation to ID mapping
+                    teams = {t.team_abbr: t.id for t in session.query(Team).all()}
+
+                    # Create game lookup by season, week, and teams
+                    games = {}
+                    for g in session.query(Game).filter_by(season=season).all():
+                        # Get team abbreviations from the database
+                        home_team = session.query(Team).filter_by(id=g.home_team_id).first()
+                        away_team = session.query(Team).filter_by(id=g.away_team_id).first()
+
+                        if home_team and away_team:
+                            home_abbrev = home_team.team_abbr
+                            away_abbrev = away_team.team_abbr
+
+                            # Create lookup keys for both team perspectives
+                            # Format: "season_week_team" -> game_id (for players on each team)
+                            home_key = f"{g.season}_{g.week}_{home_abbrev}"
+                            away_key = f"{g.season}_{g.week}_{away_abbrev}"
+
+                            games[home_key] = g.id
+                            games[away_key] = g.id
+
+                    # Process each injury report
+                    for _, row in injuries_df.iterrows():
+                        # Map gsis_id to our internal player_id
+                        player_id = players.get(row["gsis_id"])
+
+                        if not player_id:
+                            logger.debug(f"Player not found for gsis_id: {row['gsis_id']}")
+                            continue
+
+                        # Find corresponding game using season, week, and team
+                        # Convert pandas float values to integers for consistent key format
+                        season_val = int(row["season"])
+                        week_val = int(row["week"])
+                        team_abbrev = row["team"]
+
+                        # Create lookup key for this player's team and week
+                        game_key = f"{season_val}_{week_val}_{team_abbrev}"
+                        game_id = games.get(game_key)
+
+                        if not game_id:
+                            logger.debug(
+                                f"Game not found for injury report: season={season_val}, week={week_val}, team={team_abbrev}"
+                            )
+                            continue
+
+                        # Parse date_modified for report_date
+                        # Convert from pandas datetime to Python date
+                        report_date = pd.to_datetime(row["date_modified"]).date()
+
+                        # Check if injury report already exists for this player/game/date combination
+                        existing_injury = (
+                            session.query(InjuryReport)
+                            .filter_by(
+                                player_id=player_id, game_id=game_id, report_date=report_date
+                            )
+                            .first()
+                        )
+
+                        if not existing_injury:
+                            # Create comprehensive injury designation from available fields
+                            # Combine primary and secondary injury information
+                            injury_parts = []
+                            if row.get("report_primary_injury"):
+                                injury_parts.append(row["report_primary_injury"])
+                            if row.get("report_secondary_injury"):
+                                injury_parts.append(row["report_secondary_injury"])
+
+                            # Use practice injury info if report injury is not available
+                            if not injury_parts:
+                                if row.get("practice_primary_injury"):
+                                    injury_parts.append(row["practice_primary_injury"])
+                                if row.get("practice_secondary_injury"):
+                                    injury_parts.append(row["practice_secondary_injury"])
+
+                            injury_designation = ", ".join(injury_parts) if injury_parts else None
+
+                            # Create new injury report record
+                            injury_report = InjuryReport(
+                                player_id=player_id,
+                                game_id=game_id,
+                                # Use report_status as primary injury status, fall back to practice status
+                                injury_status=row.get("report_status")
+                                or row.get("practice_status", "Unknown"),
+                                injury_designation=injury_designation,
+                                # Store additional context in description field
+                                injury_description=f"Report: {row.get('report_status', 'N/A')}, Practice: {row.get('practice_status', 'N/A')}",
+                                report_date=report_date,
+                                # Map practice_status to our practice_status field
+                                practice_status=row.get("practice_status"),
+                                # Initialize tracking fields (can be calculated later)
+                                days_missed=0,
+                                games_missed=0,
+                            )
+                            session.add(injury_report)
+                            injuries_added += 1
+
+                        else:
+                            # Update existing injury report with latest information
+                            # Update injury status (priority: report_status > practice_status)
+                            if row.get("report_status"):
+                                existing_injury.injury_status = row["report_status"]
+                            elif row.get("practice_status"):
+                                existing_injury.injury_status = row["practice_status"]
+
+                            # Update injury designation with latest information
+                            injury_parts = []
+                            if row.get("report_primary_injury"):
+                                injury_parts.append(row["report_primary_injury"])
+                            if row.get("report_secondary_injury"):
+                                injury_parts.append(row["report_secondary_injury"])
+
+                            if not injury_parts:
+                                if row.get("practice_primary_injury"):
+                                    injury_parts.append(row["practice_primary_injury"])
+                                if row.get("practice_secondary_injury"):
+                                    injury_parts.append(row["practice_secondary_injury"])
+
+                            if injury_parts:
+                                existing_injury.injury_designation = ", ".join(injury_parts)
+
+                            # Update practice status
+                            existing_injury.practice_status = row.get("practice_status")
+
+                            # Update description with latest information
+                            existing_injury.injury_description = f"Report: {row.get('report_status', 'N/A')}, Practice: {row.get('practice_status', 'N/A')}"
+
+                            # Update timestamp
+                            existing_injury.updated_at = datetime.now()
+
+                    # Commit all changes for this season
+                    try:
+                        session.commit()
+                    except Exception as e:
+                        # Handle any constraint errors and rollback
+                        session.rollback()
+                        logger.warning(
+                            f"Database commit failed for season {season}, rolling back: {e}"
+                        )
+                        raise
+                finally:
+                    # Always close session to prevent connection leaks
+                    session.close()
+
+            logger.info(f"Injury data processed, new reports added: {injuries_added}")
+            return injuries_added
+
+        except Exception:
+            # Log full exception details for troubleshooting
+            logger.exception("Error collecting injury data")
+            raise  # Re-raise for caller handling
+
     def collect_all_data(self, seasons: list[int] | None = None) -> dict[str, int]:
         """Collect all NFL data (teams, players, schedules, stats)."""
         if seasons is None:
@@ -650,6 +874,7 @@ class NFLDataCollector:
             results["games"] = self.collect_schedules(seasons)
             results["stats"] = self.collect_player_stats(seasons)
             results["play_by_play"] = self.collect_play_by_play(seasons)
+            results["injuries"] = self.collect_injuries(seasons)
 
             logger.info(f"Data collection complete: {results}")
             return results
