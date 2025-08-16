@@ -43,7 +43,7 @@ The project includes CLI commands for data collection and ML training:
 - **Black**: Secondary Python formatter
 - **mypy**: Type checking with strict configuration
 - **pytest**: Testing with coverage reports (80% minimum)
-- **pre-commit**: Automated hooks for code quality
+- **pre-commit**: Removed - no longer using automated hooks
 
 Run `make help` to see all available commands.
 
@@ -132,7 +132,7 @@ This is an NFL Daily Fantasy Sports (DFS) prediction and optimization system bui
 
 - The system uses UV instead of pip/poetry for significantly faster dependency management
 - All models are CPU-optimized (GPU support planned but not required)
-- Pre-commit hooks automatically format code and run quality checks
+- Code formatting and quality checks can be run manually with `make format` and `make lint`
 - Comprehensive test coverage with pytest and coverage reporting
 - API documentation auto-generated at `/docs` endpoint when running
 

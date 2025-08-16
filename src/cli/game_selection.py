@@ -115,7 +115,7 @@ def recommend_contests(
         if output_format.lower() == "json":
             _display_json_output(recommendations)
         else:
-            _display_table_output(recommendations, settings)
+            _display_table_output(recommendations)
 
         # Show summary
         total_cost = sum(c.entry_fee for c in recommendations)
@@ -260,7 +260,7 @@ def show_summary(
         raise typer.Exit(1) from e
 
 
-def _display_table_output(recommendations: list, settings: GameSelectionSettings) -> None:
+def _display_table_output(recommendations: list) -> None:
     """Display recommendations in rich table format."""
     table = Table(title=f"🎯 Contest Recommendations ({len(recommendations)} contests)")
 
@@ -354,9 +354,7 @@ def _display_contest_table(metrics, skill_edge: float) -> None:
     ev_assessment = (
         "Positive Edge"
         if metrics.expected_value > 0
-        else "Break Even"
-        if metrics.expected_value > -0.1
-        else "Negative"
+        else "Break Even" if metrics.expected_value > -0.1 else "Negative"
     )
     ev_color = "bright_green" if metrics.expected_value >= 0 else "red"
     table.add_row(
@@ -369,9 +367,7 @@ def _display_contest_table(metrics, skill_edge: float) -> None:
     risk_assessment = (
         "Low"
         if metrics.downside_risk < 0.5
-        else "Medium"
-        if metrics.downside_risk < 0.8
-        else "High"
+        else "Medium" if metrics.downside_risk < 0.8 else "High"
     )
     table.add_row("Downside Risk", f"{metrics.downside_risk * 100:.0f}%", risk_assessment)
 

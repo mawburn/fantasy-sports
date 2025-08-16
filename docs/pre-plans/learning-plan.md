@@ -2,9 +2,7 @@
 
 ## Overview
 
-This learning plan is designed to take you from PyTorch beginner to building sophisticated sports
-prediction models. Each phase builds practical skills while working toward your goal of accurate DFS
-predictions.
+This learning plan is designed to take you from PyTorch beginner to building sophisticated sports prediction models. Each phase builds practical skills while working toward your goal of accurate DFS predictions.
 
 ## Phase 1: PyTorch Fundamentals
 
@@ -12,9 +10,7 @@ predictions.
 
 #### Tensors - The Foundation
 
-**What**: Multi-dimensional arrays (like enhanced numpy arrays) that can run on GPU **Why
-Important**: All data in PyTorch becomes tensors - player stats, predictions, model weights
-**Learn**:
+**What**: Multi-dimensional arrays (like enhanced numpy arrays) that can run on GPU **Why Important**: All data in PyTorch becomes tensors - player stats, predictions, model weights **Learn**:
 
 - Creating tensors from your NFL data
 - Basic operations (add, multiply, reshape)
@@ -23,8 +19,7 @@ Important**: All data in PyTorch becomes tensors - player stats, predictions, mo
 
 #### Automatic Differentiation
 
-**What**: PyTorch automatically calculates gradients (slopes) for optimization **Why Important**:
-This is how neural networks learn - by adjusting weights based on gradients **Learn**:
+**What**: PyTorch automatically calculates gradients (slopes) for optimization **Why Important**: This is how neural networks learn - by adjusting weights based on gradients **Learn**:
 
 - `tensor.requires_grad = True` - tells PyTorch to track operations
 - `loss.backward()` - calculates all gradients automatically
@@ -32,8 +27,7 @@ This is how neural networks learn - by adjusting weights based on gradients **Le
 
 #### Basic Neural Network Layers
 
-**What**: Building blocks like `nn.Linear` (fully connected layers) **Why Important**: These layers
-learn relationships in your NFL data **Learn**:
+**What**: Building blocks like `nn.Linear` (fully connected layers) **Why Important**: These layers learn relationships in your NFL data **Learn**:
 
 - `nn.Linear(input_size, output_size)` - maps features to predictions
 - `nn.ReLU()` - activation function that adds non-linearity
@@ -57,8 +51,7 @@ learn relationships in your NFL data **Learn**:
 
 #### Network Depth and Width
 
-**What**: How many layers and neurons per layer **Why Important**: Deeper/wider networks can learn
-more complex patterns **Experiment With**:
+**What**: How many layers and neurons per layer **Why Important**: Deeper/wider networks can learn more complex patterns **Experiment With**:
 
 - 3-layer vs 5-layer vs 8-layer networks
 - Hidden layer sizes: 32, 64, 128, 256 neurons
@@ -66,8 +59,7 @@ more complex patterns **Experiment With**:
 
 #### Regularization Techniques
 
-**What**: Methods to prevent overfitting (memorizing training data) **Why Important**: Your model
-needs to work on new, unseen games **Learn**:
+**What**: Methods to prevent overfitting (memorizing training data) **Why Important**: Your model needs to work on new, unseen games **Learn**:
 
 - **Dropout**: Randomly disable neurons during training
 - **Batch Normalization**: Normalize inputs to each layer
@@ -75,8 +67,7 @@ needs to work on new, unseen games **Learn**:
 
 #### Loss Functions for Regression
 
-**What**: How you measure prediction errors **Why Important**: Different loss functions optimize for
-different goals **Experiment With**:
+**What**: How you measure prediction errors **Why Important**: Different loss functions optimize for different goals **Experiment With**:
 
 - **Mean Squared Error (MSE)**: Standard choice, penalizes large errors heavily
 - **Mean Absolute Error (MAE)**: Less sensitive to outliers
@@ -95,8 +86,7 @@ different goals **Experiment With**:
 
 #### Learning Rate Scheduling
 
-**What**: Adjusting learning rate during training **Why Important**: Start with larger steps, then
-fine-tune with smaller steps **Techniques**:
+**What**: Adjusting learning rate during training **Why Important**: Start with larger steps, then fine-tune with smaller steps **Techniques**:
 
 - **Step decay**: Reduce learning rate every N epochs
 - **Cosine annealing**: Smoothly reduce learning rate
@@ -122,8 +112,7 @@ fine-tune with smaller steps **Techniques**:
 
 #### Rolling Statistics
 
-**What**: Moving averages and trends over recent games **Why Important**: Recent performance often
-predicts future performance **Create**:
+**What**: Moving averages and trends over recent games **Why Important**: Recent performance often predicts future performance **Create**:
 
 - 3-game, 5-game, 10-game rolling averages
 - Rolling standard deviation (consistency metrics)
@@ -141,8 +130,7 @@ predicts future performance **Create**:
 
 #### Position-Specific Modeling
 
-**What**: Different neural networks for different positions **Why Important**: QBs, RBs, WRs have
-different usage patterns and predictability **Build**:
+**What**: Different neural networks for different positions **Why Important**: QBs, RBs, WRs have different usage patterns and predictability **Build**:
 
 - Separate networks for QB vs skill positions
 - Position-specific feature sets
@@ -152,8 +140,7 @@ different usage patterns and predictability **Build**:
 
 #### Experiment Tracking Mastery
 
-**What**: Systematic tracking of all model experiments and results **Why Important**: With hundreds
-of experiments, you need organized tracking **Learn**:
+**What**: Systematic tracking of all model experiments and results **Why Important**: With hundreds of experiments, you need organized tracking **Learn**:
 
 - **MLflow Setup**: Install, configure, and integrate with your training pipeline
 - **Experiment Organization**: Projects, runs, tags for easy searching
@@ -198,8 +185,7 @@ with mlflow.start_run():
 
 #### Custom Dataset Classes
 
-**What**: Structured way to load and process your data **Why Important**: Handles batching,
-shuffling, and data augmentation automatically **Learn**:
+**What**: Structured way to load and process your data **Why Important**: Handles batching, shuffling, and data augmentation automatically **Learn**:
 
 - Inherit from `torch.utils.data.Dataset`
 - Implement `__len__` and `__getitem__` methods
@@ -207,8 +193,7 @@ shuffling, and data augmentation automatically **Learn**:
 
 #### Model Ensembles
 
-**What**: Combining predictions from multiple models **Why Important**: Often more accurate than any
-single model **Techniques**:
+**What**: Combining predictions from multiple models **Why Important**: Often more accurate than any single model **Techniques**:
 
 - Simple averaging of multiple model predictions
 - Weighted averaging based on model performance
@@ -216,8 +201,7 @@ single model **Techniques**:
 
 #### Attention Mechanisms
 
-**What**: Letting the model focus on most important features dynamically **Why Important**: Some
-features matter more in certain situations **Learn**:
+**What**: Letting the model focus on most important features dynamically **Why Important**: Some features matter more in certain situations **Learn**:
 
 - Basic attention layer implementation
 - Self-attention for feature interactions
@@ -247,8 +231,7 @@ features matter more in certain situations **Learn**:
 
 #### Time-Series Cross-Validation
 
-**What**: Proper way to validate models on sequential data **Why Important**: Can't use future data
-to predict past (data leakage) **Learn**:
+**What**: Proper way to validate models on sequential data **Why Important**: Can't use future data to predict past (data leakage) **Learn**:
 
 - Walk-forward validation methodology
 - Rolling window validation
@@ -256,8 +239,7 @@ to predict past (data leakage) **Learn**:
 
 #### A/B Testing Framework
 
-**What**: Systematically comparing model versions **Why Important**: Ensures new changes actually
-improve performance **Build**:
+**What**: Systematically comparing model versions **Why Important**: Ensures new changes actually improve performance **Build**:
 
 - Standardized evaluation metrics
 - Statistical significance testing
@@ -276,8 +258,7 @@ improve performance **Build**:
 
 #### Neural Architecture Search (NAS)
 
-**What**: Automatically finding optimal network architectures **Why Important**: Discover
-architectures you wouldn't think to try **Experiment With**:
+**What**: Automatically finding optimal network architectures **Why Important**: Discover architectures you wouldn't think to try **Experiment With**:
 
 - Automated layer size selection
 - Skip connections and residual blocks
@@ -303,8 +284,7 @@ architectures you wouldn't think to try **Experiment With**:
 
 #### Systematic Hyperparameter Optimization
 
-**What**: Automated search for optimal model settings using experiment tracking **Tools**: Optuna +
-MLflow integration for organized search **Learn**:
+**What**: Automated search for optimal model settings using experiment tracking **Tools**: Optuna + MLflow integration for organized search **Learn**:
 
 - **Optuna Integration**: Automated hyperparameter search with MLflow logging
 - **Search Strategies**: Grid search, random search, Bayesian optimization
@@ -327,10 +307,8 @@ MLflow integration for organized search **Learn**:
 1. **Experiment Analysis Dashboard** - Build custom analysis of your experiment results
 1. **A/B Testing Framework** - Compare model versions systematically
 1. **Production pipeline** - Build automated system for weekly model updates with full tracking
-1. **Performance monitoring** - Track prediction accuracy over multiple weeks with historical
-   analysis
-1. **Advanced architectures** - Experiment with residual connections, skip layers with proper
-   tracking
+1. **Performance monitoring** - Track prediction accuracy over multiple weeks with historical analysis
+1. **Advanced architectures** - Experiment with residual connections, skip layers with proper tracking
 
 ### Success Criteria
 
@@ -348,8 +326,7 @@ MLflow integration for organized search **Learn**:
 
 #### Transformer Models for Tabular Data
 
-**What**: Attention-based models (like ChatGPT) adapted for sports data **Why Important**: Can
-capture complex feature interactions **Learn**:
+**What**: Attention-based models (like ChatGPT) adapted for sports data **Why Important**: Can capture complex feature interactions **Learn**:
 
 - Positional encoding for player/game sequences
 - Multi-head attention for different relationship types
@@ -357,8 +334,7 @@ capture complex feature interactions **Learn**:
 
 #### Graph Neural Networks
 
-**What**: Models that understand relationships between players/teams **Why Important**: Football is
-about interactions between players **Explore**:
+**What**: Models that understand relationships between players/teams **Why Important**: Football is about interactions between players **Explore**:
 
 - Player-to-player interaction graphs
 - Team chemistry and combination effects
@@ -366,8 +342,7 @@ about interactions between players **Explore**:
 
 #### Reinforcement Learning for Lineup Optimization
 
-**What**: AI that learns optimal lineup construction strategies **Why Important**: Goes beyond
-predicting points to optimizing lineups **Learn**:
+**What**: AI that learns optimal lineup construction strategies **Why Important**: Goes beyond predicting points to optimizing lineups **Learn**:
 
 - Multi-armed bandit problems for player selection
 - Deep Q-learning for lineup construction
@@ -393,8 +368,7 @@ predicting points to optimizing lineups **Learn**:
 
 #### Causal Inference
 
-**What**: Understanding cause-and-effect relationships in player performance **Why Important**:
-Identify true drivers vs correlation **Explore**:
+**What**: Understanding cause-and-effect relationships in player performance **Why Important**: Identify true drivers vs correlation **Explore**:
 
 - Causal discovery in player performance data
 - Treatment effect estimation for coaching changes
@@ -437,5 +411,4 @@ Identify true drivers vs correlation **Explore**:
 - **Learning**: Understanding of PyTorch concepts, ability to debug models
 - **Innovation**: Novel approaches, feature discoveries, architecture improvements
 
-This learning plan balances theoretical understanding with practical application, ensuring you both
-master PyTorch fundamentals and build increasingly sophisticated models for DFS prediction.
+This learning plan balances theoretical understanding with practical application, ensuring you both master PyTorch fundamentals and build increasingly sophisticated models for DFS prediction.

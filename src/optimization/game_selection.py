@@ -626,7 +626,7 @@ class GameSelectionEngine:
                 if self._passes_user_filters(metrics, settings):
                     analyzed_contests.append(metrics)
 
-            except Exception as e:
+            except Exception:
                 logger.exception(f"Error analyzing contest {contest.contest_id}")
                 continue
 

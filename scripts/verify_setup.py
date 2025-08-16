@@ -259,7 +259,7 @@ def check_config_files():
     - pyproject.toml: Project metadata and tool configuration
 
     Development Workflow:
-    - .pre-commit-config.yaml: Git hooks for code quality
+    - .pre-commit-config.yaml: Removed (no longer using pre-commit)
     - .gitignore: Files to exclude from version control
     - Makefile: Automation commands for common tasks
 
@@ -285,7 +285,7 @@ def check_config_files():
         "requirements-dev.txt",  # Development dependencies
         "pyproject.toml",  # Project configuration
         # Development tools
-        # ".pre-commit-config.yaml",  # Code quality hooks
+        # ".pre-commit-config.yaml",  # Removed (no longer using pre-commit)
         ".gitignore",  # Version control exclusions
         "Makefile",  # Task automation
         # Documentation

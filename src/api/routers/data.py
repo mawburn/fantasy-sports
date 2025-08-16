@@ -25,14 +25,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 # Import Pydantic response schemas that define API response structure
-from src.api.schemas import (
-    ContestResponse,  # DraftKings contest information
-    GameResponse,  # NFL game details
-    PlayerResponse,  # Player information
-    PlayerStatsResponse,  # Player performance statistics
-    SalaryResponse,  # DraftKings salary information
-    TeamResponse,  # NFL team information
-)
+from src.api.schemas import ContestResponse  # DraftKings contest information
+from src.api.schemas import GameResponse  # NFL game details
+from src.api.schemas import PlayerResponse  # Player information
+from src.api.schemas import PlayerStatsResponse  # Player performance statistics
+from src.api.schemas import SalaryResponse  # DraftKings salary information
+from src.api.schemas import TeamResponse  # NFL team information
 
 # Database connection and ORM models
 from src.database.connection import get_db

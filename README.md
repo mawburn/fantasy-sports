@@ -1,7 +1,6 @@
 # NFL DFS System
 
-A comprehensive NFL Daily Fantasy Sports (DFS) prediction and optimization system focused on
-DraftKings contests. Built with Python, PyTorch, and modern ML practices.
+A comprehensive NFL Daily Fantasy Sports (DFS) prediction and optimization system focused on DraftKings contests. Built with Python, PyTorch, and modern ML practices.
 
 ## Features
 
@@ -144,7 +143,7 @@ This project uses comprehensive linting and formatting:
 - **mdformat**: Markdown formatting
 - **yamllint**: YAML linting
 - **prettier**: JSON/YAML formatting
-- **pre-commit**: Automated hooks for all tools
+- **pre-commit**: Removed - no longer using automated hooks
 
 #### Formatting Commands
 
@@ -159,8 +158,12 @@ black src/ tests/                 # Format Python with Black
 mdformat docs/ *.md                # Format Markdown files
 prettier --write "**/*.{json,yaml,yml}"  # Format JSON/YAML files
 
-# Run all formatters via pre-commit
-pre-commit run --all-files
+# Run all formatters manually (pre-commit removed)
+ruff format src/ tests/ scripts/
+ruff check --fix src/ tests/ scripts/
+black src/ tests/ scripts/
+isort src/ tests/ scripts/
+mdformat --compact-tables docs/ *.md
 ```
 
 #### Linting Commands
@@ -176,19 +179,19 @@ bandit -r src/                     # Security linting
 yamllint .                         # YAML linting
 ```
 
-#### Pre-commit Hooks
+#### Git Hooks (Removed)
 
-Pre-commit hooks automatically format your code on commit:
+Pre-commit hooks have been removed. You can run formatters manually:
 
 ```bash
-# Install pre-commit hooks (already done if you ran make setup)
-pre-commit install
+# Run all formatters manually
+make format
 
-# Manually run hooks on all files
-pre-commit run --all-files
-
-# Update hooks to latest versions
-pre-commit autoupdate
+# Or run individual formatters
+ruff format src/ tests/ scripts/
+black src/ tests/ scripts/
+isort src/ tests/ scripts/
+mdformat --compact-tables docs/ *.md
 ```
 
 ### Project Structure
@@ -256,7 +259,7 @@ pytest -v
 1. Create a feature branch (`git checkout -b feature/amazing-feature`)
 1. Make your changes
 1. Run tests and linting (`make test && make lint`)
-1. Commit your changes (pre-commit hooks will run automatically)
+1. Commit your changes (run `make format` and `make lint` before committing)
 1. Push to the branch (`git push origin feature/amazing-feature`)
 1. Open a Pull Request
 

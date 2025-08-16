@@ -15,7 +15,7 @@ help:
 	@echo "Setup & Installation:"
 	@echo "  make install        - Install production dependencies with UV"
 	@echo "  make install-dev    - Install all dependencies including dev tools"
-	@echo "  make setup-hooks    - Install pre-commit hooks"
+	@echo "  make setup-hooks    - Install git hooks (removed)"
 	@echo ""
 	@echo "Code Quality:"
 	@echo "  make format         - Format code with Ruff and Black"
@@ -46,10 +46,9 @@ install-dev: $(VENV)
 	$(UV) pip install -r requirements-dev.txt
 	@echo "All dependencies installed!"
 
-# Setup pre-commit hooks
+# Setup git hooks (removed)
 setup-hooks: install-dev
-	$(VENV)/bin/pre-commit install
-	@echo "Pre-commit hooks installed!"
+	@echo "Git hooks setup removed - no longer using pre-commit"
 
 # Format code
 format:

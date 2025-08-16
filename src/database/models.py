@@ -30,18 +30,16 @@ Design Patterns:
 """
 
 # SQLAlchemy imports for database column types and ORM functionality
-from sqlalchemy import (
-    Boolean,  # True/False values (game_finished, is_active)
-    Column,  # Defines table columns with types and constraints
-    Date,  # Date values without time (birthdate, report_date)
-    DateTime,  # Full timestamp values (game_date, created_at)
-    Float,  # Decimal numbers (fantasy_points, salary, probabilities)
-    ForeignKey,  # References to other tables' primary keys
-    Index,  # Database indexes for query performance
-    Integer,  # Whole numbers (id, yards, touchdowns)
-    String,  # Text fields with length limits (name, position)
-    UniqueConstraint,  # Ensures no duplicate combinations exist
-)
+from sqlalchemy import Boolean  # True/False values (game_finished, is_active)
+from sqlalchemy import Column  # Defines table columns with types and constraints
+from sqlalchemy import Date  # Date values without time (birthdate, report_date)
+from sqlalchemy import DateTime  # Full timestamp values (game_date, created_at)
+from sqlalchemy import Float  # Decimal numbers (fantasy_points, salary, probabilities)
+from sqlalchemy import ForeignKey  # References to other tables' primary keys
+from sqlalchemy import Index  # Database indexes for query performance
+from sqlalchemy import Integer  # Whole numbers (id, yards, touchdowns)
+from sqlalchemy import String  # Text fields with length limits (name, position)
+from sqlalchemy import UniqueConstraint  # Ensures no duplicate combinations exist
 from sqlalchemy.ext.declarative import declarative_base  # Base class for all models
 from sqlalchemy.orm import relationship  # Defines how tables are related
 from sqlalchemy.sql import func  # SQL functions like now(), count(), etc.

@@ -28,7 +28,7 @@ The Python development environment for the NFL DFS system has been successfully 
 - **Testing**: pytest, pytest-cov, pytest-asyncio, hypothesis
 - **Linting/Formatting**: Ruff, Black, isort, mypy, bandit
 - **Documentation**: mkdocs, mkdocs-material
-- **Pre-commit hooks**: Configured for all formatters
+- **Pre-commit hooks**: Removed - no longer using automated hooks
 
 ### Comprehensive Linting & Formatting Setup
 
@@ -50,9 +50,9 @@ The project now has a complete code quality toolchain similar to Prettier for mi
 - **codespell** - Spell checking
 - **nbstripout** - Jupyter notebook output cleaning
 
-#### Pre-commit Hooks
+#### Git Hooks (Removed)
 
-All tools are configured to run automatically on commit via pre-commit hooks.
+Pre-commit hooks have been removed. You can run formatters manually using `make format`.
 
 ## Project Structure Created
 
@@ -102,7 +102,7 @@ fantasy/
 1. **pyproject.toml** - Modern Python project configuration with tool settings
 1. **requirements.txt** - Production dependencies
 1. **requirements-dev.txt** - Development dependencies
-1. **.pre-commit-config.yaml** - Pre-commit hooks configuration
+1. **.pre-commit-config.yaml** - Removed (no longer using pre-commit)
 1. **.yamllint.yaml** - YAML linting rules
 1. **.editorconfig** - Editor configuration for consistent coding
 1. **.gitignore** - Comprehensive Git ignore rules
@@ -122,8 +122,8 @@ make format
 # Run all linters
 make lint
 
-# Run pre-commit on all files
-pre-commit run --all-files
+# Run all formatters manually
+make format
 
 # Run specific tools
 ruff format src/           # Format Python with Ruff
@@ -135,7 +135,7 @@ prettier --write "**/*.{json,yaml,yml}"  # Format JSON/YAML
 
 ### Automatic Formatting on Commit
 
-Pre-commit hooks are installed and will automatically run on every commit:
+Pre-commit hooks have been removed. You can run formatters manually:
 
 ```bash
 git add .
@@ -148,18 +148,18 @@ Add to `.vscode/settings.json`:
 
 ```json
 {
-  "[python]": {
-    "editor.defaultFormatter": "charliermarsh.ruff",
-    "editor.formatOnSave": true,
-    "editor.codeActionsOnSave": {
-      "source.organizeImports": true,
-      "source.fixAll": true
+    "[python]": {
+        "editor.defaultFormatter": "charliermarsh.ruff",
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+            "source.organizeImports": true,
+            "source.fixAll": true
+        }
+    },
+    "[markdown]": {
+        "editor.defaultFormatter": "executablebooks.mdformat",
+        "editor.formatOnSave": true
     }
-  },
-  "[markdown]": {
-    "editor.defaultFormatter": "executablebooks.mdformat",
-    "editor.formatOnSave": true
-  }
 }
 ```
 
@@ -167,7 +167,7 @@ Add to `.vscode/settings.json`:
 
 All components have been verified working:
 
-✅ Python 3.13.3 environment ✅ All packages imported successfully ✅ Project directories created ✅ Configuration files in place ✅ PyTorch CPU optimization enabled (8 threads) ✅ FastAPI server starts successfully ✅ Tests pass with 93% coverage ✅ Pre-commit hooks installed
+✅ Python 3.13.3 environment ✅ All packages imported successfully ✅ Project directories created ✅ Configuration files in place ✅ PyTorch CPU optimization enabled (8 threads) ✅ FastAPI server starts successfully ✅ Tests pass with 93% coverage ✅ Pre-commit hooks removed
 
 ## Next Steps
 
