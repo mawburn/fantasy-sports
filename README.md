@@ -109,10 +109,15 @@ uv run python -m src.cli.collect_data collect-teams        # Collect team data
 uv run python -m src.cli.collect_data collect-players      # Collect player rosters
 uv run python -m src.cli.collect_data collect-schedules    # Collect game schedules
 uv run python -m src.cli.collect_data collect-stats        # Collect player statistics
+uv run python -m src.cli.collect_data collect-weather      # Collect weather data
 uv run python -m src.cli.collect_data status               # Check database status
 
 # Collect specific seasons (useful for updates)
 uv run python -m src.cli.collect_data collect-stats -s 2024
+
+# Weather data collection
+uv run python -m src.cli.collect_data collect-weather --upcoming  # Collect weather for upcoming games only
+uv run python -m src.cli.collect_data collect-weather -s 2024 -w 10  # Collect weather for specific season/week
 
 # DraftKings salary data (CSV upload)
 uv run python -m src.cli.collect_data collect-dk           # Process all CSVs in data/draftkings/salaries/

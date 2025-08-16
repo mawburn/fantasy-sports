@@ -591,6 +591,63 @@ class DraftKingsCollector:
         self.parser = DKCSVParser()
         self.validator = DKSalaryValidator()
 
+    def cleanup_duplicate_contests(self, contest_name: str) -> int:
+        """
+        Clean up any duplicate contests with the same name.
+
+        This method handles legacy data that might have duplicates
+        before the unique constraint was added.
+
+        Args:
+            contest_name: Name of the contest to deduplicate
+
+        Returns:
+            Number of duplicate contests removed
+        """
+        session = SessionLocal()
+        removed_count = 0
+
+        try:
+            # Find all contests with this name
+            contests = (
+                session.query(DraftKingsContest)
+                .filter_by(contest_name=contest_name)
+                .order_by(DraftKingsContest.updated_at.desc())  # Keep most recent
+                .all()
+            )
+
+            if len(contests) <= 1:
+                return 0  # No duplicates found
+
+            # Keep the most recent contest, remove others
+            contests_to_remove = contests[1:]  # Skip first (most recent)
+
+            for contest in contests_to_remove:
+                # Delete associated salaries first
+                salary_count = (
+                    session.query(DraftKingsSalary).filter_by(contest_id=contest.id).delete()
+                )
+
+                # Delete the contest
+                session.delete(contest)
+                removed_count += 1
+
+                logger.info(
+                    f"Removed duplicate contest '{contest_name}' "
+                    f"(ID: {contest.contest_id}) with {salary_count} salaries"
+                )
+
+            session.commit()
+
+        except Exception:
+            session.rollback()
+            logger.exception(f"Error cleaning up duplicate contests for '{contest_name}'")
+            raise
+        finally:
+            session.close()
+
+        return removed_count
+
     def process_salary_file(
         self, file_path: Path, contest_name: str | None = None
     ) -> dict[str, int]:
@@ -622,8 +679,16 @@ class DraftKingsCollector:
         if validation_results["warnings"]:
             logger.warning(f"Validation warnings: {validation_results['warnings']}")
 
+        # Clean up any legacy duplicates before storing new data
+        final_contest_name = contest_name or file_path.stem
+        duplicates_removed = self.cleanup_duplicate_contests(final_contest_name)
+        if duplicates_removed > 0:
+            logger.info(
+                f"Cleaned up {duplicates_removed} duplicate contests for '{final_contest_name}'"
+            )
+
         # Store in database
-        results = self._store_salary_data(salary_df, contest_name or file_path.stem)
+        results = self._store_salary_data(salary_df, final_contest_name)
 
         logger.info(f"DraftKings data processing complete: {results}")
         return results
@@ -648,32 +713,23 @@ class DraftKingsCollector:
 
                 if not player_id:
                     results["unmatched_players"] += 1
+                    logger.debug(
+                        f"Could not match player: {row['Name']} ({row.get('Team', '')}, {row['Position']})"
+                    )
                     continue
 
-                # Check if salary already exists
-                existing_salary = (
-                    session.query(DraftKingsSalary)
-                    .filter_by(player_id=player_id, contest_id=contest.id)
-                    .first()
+                # Create new salary record (existing ones were already cleared for existing contests)
+                salary = DraftKingsSalary(
+                    player_id=player_id,
+                    contest_id=contest.id,
+                    salary=row["Salary"],
+                    position=row["Position"],
+                    dk_player_name=row["Name"],
+                    dk_team_abbr=row.get("Team", ""),
+                    game_info=row.get("Game Info", ""),
                 )
-
-                if not existing_salary:
-                    salary = DraftKingsSalary(
-                        player_id=player_id,
-                        contest_id=contest.id,
-                        salary=row["Salary"],
-                        position=row["Position"],
-                        dk_player_name=row["Name"],
-                        dk_team_abbr=row.get("Team", ""),
-                        game_info=row.get("Game Info", ""),
-                    )
-                    session.add(salary)
-                    results["salaries"] += 1
-                else:
-                    # Update existing salary
-                    existing_salary.salary = row["Salary"]
-                    existing_salary.dk_player_name = row["Name"]
-                    existing_salary.updated_at = datetime.now()
+                session.add(salary)
+                results["salaries"] += 1
 
             session.commit()
 
@@ -689,32 +745,107 @@ class DraftKingsCollector:
     def _get_or_create_contest(
         self, session, contest_name: str, salary_df: pd.DataFrame
     ) -> DraftKingsContest:
-        """Get existing contest or create new one."""
-        # Try to find existing contest
-        existing_contest = (
-            session.query(DraftKingsContest).filter_by(contest_name=contest_name).first()
-        )
+        """Get existing contest or create new one based on game slate.
+
+        Uses Game Info from CSV to identify the actual slate (game date + games).
+        This prevents duplicates for the same game slate regardless of contest name.
+
+        Strategy:
+        1. Extract slate identifier from Game Info column (date + games)
+        2. Check for existing contest with same slate
+        3. If found, update with fresh salary data
+        4. If not found, create new contest
+        """
+        # Extract slate info from Game Info column
+        slate_id = self._extract_slate_id(salary_df)
+
+        # Try to find existing contest by slate_id (the actual game slate)
+        existing_contest = session.query(DraftKingsContest).filter_by(slate_id=slate_id).first()
 
         if existing_contest:
+            logger.info(
+                f"Found existing slate: {slate_id} (contest: {existing_contest.contest_name})"
+            )
+
+            # For existing slates, delete all current salaries to ensure fresh data
+            deleted_count = (
+                session.query(DraftKingsSalary).filter_by(contest_id=existing_contest.id).delete()
+            )
+
+            if deleted_count > 0:
+                logger.info(f"Cleared {deleted_count} existing salaries for slate '{slate_id}'")
+
+            # Update contest info with latest upload
+            existing_contest.contest_name = contest_name.strip()
+            existing_contest.updated_at = datetime.now()
+            session.flush()
+
             return existing_contest
 
-        # Create new contest
+        # Create new contest for this slate
+        contest_date = datetime.now().strftime("%Y%m%d")
+        sanitized_slate = "".join(c for c in slate_id if c.isalnum() or c in "_-")[:30]
+        contest_id = f"dk_{sanitized_slate}"
+
+        # Ensure contest_id uniqueness
+        base_contest_id = contest_id
+        counter = 1
+        while session.query(DraftKingsContest).filter_by(contest_id=contest_id).first():
+            contest_id = f"{base_contest_id}_{counter}"
+            counter += 1
+
+        logger.info(f"Creating new slate: {slate_id} (contest: {contest_name})")
+
         contest = DraftKingsContest(
-            contest_id=f"dk_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-            contest_name=contest_name,
-            contest_type="Classic",  # Default type
-            entry_fee=0.0,  # Default values - can be updated later
+            contest_id=contest_id,
+            contest_name=contest_name.strip(),
+            contest_type="Classic",
+            entry_fee=0.0,
             total_prizes=0.0,
             max_entries=0,
             start_time=datetime.now(),
             end_time=datetime.now(),
-            slate_id=contest_name,
+            slate_id=slate_id,
             is_live=True,
         )
         session.add(contest)
-        session.flush()  # Get the ID
+        session.flush()
 
         return contest
+
+    def _extract_slate_id(self, salary_df: pd.DataFrame) -> str:
+        """Extract a unique slate identifier from Game Info column.
+
+        Game Info format: "SF@SEA 09/07/2025 04:05PM ET"
+        Strategy: Use the date + sorted list of games to create unique slate ID
+
+        Args:
+            salary_df: DataFrame with Game Info column
+
+        Returns:
+            Unique slate identifier like "20250907_nfl_classic"
+        """
+        if "Game Info" not in salary_df.columns:
+            # Fallback to timestamp if no Game Info
+            return f"slate_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+        # Extract all unique games from Game Info
+        unique_games = salary_df["Game Info"].unique()
+
+        # Extract date from first game (should be same for all games in slate)
+        first_game = unique_games[0]
+        try:
+            # Parse date from "SF@SEA 09/07/2025 04:05PM ET" format
+            date_part = first_game.split()[1]  # "09/07/2025"
+            slate_date = datetime.strptime(date_part, "%m/%d/%Y").strftime("%Y%m%d")
+        except (IndexError, ValueError):
+            # Fallback if date parsing fails
+            slate_date = datetime.now().strftime("%Y%m%d")
+
+        # Create slate identifier: date + number of games
+        slate_id = f"{slate_date}_nfl_{len(unique_games)}games"
+
+        return slate_id
 
     def bulk_process_files(self, directory: Path) -> dict[str, any]:
         """

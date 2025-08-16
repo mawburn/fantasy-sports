@@ -354,7 +354,9 @@ class DraftKingsContest(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     contest_id = Column(String(50), unique=True, nullable=False, index=True)
-    contest_name = Column(String(200), nullable=False)
+    contest_name = Column(
+        String(200), unique=True, nullable=False, index=True
+    )  # Added unique constraint
     contest_type = Column(String(50), nullable=False)  # Classic, Showdown, etc.
 
     # Contest details

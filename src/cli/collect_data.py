@@ -265,6 +265,119 @@ def collect_injuries(
 
 
 @app.command()
+def collect_weather(
+    seasons: list[int] = typer.Option(
+        [], "--season", "-s", help="Seasons to collect (e.g., -s 2023 -s 2024)"
+    ),
+    weeks: list[int] = typer.Option([], "--week", "-w", help="Weeks to collect (e.g., -w 1 -w 2)"),
+    upcoming_only: bool = typer.Option(
+        False, "--upcoming", "-u", help="Only collect weather for upcoming games"
+    ),
+    days_ahead: int = typer.Option(
+        7, "--days", "-d", help="Days ahead to check for upcoming games (default: 7)"
+    ),
+):
+    """
+    Collect weather data for NFL games using OpenWeatherMap API.
+
+    Weather significantly impacts fantasy football performance:
+    - Wind Speed: Affects passing accuracy and field goal attempts (>15 MPH critical)
+    - Temperature: Cold weather reduces player performance and ball handling
+    - Precipitation: Rain/snow increases fumbles, reduces passing efficiency
+    - Game Script: Bad weather leads to more conservative, run-heavy approaches
+
+    The system collects real-time weather for upcoming games and historical weather
+    for completed games to enhance prediction accuracy and feature engineering.
+
+    API Key Required:
+    Set WEATHER_API_KEY environment variable with your OpenWeatherMap API key.
+    Get a free key at https://openweathermap.org/api
+
+    Examples:
+        python -m src.cli.collect_data collect-weather
+        python -m src.cli.collect_data collect-weather -s 2024
+        python -m src.cli.collect_data collect-weather --upcoming
+        python -m src.cli.collect_data collect-weather -s 2024 -w 1 -w 2
+
+    Args:
+        seasons: List of specific seasons to collect (defaults to current season)
+        weeks: List of specific weeks to collect (defaults to all weeks)
+        upcoming_only: Only collect weather for games in the next 7 days
+        days_ahead: Number of days ahead to check for upcoming games
+    """
+    setup_logging()
+
+    try:
+        from src.data.collection.weather_collector import WeatherCollector
+
+        # Initialize weather collector (will validate API key)
+        collector = WeatherCollector()
+
+        if upcoming_only:
+            # Collect weather for upcoming games only
+            typer.echo(f"Collecting weather for upcoming games (next {days_ahead} days)...")
+            results = collector.collect_upcoming_games_weather(days_ahead)
+            typer.echo("✅ Upcoming games weather collection complete!")
+            typer.echo(f"  Games processed: {results.get('total_games', 0)}")
+            typer.echo(f"  Weather updated: {results.get('weather_updated', 0)}")
+            if results.get("failed_updates", 0) > 0:
+                typer.echo(f"  Failed updates: {results.get('failed_updates', 0)}")
+        else:
+            # Collect weather for specific seasons/weeks
+            seasons_list = seasons if seasons else None
+            weeks_list = weeks if weeks else None
+
+            if not seasons_list:
+                # Default to current season
+                from datetime import datetime
+
+                current_season = datetime.now().year
+                if datetime.now().month < 9:  # Before September
+                    current_season -= 1
+                seasons_list = [current_season]
+
+            typer.echo(
+                f"Collecting weather data for seasons: {seasons_list}, weeks: {weeks_list or 'all weeks'}..."
+            )
+
+            total_results = {
+                "total_games": 0,
+                "weather_collected": 0,
+                "already_had_weather": 0,
+                "failed_collection": 0,
+                "api_requests": 0,
+            }
+
+            # Process each season
+            for season in seasons_list:
+                season_results = collector.collect_weather_for_season(season, weeks_list)
+
+                # Aggregate results
+                for key in total_results:
+                    total_results[key] += season_results.get(key, 0)
+
+            typer.echo("✅ Weather collection complete!")
+            typer.echo(f"  Total games: {total_results.get('total_games', 0)}")
+            typer.echo(f"  Weather collected: {total_results.get('weather_collected', 0)}")
+            typer.echo(f"  Already had weather: {total_results.get('already_had_weather', 0)}")
+            if total_results.get("failed_collection", 0) > 0:
+                typer.echo(f"  Failed collections: {total_results.get('failed_collection', 0)}")
+            typer.echo(f"  API requests made: {total_results.get('api_requests', 0)}")
+
+    except ValueError as e:
+        if "API key" in str(e):
+            typer.echo("❌ Weather API key not configured!")
+            typer.echo("Set WEATHER_API_KEY environment variable or get a free key from:")
+            typer.echo("https://openweathermap.org/api")
+        else:
+            typer.echo(f"❌ Configuration error: {e}")
+        raise typer.Exit(1) from e
+    except Exception as e:
+        typer.echo(f"❌ Weather collection failed: {e}")
+        raise typer.Exit(1) from e
+
+
+@app.command()
 def collect_dk(
     file: str = typer.Option(None, "--file", "-f", help="Path to DraftKings salary CSV file"),
     directory: str = typer.Option(
@@ -332,9 +445,12 @@ def collect_all(
     seasons: list[int] = typer.Option(
         [], "--season", "-s", help="Seasons to collect (e.g., -s 2023 -s 2024)"
     ),
+    include_weather: bool = typer.Option(
+        True, "--weather/--no-weather", help="Include weather data collection (default: True)"
+    ),
 ):
     """
-    Collect all NFL data in the correct order (teams, players, schedules, stats).
+    Collect all NFL data in the correct order (teams, players, schedules, stats, weather).
 
     This is the most convenient command for initial data setup or bulk updates.
     It automatically handles dependencies between data types:
@@ -342,13 +458,16 @@ def collect_all(
     2. Players (references teams)
     3. Schedules (references teams)
     4. Statistics (references players and games)
+    5. Weather (enhances game context)
 
     Examples:
         python -m src.cli.collect_data collect-all
         python -m src.cli.collect_data collect-all -s 2023 -s 2024
+        python -m src.cli.collect_data collect-all --no-weather
 
     Args:
         seasons: List of specific seasons to collect (defaults to current season)
+        include_weather: Whether to collect weather data (requires API key)
     """
     setup_logging()
     seasons_list = seasons if seasons else None
@@ -356,15 +475,63 @@ def collect_all(
     typer.echo(f"Starting full data collection for seasons: {seasons_list or 'current season'}...")
 
     try:
+        # Core NFL data collection
         collector = NFLDataCollector()
-        # collect_all_data() handles the proper sequence and dependencies
         results = collector.collect_all_data(seasons_list)
 
-        typer.echo("✅ Full data collection complete!")
-        typer.echo("Results:")
-        # Display summary of what was collected
+        typer.echo("✅ Core NFL data collection complete!")
+        typer.echo("Core Results:")
         for data_type, count in results.items():
             typer.echo(f"  - {data_type}: {count} new records")
+
+        # Weather data collection (optional)
+        if include_weather:
+            try:
+                from src.data.collection.weather_collector import WeatherCollector
+
+                typer.echo("\n🌤️  Starting weather data collection...")
+                weather_collector = WeatherCollector()
+
+                # Use same seasons as core data
+                if not seasons_list:
+                    from datetime import datetime
+
+                    current_season = datetime.now().year
+                    if datetime.now().month < 9:  # Before September
+                        current_season -= 1
+                    seasons_list = [current_season]
+
+                weather_results = {
+                    "total_games": 0,
+                    "weather_collected": 0,
+                    "already_had_weather": 0,
+                    "failed_collection": 0,
+                }
+
+                for season in seasons_list:
+                    season_weather = weather_collector.collect_weather_for_season(season)
+                    for key in weather_results:
+                        weather_results[key] += season_weather.get(key, 0)
+
+                typer.echo("✅ Weather data collection complete!")
+                typer.echo("Weather Results:")
+                typer.echo(f"  - total_games: {weather_results['total_games']}")
+                typer.echo(f"  - weather_collected: {weather_results['weather_collected']}")
+                typer.echo(f"  - already_had_weather: {weather_results['already_had_weather']}")
+                if weather_results["failed_collection"] > 0:
+                    typer.echo(f"  - failed_collection: {weather_results['failed_collection']}")
+
+            except ValueError as e:
+                if "API key" in str(e):
+                    typer.echo("⚠️  Skipping weather collection: API key not configured")
+                    typer.echo("   Set WEATHER_API_KEY environment variable to enable weather data")
+                else:
+                    typer.echo(f"⚠️  Skipping weather collection: {e}")
+            except Exception as e:
+                typer.echo(f"⚠️  Weather collection failed: {e}")
+                typer.echo("   Continuing with core data collection results")
+
+        typer.echo("\n🎉 Full data collection pipeline complete!")
 
     except Exception as e:
         typer.echo(f"❌ Data collection failed: {e}")
@@ -424,6 +591,15 @@ def status():
             typer.echo(f"  Injury Reports: {injuries_count:,}")  # Player injury data
             typer.echo(f"  DK Contests: {contests_count:,}")  # DraftKings contests
             typer.echo(f"  DK Salaries: {salaries_count:,}")  # Player pricing data
+
+            # Weather data statistics
+            games_with_weather = (
+                session.query(Game).filter(Game.weather_temperature.isnot(None)).count()
+            )
+            weather_percentage = (games_with_weather / games_count * 100) if games_count > 0 else 0
+            typer.echo(
+                f"  Weather Data: {games_with_weather:,}/{games_count:,} games ({weather_percentage:.1f}%)"
+            )
 
         finally:
             # Always close database session to prevent connection leaks

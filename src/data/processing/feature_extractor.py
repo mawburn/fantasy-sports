@@ -492,7 +492,7 @@ class FeatureExtractor:
         # ALWAYS return the same feature set for consistency
         if not target_game or not player or not player.team_id:
             # Return default values for all opponent features to maintain consistency
-            return {
+            default_features = {
                 "has_opponent_data": 0,  # Flag indicates no matchup data available
                 "is_home_game": 0,  # Default to away game
                 "game_week": 1,  # Default to week 1
@@ -500,6 +500,10 @@ class FeatureExtractor:
                 "opponent_def_rank": 15,  # Default to middle ranking
                 "opponent_points_allowed_avg": 22.0,  # Default to league average
             }
+            # Add default weather features for consistency
+            default_weather = self._extract_weather_features_from_game(None)
+            default_features.update(default_weather)
+            return default_features
 
         # Determine opponent team and home/away status
         # Logic: if player's team is home team, they're playing at home vs away team
@@ -518,6 +522,11 @@ class FeatureExtractor:
             "is_divisional_game": self._is_divisional_matchup(player.team_id, opponent_team_id),
         }
 
+        # Weather features from the target game
+        # Weather significantly impacts fantasy performance, especially for certain positions
+        weather_features = self._extract_weather_features_from_game(target_game)
+        features.update(weather_features)
+
         # Opponent defensive analysis (currently placeholder - would be calculated from real data)
         # In production, these would come from defensive stats aggregation:
         # - Points allowed by position
@@ -532,6 +541,163 @@ class FeatureExtractor:
         )
 
         return features
+
+    def _extract_weather_features_from_game(self, game: Game) -> dict:
+        """Extract weather features from a game record.
+
+        Weather significantly impacts fantasy performance in predictable ways:
+
+        Temperature Effects:
+        - Cold weather (< 40°F): Reduced passing accuracy, ball handling issues
+        - Very cold weather (< 20°F): Significant performance degradation
+        - Moderate temperatures (40-80°F): Optimal performance conditions
+        - Hot weather (> 90°F): Potential fatigue and dehydration effects
+
+        Wind Effects:
+        - Light wind (< 10 MPH): Minimal impact on gameplay
+        - Moderate wind (10-15 MPH): Some impact on long passes and kicking
+        - High wind (15-20 MPH): Significant impact on passing game
+        - Extreme wind (> 20 MPH): Major impact, favor ground game
+
+        Precipitation Effects:
+        - Clear conditions: Optimal performance
+        - Light rain: Slight increase in fumbles/drops
+        - Heavy rain/snow: Significant impact on ball handling and footing
+
+        Position-Specific Impacts:
+        - QBs: Most affected by wind and precipitation (passing accuracy)
+        - WRs/TEs: Affected by wind (route running) and precipitation (catching)
+        - RBs: Less affected, may get increased usage in bad weather
+        - Kickers: Extremely sensitive to wind and precipitation
+
+        Args:
+            game: Game object with weather data
+
+        Returns:
+            Dictionary of weather features with consistent naming
+        """
+        # Default weather features for consistency (used when no weather data available)
+        default_features = {
+            "has_weather_data": 0,  # Flag indicating weather data availability
+            "temperature_f": 70,  # Default to moderate temperature
+            "wind_speed_mph": 5,  # Default to light wind
+            "is_cold_weather": 0,  # < 40°F
+            "is_very_cold_weather": 0,  # < 20°F
+            "is_hot_weather": 0,  # > 90°F
+            "is_windy": 0,  # >= 15 MPH
+            "is_very_windy": 0,  # >= 20 MPH
+            "is_dome_game": 0,  # Indoor stadium (weather-protected)
+            "weather_clear": 1,  # Default to clear conditions
+            "weather_rain": 0,  # Precipitation-related conditions
+            "weather_snow": 0,  # Snow conditions
+            "weather_impact_score": 0,  # Overall weather impact (0-10 scale)
+        }
+
+        # If no game provided, return defaults
+        if not game:
+            return default_features
+
+        # Check if weather data is available
+        has_weather = (
+            game.weather_temperature is not None
+            and game.weather_wind_speed is not None
+            and game.weather_description is not None
+        )
+
+        if not has_weather:
+            return default_features
+
+        # Extract basic weather data with safe defaults
+        temp_f = game.weather_temperature or 70
+        wind_mph = game.weather_wind_speed or 5
+        weather_desc = (game.weather_description or "Clear").lower()
+        roof_type = (game.roof_type or "").lower()
+
+        # Temperature categorization
+        is_cold = 1 if temp_f < 40 else 0
+        is_very_cold = 1 if temp_f < 20 else 0
+        is_hot = 1 if temp_f > 90 else 0
+
+        # Wind categorization
+        is_windy = 1 if wind_mph >= 15 else 0
+        is_very_windy = 1 if wind_mph >= 20 else 0
+
+        # Stadium type (dome/retractable roof protects from weather)
+        is_dome = 1 if roof_type in ["dome", "retractable"] else 0
+
+        # Weather condition categorization
+        weather_clear = (
+            1
+            if any(
+                clear_word in weather_desc
+                for clear_word in ["clear", "sunny", "fair", "partly cloudy"]
+            )
+            else 0
+        )
+        weather_rain = (
+            1
+            if any(
+                rain_word in weather_desc
+                for rain_word in ["rain", "drizzle", "shower", "storm", "thunderstorm"]
+            )
+            else 0
+        )
+        weather_snow = (
+            1
+            if any(
+                snow_word in weather_desc for snow_word in ["snow", "sleet", "blizzard", "flurries"]
+            )
+            else 0
+        )
+
+        # Calculate overall weather impact score (0-10, higher = more adverse)
+        # This composite score helps models learn weather impact patterns
+        impact_score = 0
+
+        # Temperature impact
+        if temp_f < 20:
+            impact_score += 4  # Very cold has major impact
+        elif temp_f < 40:
+            impact_score += 2  # Cold has moderate impact
+        elif temp_f > 90:
+            impact_score += 1  # Hot has minor impact
+
+        # Wind impact
+        if wind_mph >= 20:
+            impact_score += 3  # Very windy has major impact
+        elif wind_mph >= 15:
+            impact_score += 2  # Windy has moderate impact
+        elif wind_mph >= 10:
+            impact_score += 1  # Breezy has minor impact
+
+        # Precipitation impact
+        if weather_rain:
+            impact_score += 2  # Rain has moderate impact
+        if weather_snow:
+            impact_score += 3  # Snow has major impact
+
+        # Dome protection reduces impact significantly
+        if is_dome:
+            impact_score = max(0, impact_score - 5)
+
+        # Ensure score stays within 0-10 range
+        impact_score = min(10, max(0, impact_score))
+
+        return {
+            "has_weather_data": 1,  # Weather data is available
+            "temperature_f": temp_f,  # Raw temperature value
+            "wind_speed_mph": wind_mph,  # Raw wind speed value
+            "is_cold_weather": is_cold,  # Temperature < 40°F
+            "is_very_cold_weather": is_very_cold,  # Temperature < 20°F
+            "is_hot_weather": is_hot,  # Temperature > 90°F
+            "is_windy": is_windy,  # Wind >= 15 MPH
+            "is_very_windy": is_very_windy,  # Wind >= 20 MPH
+            "is_dome_game": is_dome,  # Indoor/covered stadium
+            "weather_clear": weather_clear,  # Clear conditions
+            "weather_rain": weather_rain,  # Rain/storm conditions
+            "weather_snow": weather_snow,  # Snow conditions
+            "weather_impact_score": impact_score,  # Composite impact score (0-10)
+        }
 
     def _is_divisional_matchup(self, team1_id: int, team2_id: int) -> int:
         """Check if two teams are in the same division."""
@@ -562,11 +728,19 @@ class FeatureExtractor:
         - Thursday: Short week preparation (Sunday -> Thursday)
         - Different TV audiences and prime time pressure
 
+        Current Implementation:
+        - Season phase detection (early, mid, late season patterns)
+        - Day of week effects (Thursday, Monday, Sunday games)
+        - Week-based playoff implications tracking
+
+        Note: Weather conditions are handled in opponent features since they're
+        game-specific rather than purely temporal.
+
         Future Enhancements:
-        - Weather conditions (temperature, wind, precipitation)
-        - Stadium factors (dome vs outdoor, altitude, surface)
-        - Rest days between games
-        - Playoff implications and motivation
+        - Stadium factors (altitude, surface type, crowd noise)
+        - Rest days between games (short weeks, bye weeks)
+        - Advanced playoff scenarios and seeding implications
+        - Prime time game effects and TV scheduling impacts
         """
         target_date = _ensure_datetime(target_date)
         # Calculate approximate week of season based on calendar

@@ -117,12 +117,10 @@
 
 **See**: [Integration - External APIs](./05-integration-specifications.md#external-apis)
 
-- [ ] Weather API integration
+- [x] Weather API integration
 - [x] Injury report collector (nfl_data_py integration, 2018-2024 complete)
-- [ ] Vegas odds collector
+- [ ] Vegas odds collector (use The Odds API)
 - [ ] Stadium data collector
-- [ ] News/sentiment collector (optional)
-- [ ] FantasyPros opponent matchup stats scraping
 
 ### Data Validation & Cleaning
 
