@@ -121,7 +121,6 @@ async def get_config():
         "nfl_seasons_to_load": settings.nfl_seasons_to_load,
         # DraftKings contest configuration
         "dk_classic_salary_cap": settings.dk_classic_salary_cap,
-        "dk_showdown_salary_cap": settings.dk_showdown_salary_cap,
         # System behavior flags
         "enable_self_tuning": settings.enable_self_tuning,  # ML model auto-improvement
         "enable_monitoring": settings.enable_monitoring,  # Performance tracking

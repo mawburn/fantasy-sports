@@ -40,7 +40,7 @@ GET /api/v1/nfl/predictions/{season}/{week}
 
 - `season` (path, integer): NFL season year
 - `week` (path, integer): Week number (1-22)
-- `slate_type` (query, string): "classic" | "showdown" | "all"
+- `slate_type` (query, string): "classic" | "all"
 - `position` (query, string): "QB" | "RB" | "WR" | "TE" | "DST" | "ALL"
 - `min_salary` (query, integer): Minimum DraftKings salary
 - `max_salary` (query, integer): Maximum DraftKings salary
@@ -207,7 +207,7 @@ POST /api/v1/nfl/predictions/generate
 
 ### DraftKings Lineup Optimization
 
-#### Optimize Classic Lineup
+#### Optimize Single-Entry Classic Lineup
 
 ```http
 POST /api/v1/dk/lineups/optimize/classic
@@ -219,11 +219,10 @@ POST /api/v1/dk/lineups/optimize/classic
 {
     "slate_id": "DK_MAIN_2024_01",
     "contest_type": "GPP",
+    "single_entry_mode": true,
     "optimization_settings": {
-        "num_lineups": 20,
-        "unique_players": 3,
-        "max_exposure": 0.6,
-        "min_salary_used": 49000
+        "min_salary_used": 49000,
+        "lineup_planning_hours": 48
     },
     "player_settings": {
         "locked_players": ["JAllen_17"],
@@ -342,25 +341,24 @@ POST /api/v1/dk/lineups/optimize/classic
 }
 ```
 
-#### Optimize Showdown Lineup
+#### Optimize Additional Classic Lineups
 
 ```http
-POST /api/v1/dk/lineups/optimize/showdown
+POST /api/v1/dk/lineups/optimize/alternate
 ```
 
 **Request Body:**
 
 ```json
 {
-    "game_id": "2024_01_BUF_MIA",
-    "optimization_strategy": "balanced",
-    "captain_settings": {
-        "force_qb_captain": false,
-        "min_captain_ownership": 5.0,
-        "leverage_captain": true
-    },
-    "num_lineups": 10,
-    "unique_lineups": 3
+    "slate_id": "DK_MAIN_2024_01",
+    "base_lineup_id": "LU_2024_01_001",
+    "optimization_strategy": "pivot",
+    "pivot_settings": {
+        "max_shared_players": 7,
+        "min_salary_difference": 1000,
+        "pivot_positions": ["WR", "RB"]
+    }
 }
 ```
 

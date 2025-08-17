@@ -201,13 +201,13 @@ CREATE TABLE draftkings_salaries (
     salary_id INTEGER PRIMARY KEY AUTOINCREMENT,
     player_id VARCHAR(50) NOT NULL,
     slate_id VARCHAR(50) NOT NULL,
-    slate_type VARCHAR(20), -- 'Classic', 'Showdown', 'Tiers'
+    slate_type VARCHAR(20), -- 'Classic'
     season INTEGER NOT NULL,
     week INTEGER NOT NULL,
     game_date DATE,
     position VARCHAR(10) NOT NULL,
     salary INTEGER NOT NULL,
-    is_captain_eligible BOOLEAN DEFAULT FALSE,
+    -- Note: captain_eligible removed - single-entry classic contests only
     projected_ownership FLOAT,
     actual_ownership FLOAT,
     value_rating FLOAT, -- points per $1000
@@ -267,7 +267,7 @@ CREATE TABLE predictions (
 CREATE TABLE lineups (
     lineup_id VARCHAR(50) PRIMARY KEY,
     slate_id VARCHAR(50) NOT NULL,
-    contest_type VARCHAR(20), -- 'Cash', 'GPP', 'H2H'
+    contest_type VARCHAR(20), -- 'Cash', 'GPP', 'H2H' for single-entry classic contests
     optimization_strategy VARCHAR(50),
 
     -- Classic Lineup Positions
@@ -281,13 +281,7 @@ CREATE TABLE lineups (
     flex_id VARCHAR(50),
     dst_id VARCHAR(50),
 
-    -- Showdown Positions
-    captain_id VARCHAR(50),
-    flex1_id VARCHAR(50),
-    flex2_id VARCHAR(50),
-    flex3_id VARCHAR(50),
-    flex4_id VARCHAR(50),
-    flex5_id VARCHAR(50),
+    -- Note: Showdown positions removed - classic contest format only
 
     total_salary INTEGER,
     projected_points FLOAT,
@@ -576,9 +570,9 @@ erDiagram
 ### Salary Data Validation
 
 - DraftKings salaries: $3,000 - $10,000 range
-- Captain multiplier: exactly 1.5x
 - Total salary cap: $50,000
-- Minimum 9 players for Classic, 6 for Showdown
+- Exactly 9 players for Classic contest format
+- Single-entry contest focus with 48-hour advance planning
 
 ### Statistical Validation
 

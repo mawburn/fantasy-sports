@@ -87,7 +87,6 @@ class Settings(BaseSettings):
 
     # DraftKings Configuration - Contest format settings
     dk_classic_salary_cap: int = 50000  # Salary cap for classic contests ($50,000)
-    dk_showdown_salary_cap: int = 50000  # Salary cap for showdown contests
 
     # ML Configuration - Machine learning experiment tracking and deployment
     mlflow_tracking_uri: str = "file:///data/mlflow"  # MLflow experiment tracking location

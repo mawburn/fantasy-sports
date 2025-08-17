@@ -137,7 +137,7 @@ ENABLE_SELF_TUNING=true
 NFL_SEASONS_TO_LOAD=3
 NFL_DATA_CACHE_DIR=data/cache
 DK_CLASSIC_SALARY_CAP=50000
-DK_SHOWDOWN_SALARY_CAP=50000
+# Note: Showdown cap removed - single-entry classic contests only
 EOF
     fi
 }
@@ -356,9 +356,9 @@ class Settings(BaseSettings):
     nfl_seasons_to_load: int = 3
     data_refresh_interval: int = 3600
 
-    # DraftKings Configuration
+    # DraftKings Configuration (Single-Entry Classic Contests)
     dk_classic_salary_cap: int = 50000
-    dk_showdown_salary_cap: int = 50000
+    # Note: showdown_salary_cap removed - classic contests only
 
     # Feature Flags
     enable_self_tuning: bool = True

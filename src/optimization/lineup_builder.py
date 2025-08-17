@@ -462,7 +462,11 @@ class LineupBuilder:
         num_lineups: int = 10,
         diversity_factor: float = 0.3,
     ) -> list[OptimizationResult]:
-        """Generate multiple diverse lineups.
+        """Generate multiple diverse lineups for analysis and comparison.
+
+        Note: This generates lineups for research and comparison purposes, not for
+        multi-entry contests. Each lineup represents a different strategic approach
+        to the same single-entry classic contest.
 
         Args:
             player_pool: Available players

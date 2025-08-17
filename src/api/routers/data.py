@@ -450,11 +450,10 @@ async def get_contests(
     DraftKings offers various contest types:
     - GPP (Guaranteed Prize Pool): Tournaments with large prize pools
     - Cash: 50/50s and Double-ups with ~50% win rate
-    - Showdown: Single-game contests
     - Multiplier: Win 2x, 3x, etc. your entry fee
 
     Args:
-        contest_type: Partial match on contest type (GPP, Cash, Showdown, etc.)
+        contest_type: Partial match on contest type (GPP, Cash, etc.)
         is_live: True for currently running contests, False for upcoming
         min_prize_pool: Only show contests with at least this prize pool
         limit: Maximum number of results
@@ -526,7 +525,7 @@ async def get_salaries(
     - Recent performance (good games = higher salary)
     - Injury status (injured/questionable players get lower salaries)
     - Matchup difficulty (easier matchups = higher salaries)
-    - Contest type (Showdown vs Classic have different salary structures)
+    - Contest format and slate size
 
     This is crucial data for lineup optimization since you must stay
     under the salary cap while maximizing projected points.

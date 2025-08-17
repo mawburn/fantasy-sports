@@ -361,7 +361,7 @@ class DraftKingsContest(Base):
     contest_name = Column(
         String(200), unique=True, nullable=False, index=True
     )  # Added unique constraint
-    contest_type = Column(String(50), nullable=False)  # Classic, Showdown, etc.
+    contest_type = Column(String(50), nullable=False)  # Classic contests only
 
     # Contest details
     entry_fee = Column(Float, nullable=False)
@@ -527,7 +527,7 @@ class ScoringRules(Base):
     __tablename__ = "scoring_rules"
 
     id = Column(Integer, primary_key=True, index=True)
-    contest_type = Column(String(50), nullable=False, index=True)  # Classic, Showdown, etc.
+    contest_type = Column(String(50), nullable=False, index=True)  # Classic contests only
     position = Column(String(10), nullable=False, index=True)  # QB, RB, WR, TE, K, DEF
 
     # Passing scoring
@@ -669,8 +669,6 @@ class DraftKingsEntry(Base):
 
     # Entry metadata
     entry_time = Column(DateTime, nullable=False)
-    is_late_swap = Column(Boolean, default=False)
-    swap_count = Column(Integer, default=0)
 
     # Performance metrics
     roi = Column(Float)  # (prize_won - entry_fee) / entry_fee

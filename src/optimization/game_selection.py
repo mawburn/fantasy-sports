@@ -16,7 +16,7 @@ Fun Score: Proprietary metric combining:
 - Contest excitement (payout structure)
 - Achievable goals (realistic win probability)
 - Field competitiveness (skill level)
-- Entry variance (multiple lineups vs single)
+- Risk/reward balance for single entries
 
 Expected Value (EV): Mathematical expectation calculated as:
 EV = (Win_Probability * Payout) - Entry_Fee
@@ -48,7 +48,6 @@ class ContestType(Enum):
     CASH = "cash"  # 50/50s and double-ups
     H2H = "head_to_head"  # Head-to-head matches
     SATELLITE = "satellite"  # Qualifier contests
-    SHOWDOWN = "showdown"  # Single-game contests
     MULTIPLIER = "multiplier"  # 3x, 5x, 10x contests
 
 
@@ -201,8 +200,6 @@ class ContestAnalyzer:
             return ContestType.CASH
         elif any(term in name for term in ["gpp", "milly maker", "tournament"]):
             return ContestType.GPP
-        elif "showdown" in name or "single game" in name:
-            return ContestType.SHOWDOWN
         elif any(term in name for term in ["satellite", "qualifier"]):
             return ContestType.SATELLITE
         elif any(term in name for term in ["3x", "5x", "10x", "multiplier"]):
@@ -480,23 +477,6 @@ class ExpectedValueCalculator:
 
         return skill_adjusted_ev
 
-    def calculate_multi_entry_ev(
-        self, contest_metrics: ContestMetrics, num_entries: int, skill_edge: float = 0.0
-    ) -> float:
-        """Calculate EV for multiple entries in same contest."""
-        single_entry_ev = self.calculate_ev(contest_metrics, skill_edge)
-
-        # Multi-entry reduces variance but doesn't change expected value linearly
-        # There are diminishing returns due to increased correlation
-        if num_entries == 1:
-            return single_entry_ev
-        elif num_entries <= 3:
-            # Small multi-entry has minimal correlation penalty
-            return single_entry_ev * num_entries * 0.95
-        else:
-            # Larger multi-entry has more correlation penalty
-            return single_entry_ev * num_entries * 0.90
-
 
 class RiskAssessment:
     """Assesses risk metrics for contest selection."""
@@ -750,7 +730,7 @@ class GameSelectionEngine:
                 total_risk = potential_risk
 
                 # Update recommended entries and bankroll percentage
-                contest.recommended_entries = 1  # Single entry for now
+                contest.recommended_entries = 1  # Single entry only
                 contest.bankroll_percentage = contest.entry_fee / settings.bankroll
 
                 # Stop if we've reached max contests

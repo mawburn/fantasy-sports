@@ -300,15 +300,13 @@
 - [x] Multi-lineup generation
 - [x] Diversity constraints
 
-### Contest-Specific Optimizers
+### Single-Entry Contest Optimizers
 
-**See**: [Optimization - Contest Strategies](./08-optimization-algorithms.md#contest-specific-strategies)
+**See**: [Optimization - Single-Entry Strategies](./08-optimization-algorithms.md#contest-specific-strategies)
 
-- [x] GPP optimizer (tournaments)
-- [x] Cash game optimizer (50/50, H2H)
-- [ ] Showdown optimizer
-- [ ] Multi-entry optimizer
-- [ ] Late swap optimizer
+- [x] Single-entry GPP optimizer (tournaments)
+- [x] Single-entry Cash game optimizer (50/50, H2H)
+- [x] Classic contest format optimization (48-hour advance planning)
 
 ### Optimization Features
 
@@ -354,8 +352,8 @@
 
 **See**: [API - Optimization Endpoints](./03-api-specifications.md#optimization-endpoints)
 
-- [ ] `/api/optimize/lineup` - Generate optimal lineups
-- [ ] `/api/optimize/multi` - Multi-lineup generation
+- [ ] `/api/optimize/lineup` - Generate optimal single-entry lineup
+- [ ] `/api/optimize/alternate` - Generate alternate lineup options
 - [ ] `/api/optimize/validate` - Lineup validation
 - [ ] `/api/optimize/adjust` - Manual lineup adjustments
 

@@ -371,18 +371,18 @@ class DKLineupOptimizer:
 
     def optimize_classic(self,
                         players: List[Player],
-                        settings: OptimizationSettings) -> List[Lineup]:
-        """Optimize classic DraftKings lineup"""
+                        settings: OptimizationSettings) -> Lineup:
+        """Optimize single-entry classic DraftKings lineup"""
 
     def apply_stacking_rules(self,
                            problem: pulp.LpProblem,
                            stacking_rules: StackingRules) -> None:
         """Apply correlation-based stacking constraints"""
 
-    def generate_diverse_lineups(self,
-                                num_lineups: int,
-                                diversity_constraint: float) -> List[Lineup]:
-        """Generate multiple unique lineups"""
+    def optimize_alternate_lineup(self,
+                                 base_lineup: Lineup,
+                                 pivot_settings: PivotSettings) -> Lineup:
+        """Generate alternate lineup based on existing lineup for single-entry contests"""
 ```
 
 ### Constraint Manager
