@@ -92,10 +92,10 @@ graph TB
 
 ### 4. Optimization Engine
 
-- **Lineup Optimizer**: Constraint-based optimization using PuLP
-- **Contest Strategies**: Cash game vs GPP-specific approaches
+- **Single-Entry Lineup Optimizer**: Constraint-based optimization using PuLP for classic contests
+- **Contest Strategies**: Cash game vs GPP-specific approaches for single-entry contests
 - **Stacking Logic**: Correlation-based player groupings
-- **Multi-lineup Generation**: Diverse lineup creation for tournaments
+- **Classic Contest Focus**: Optimized for DraftKings classic contest format with 48-hour advance lineup planning
 
 ### 5. Game Selection System
 

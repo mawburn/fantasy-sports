@@ -104,7 +104,13 @@ class Settings(BaseSettings):
 
     # External APIs (optional) - Third-party service integrations
     weather_api_key: str | None = None  # Weather API key for weather-dependent predictions
-    odds_api_key: str | None = None  # Sports betting odds API for line movement analysis
+    odds_api_key: str | None = None  # The Odds API key for betting lines and market data
+
+    # Data Collection Configuration - Settings for various data collectors
+    collect_vegas_odds: bool = True  # Enable/disable Vegas odds collection
+    collect_stadium_data: bool = True  # Enable/disable stadium data collection
+    odds_collection_interval: int = 14400  # How often to collect odds (4 hours in seconds)
+    stadium_data_refresh_interval: int = 2592000  # Stadium data refresh (30 days in seconds)
 
     @property
     def project_root(self) -> Path:

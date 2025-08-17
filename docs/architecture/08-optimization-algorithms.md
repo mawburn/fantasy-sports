@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document details the optimization algorithms and strategies for generating optimal DraftKings lineups. The system uses mixed-integer linear programming with advanced stacking rules and multi-objective optimization for different contest types.
+This document details the optimization algorithms and strategies for generating optimal DraftKings lineups for single-entry classic contests. The system uses mixed-integer linear programming with advanced stacking rules and multi-objective optimization for GPP and cash game contest types. All optimizations are designed for classic contest format with the ability to plan lineups up to 48 hours before games.
 
 ## Optimization Framework
 
@@ -30,7 +30,6 @@ graph TB
 
     subgraph "Output Layer"
         SINGLE[Single Lineup]
-        MULTI[Multiple Lineups]
         VALID[Validation]
     end
 
@@ -47,8 +46,6 @@ graph TB
     FORM --> SOLVE
     SOLVE --> POST
     POST --> SINGLE
-    POST --> MULTI
-    MULTI --> VALID
     SINGLE --> VALID
 ```
 
@@ -248,89 +245,21 @@ class StackingOptimizer:
         return bonus
 ```
 
-### Multi-Lineup Generation
+### Single-Entry Lineup Optimization
 
 ```python
-class MultiLineupGenerator:
-    """Generate multiple unique lineups for tournaments"""
+class SingleEntryOptimizer:
+    """Optimize single lineup for classic DraftKings contests"""
 
-    def generate_lineups(self, players: List[Player],
-                        num_lineups: int,
-                        settings: MultiLineupSettings) -> List[Lineup]:
-        """Generate multiple diverse lineups"""
+    def optimize_single_lineup(self, players: List[Player],
+                              settings: OptimizationSettings) -> Lineup:
+        """Generate optimal single lineup for classic contest"""
 
-        lineups = []
-        used_combinations = set()
-
-        for i in range(num_lineups):
-            # Adjust player projections for diversity
-            adjusted_players = self._adjust_for_diversity(
-                players,
-                lineups,
-                settings.diversity_factor
-            )
-
-            # Generate lineup with uniqueness constraint
-            lineup = self._generate_unique_lineup(
-                adjusted_players,
-                used_combinations,
-                settings
-            )
-
-            if lineup:
-                lineups.append(lineup)
-                used_combinations.add(self._get_lineup_key(lineup))
-
-            # Apply exposure limits
-            self._update_exposure(players, lineup, settings.max_exposure)
-
-        return lineups
-
-    def _adjust_for_diversity(self, players: List[Player],
-                             existing_lineups: List[Lineup],
-                             diversity_factor: float) -> List[Player]:
-        """Adjust projections to encourage diversity"""
-
-        adjusted = copy.deepcopy(players)
-
-        # Count player usage
-        usage_count = defaultdict(int)
-        for lineup in existing_lineups:
-            for player in lineup.players:
-                usage_count[player.id] += 1
-
-        # Penalize overused players
-        for player in adjusted:
-            usage = usage_count[player.id]
-            if usage > 0:
-                penalty = 1 - (diversity_factor * usage / len(existing_lineups))
-                player.projection *= max(0.5, penalty)
-
-        return adjusted
-
-    def _generate_unique_lineup(self, players: List[Player],
-                               used_combinations: Set[str],
-                               settings: MultiLineupSettings) -> Optional[Lineup]:
-        """Generate lineup with uniqueness constraints"""
-
+        # Optimize for single best lineup
         optimizer = LineupOptimizer()
-
-        # Add uniqueness constraint
         prob, player_vars = optimizer.formulate_problem(players, settings)
-
-        # Ensure minimum unique players
-        for used_key in used_combinations:
-            used_players = used_key.split(',')
-
-            # At least X players must be different
-            prob += (
-                pulp.lpSum([
-                    player_vars[p_id] for p_id in used_players
-                    if p_id in player_vars
-                ]) <= 9 - settings.min_unique_players
-            )
-
-        # Solve
+        
+        # Solve optimization
         prob.solve(optimizer.solver)
 
         if prob.status == pulp.LpStatusOptimal:
@@ -338,9 +267,41 @@ class MultiLineupGenerator:
                 p for p in players
                 if player_vars[p.id].value() == 1
             ]
-            return Lineup(players=selected_players)
+            lineup = Lineup(players=selected_players)
+            
+            # Validate lineup meets DraftKings requirements
+            if self._validate_classic_lineup(lineup):
+                return lineup
+            else:
+                raise OptimizationError("Generated lineup violates contest rules")
+        else:
+            raise OptimizationError("No optimal solution found")
 
-        return None
+    def _validate_classic_lineup(self, lineup: Lineup) -> bool:
+        """Validate lineup meets classic DraftKings requirements"""
+        
+        # Check position requirements: 1 QB, 2 RB, 3 WR, 1 TE, 1 FLEX, 1 DST
+        positions = [p.position for p in lineup.players]
+        
+        if positions.count('QB') != 1:
+            return False
+        if positions.count('RB') < 2 or positions.count('RB') > 3:
+            return False
+        if positions.count('WR') < 3 or positions.count('WR') > 4:
+            return False
+        if positions.count('TE') < 1 or positions.count('TE') > 2:
+            return False
+        if positions.count('DST') != 1:
+            return False
+        if len(lineup.players) != 9:
+            return False
+            
+        # Check salary cap
+        total_salary = sum(p.salary for p in lineup.players)
+        if total_salary > 50000:
+            return False
+            
+        return True
 ```
 
 ## Contest-Specific Strategies
@@ -473,70 +434,55 @@ class GPPOptimizer:
         ) * size_multiplier
 ```
 
-### Showdown Optimization
+### Classic Contest Strategy
 
 ```python
-class ShowdownOptimizer:
-    """Single-game DraftKings Showdown optimization"""
+class ClassicContestStrategy:
+    """Strategic approach for classic DraftKings contests with single-entry focus"""
 
-    def optimize(self, players: List[Player],
-                game: Game) -> ShowdownLineup:
+    def apply_strategy(self, players: List[Player], 
+                      contest_type: str) -> OptimizationSettings:
         """
-        Showdown specific rules:
-        - 6 players total (1 Captain + 5 FLEX)
-        - Captain gets 1.5x points at 1.5x salary
-        - $50,000 salary cap
+        Apply contest-specific strategy for single-entry classic lineups
+        
+        Supports GPP and Cash game strategies with 48-hour advance planning
         """
-
-        prob = pulp.LpProblem("Showdown_Optimization", pulp.LpMaximize)
-
-        # Decision variables for captain and flex
-        captain_vars = {}
-        flex_vars = {}
-
-        for player in players:
-            captain_vars[player.id] = pulp.LpVariable(
-                f"captain_{player.id}",
-                cat='Binary'
-            )
-            flex_vars[player.id] = pulp.LpVariable(
-                f"flex_{player.id}",
-                cat='Binary'
-            )
-
-        # Objective: Maximize points with captain multiplier
-        prob += pulp.lpSum([
-            player.projection * 1.5 * captain_vars[player.id] +
-            player.projection * flex_vars[player.id]
-            for player in players
-        ])
-
-        # Constraints
-        # Exactly 1 captain
-        prob += pulp.lpSum([captain_vars[p.id] for p in players]) == 1
-
-        # Exactly 5 flex
-        prob += pulp.lpSum([flex_vars[p.id] for p in players]) == 5
-
-        # Can't use same player as captain and flex
-        for player in players:
-            prob += captain_vars[player.id] + flex_vars[player.id] <= 1
-
-        # Salary cap with captain multiplier
-        prob += pulp.lpSum([
-            player.salary * 1.5 * captain_vars[player.id] +
-            player.salary * flex_vars[player.id]
-            for player in players
-        ]) <= 50000
-
-        # Solve
-        prob.solve()
-
-        # Extract lineup
-        captain = next(p for p in players if captain_vars[p.id].value() == 1)
-        flex = [p for p in players if flex_vars[p.id].value() == 1]
-
-        return ShowdownLineup(captain=captain, flex=flex)
+        
+        if contest_type.upper() == 'GPP':
+            return self._gpp_strategy(players)
+        elif contest_type.upper() in ['CASH', 'H2H', '50/50']:
+            return self._cash_strategy(players)
+        else:
+            raise ValueError(f"Unsupported contest type: {contest_type}")
+    
+    def _gpp_strategy(self, players: List[Player]) -> OptimizationSettings:
+        """GPP tournament strategy for single-entry contests"""
+        
+        return OptimizationSettings(
+            optimization_type='ceiling',
+            require_qb_stack=True,
+            min_stack_size=2,
+            max_stack_size=3,
+            use_game_stacks=True,
+            max_ownership_concentration=0.25,  # Avoid chalk plays
+            correlation_weight=0.3,
+            leverage_focus=True
+        )
+    
+    def _cash_strategy(self, players: List[Player]) -> OptimizationSettings:
+        """Cash game strategy for single-entry contests"""
+        
+        return OptimizationSettings(
+            optimization_type='floor',
+            require_qb_stack=True,
+            min_stack_size=1,
+            max_stack_size=2,
+            use_game_stacks=False,
+            max_ownership_concentration=0.35,  # Accept higher ownership
+            correlation_weight=0.1,
+            leverage_focus=False,
+            safety_multiplier=1.2  # Emphasize floor projections
+        )
 ```
 
 ## Advanced Optimization Techniques

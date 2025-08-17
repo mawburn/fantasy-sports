@@ -437,6 +437,234 @@ def collect_dk(
         raise typer.Exit(1) from e
 
 
+@app.command()
+def collect_stadiums():
+    """
+    Collect NFL stadium data including venue characteristics and performance factors.
+
+    Stadium data significantly impacts fantasy football performance through:
+    - Playing Surface: Turf vs grass affects speed and injury rates
+    - Roof Type: Domes eliminate weather variables, typically increase scoring
+    - Altitude: Denver's elevation affects kicking distance and ball flight
+    - Climate: Regional weather patterns influence season-long performance
+    - Acoustics: Crowd noise affects road team communication and false starts
+
+    This command collects comprehensive stadium information for all 32 NFL venues
+    including physical characteristics, performance factors, and team associations.
+
+    Example:
+        python -m src.cli.collect_data collect-stadiums
+    """
+    setup_logging()
+
+    try:
+        from src.data.collection.stadium_collector import StadiumDataCollector
+
+        typer.echo("Collecting NFL stadium data...")
+        collector = StadiumDataCollector()
+        results = collector.collect_all_stadiums()
+
+        typer.echo("✅ Stadium data collection complete!")
+        typer.echo(f"  Total stadiums: {results.get('total_stadiums', 0)}")
+        typer.echo(f"  Stadiums added: {results.get('stadiums_added', 0)}")
+        typer.echo(f"  Stadiums updated: {results.get('stadiums_updated', 0)}")
+        typer.echo(f"  Team relationships: {results.get('relationships_created', 0)}")
+
+    except Exception as e:
+        typer.echo(f"❌ Stadium data collection failed: {e}")
+        raise typer.Exit(1) from e
+
+
+@app.command()
+def collect_odds(
+    season: int = typer.Option(None, "--season", "-s", help="Season to collect (default: current)"),
+    week: int = typer.Option(None, "--week", "-w", help="Specific week to collect"),
+    upcoming_only: bool = typer.Option(
+        False, "--upcoming", "-u", help="Only collect odds for upcoming games"
+    ),
+    days_ahead: int = typer.Option(
+        7, "--days", "-d", help="Days ahead to check for upcoming games (default: 7)"
+    ),
+):
+    """
+    Collect Vegas betting odds for NFL games using The Odds API.
+
+    Betting odds are critical for fantasy football because they provide:
+    - Game totals (over/under): Predict high/low scoring games
+    - Point spreads: Identify favored teams with positive game script
+    - Moneyline odds: Probability of each team winning
+    - Line movement: Market sentiment and injury/weather impacts
+
+    Vegas odds incorporate all available information including injury reports,
+    weather forecasts, and professional handicapper analysis, making them
+    extremely valuable for fantasy predictions.
+
+    API Key Required:
+    Set ODDS_API_KEY environment variable with your The Odds API key.
+    Get a free key (500 requests/month) at https://the-odds-api.com/
+
+    Examples:
+        python -m src.cli.collect_data collect-odds
+        python -m src.cli.collect_data collect-odds -s 2024 -w 5
+        python -m src.cli.collect_data collect-odds --upcoming
+
+    Args:
+        season: NFL season year (defaults to current season)
+        week: Specific week number (1-18 regular season, 19+ playoffs)
+        upcoming_only: Only collect odds for games in the next 7 days
+        days_ahead: Number of days ahead to check for upcoming games
+    """
+    setup_logging()
+
+    try:
+        from src.data.collection.vegas_odds_collector import VegasOddsCollector
+
+        collector = VegasOddsCollector()
+
+        if upcoming_only:
+            # Collect odds for upcoming games only
+            typer.echo(f"Collecting odds for upcoming games (next {days_ahead} days)...")
+            results = collector.collect_upcoming_games_odds(days_ahead)
+            typer.echo("✅ Upcoming games odds collection complete!")
+            typer.echo(f"  Games processed: {results.get('total_games', 0)}")
+            typer.echo(f"  Odds collected: {results.get('odds_collected', 0)}")
+            if results.get("failed_collection", 0) > 0:
+                typer.echo(f"  Failed collections: {results.get('failed_collection', 0)}")
+        else:
+            # Collect odds for specific season/week
+            if not season:
+                from datetime import datetime
+
+                current_season = datetime.now().year
+                if datetime.now().month < 9:  # Before September
+                    current_season -= 1
+                season = current_season
+
+            if not week:
+                # Collect for current week (approximate)
+                from datetime import datetime
+
+                current_week = min(
+                    18, max(1, (datetime.now() - datetime(season, 9, 1)).days // 7 + 1)
+                )
+                week = current_week
+
+            typer.echo(f"Collecting odds for {season} season, week {week}...")
+            results = collector.collect_odds_for_week(season, week)
+
+            typer.echo("✅ Odds collection complete!")
+            typer.echo(f"  Total games: {results.get('total_games', 0)}")
+            typer.echo(f"  Odds collected: {results.get('odds_collected', 0)}")
+            if results.get("failed_collection", 0) > 0:
+                typer.echo(f"  Failed collections: {results.get('failed_collection', 0)}")
+
+    except ValueError as e:
+        if "API key" in str(e):
+            typer.echo("❌ Odds API key not configured!")
+            typer.echo("Set ODDS_API_KEY environment variable or get a free key from:")
+            typer.echo("https://the-odds-api.com/")
+        else:
+            typer.echo(f"❌ Configuration error: {e}")
+        raise typer.Exit(1) from e
+    except Exception as e:
+        typer.echo(f"❌ Odds collection failed: {e}")
+        raise typer.Exit(1) from e
+
+
+@app.command()
+def collect_enhanced(
+    seasons: list[int] = typer.Option(
+        [], "--season", "-s", help="Seasons to collect (e.g., -s 2023 -s 2024)"
+    ),
+    _include_weather: bool = typer.Option(
+        True, "--weather/--no-weather", help="Include weather data collection"
+    ),
+    _include_odds: bool = typer.Option(
+        True, "--odds/--no-odds", help="Include Vegas odds collection"
+    ),
+    _include_stadiums: bool = typer.Option(
+        True, "--stadiums/--no-stadiums", help="Include stadium data collection"
+    ),
+):
+    """
+    Enhanced data collection including all NFL data plus weather, odds, and stadium data.
+
+    This command provides comprehensive data collection using the new orchestration system.
+    It collects all available data types in the correct dependency order and provides
+    enhanced error handling and progress reporting.
+
+    Collection Order:
+    1. Teams (foundational data)
+    2. Stadium data (venue characteristics)
+    3. Players (roster information)
+    4. Games/Schedules (matchup data)
+    5. Player statistics (performance data)
+    6. Weather data (environmental factors)
+    7. Vegas odds (market intelligence)
+
+    Examples:
+        python -m src.cli.collect_data collect-enhanced
+        python -m src.cli.collect_data collect-enhanced -s 2023 -s 2024
+        python -m src.cli.collect_data collect-enhanced --no-weather --no-odds
+
+    Args:
+        seasons: List of specific seasons to collect (defaults to recent seasons)
+        include_weather: Whether to collect weather data (requires API key)
+        include_odds: Whether to collect Vegas odds (requires API key)
+        include_stadiums: Whether to collect stadium data
+    """
+    setup_logging()
+
+    try:
+        from src.data.collection.data_orchestrator import DataCollectionOrchestrator
+
+        orchestrator = DataCollectionOrchestrator()
+
+        # Show collector status
+        status = orchestrator.get_collection_status()
+        typer.echo("🔍 Data Collector Status:")
+        for name, info in status["collectors"].items():
+            status_icon = "✅" if info["available"] else "❌"
+            typer.echo(f"  {status_icon} {name}: {info['description']}")
+
+        typer.echo("\n🚀 Starting enhanced data collection...")
+
+        # Use orchestrator for comprehensive data collection
+        if not seasons:
+            results = orchestrator.collect_initial_setup()
+        else:
+            results = orchestrator.collect_initial_setup(seasons)
+
+        typer.echo("✅ Enhanced data collection complete!")
+        typer.echo("\nCollection Summary:")
+
+        # Display results for each collector used
+        for collector in results.get("collectors_used", []):
+            if collector in results:
+                count = results[collector]
+                if isinstance(count, dict):
+                    # Weather/odds results are dictionaries
+                    total = count.get("total_games", count.get("total_stadiums", 0))
+                    collected = count.get(
+                        "weather_collected",
+                        count.get("odds_collected", count.get("stadiums_added", 0)),
+                    )
+                    typer.echo(f"  {collector}: {collected}/{total} records")
+                else:
+                    # NFL data results are integers
+                    typer.echo(f"  {collector}: {count} records")
+
+        duration = results.get("duration", 0)
+        typer.echo(f"\nTotal duration: {duration:.1f} seconds")
+
+        if results.get("total_errors", 0) > 0:
+            typer.echo(f"⚠️  Total errors: {results['total_errors']}")
+
+    except Exception as e:
+        typer.echo(f"❌ Enhanced data collection failed: {e}")
+        raise typer.Exit(1) from e
+
+
 # ========== BULK OPERATIONS ==========
 
 
@@ -566,7 +794,9 @@ def status():
         from src.database.models import PlayByPlay  # Detailed play-by-play data
         from src.database.models import Player  # Player information
         from src.database.models import PlayerStats  # Player performance statistics
+        from src.database.models import Stadium  # Stadium information
         from src.database.models import Team  # NFL team data
+        from src.database.models import VegasOdds  # Betting odds data
 
         # Create database session
         session = SessionLocal()
@@ -578,6 +808,8 @@ def status():
             stats_count = session.query(PlayerStats).count()
             pbp_count = session.query(PlayByPlay).count()
             injuries_count = session.query(InjuryReport).count()
+            stadiums_count = session.query(Stadium).count()
+            odds_count = session.query(VegasOdds).count()
             contests_count = session.query(DraftKingsContest).count()
             salaries_count = session.query(DraftKingsSalary).count()
 
@@ -589,6 +821,8 @@ def status():
             typer.echo(f"  Player Stats: {stats_count:,}")  # Individual game performances
             typer.echo(f"  Play-by-Play: {pbp_count:,}")  # Detailed play data
             typer.echo(f"  Injury Reports: {injuries_count:,}")  # Player injury data
+            typer.echo(f"  Stadiums: {stadiums_count:,}")  # Stadium characteristics
+            typer.echo(f"  Vegas Odds: {odds_count:,}")  # Betting odds records
             typer.echo(f"  DK Contests: {contests_count:,}")  # DraftKings contests
             typer.echo(f"  DK Salaries: {salaries_count:,}")  # Player pricing data
 
@@ -600,6 +834,14 @@ def status():
             typer.echo(
                 f"  Weather Data: {games_with_weather:,}/{games_count:,} games ({weather_percentage:.1f}%)"
             )
+
+            # Odds data statistics
+            if odds_count > 0:
+                games_with_odds = session.query(VegasOdds.game_id).distinct().count()
+                odds_percentage = (games_with_odds / games_count * 100) if games_count > 0 else 0
+                typer.echo(
+                    f"  Odds Coverage: {games_with_odds:,}/{games_count:,} games ({odds_percentage:.1f}%)"
+                )
 
         finally:
             # Always close database session to prevent connection leaks

@@ -119,8 +119,8 @@
 
 - [x] Weather API integration
 - [x] Injury report collector (nfl_data_py integration, 2018-2024 complete)
-- [ ] Vegas odds collector (use The Odds API)
-- [ ] Stadium data collector
+- [x] Vegas odds collector (The Odds API integration complete)
+- [x] Stadium data collector (comprehensive NFL venue database)
 
 ### Data Validation & Cleaning
 

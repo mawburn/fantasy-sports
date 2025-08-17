@@ -39,6 +39,7 @@ from sqlalchemy import ForeignKey  # References to other tables' primary keys
 from sqlalchemy import Index  # Database indexes for query performance
 from sqlalchemy import Integer  # Whole numbers (id, yards, touchdowns)
 from sqlalchemy import String  # Text fields with length limits (name, position)
+from sqlalchemy import Table  # Association tables for many-to-many relationships
 from sqlalchemy import UniqueConstraint  # Ensures no duplicate combinations exist
 from sqlalchemy.ext.declarative import declarative_base  # Base class for all models
 from sqlalchemy.orm import relationship  # Defines how tables are related
@@ -104,6 +105,9 @@ class Team(Base):
         "Game", foreign_keys="[Game.away_team_id]", back_populates="away_team"
     )
     players = relationship("Player", back_populates="team")
+    stadiums = relationship(
+        "Stadium", secondary="stadium_team_associations", back_populates="teams"
+    )
 
     # Automatic timestamps for audit trail
     created_at = Column(DateTime, default=func.now())  # Set when record is created
@@ -938,3 +942,200 @@ class BacktestResult(Base):
         Index("idx_backtest_position_perf", "position", "mae"),
         Index("idx_backtest_roi", "roi_simulated"),
     )
+
+
+class VegasOdds(Base):
+    """Vegas betting odds for NFL games.
+
+    Betting odds are critical for fantasy football because they provide:
+    1. Game totals (over/under) - predict high/low scoring games
+    2. Point spreads - identify favored teams likely to have positive game script
+    3. Moneyline odds - probability of each team winning
+    4. Live line movement - market sentiment and injury/weather impacts
+
+    Fantasy Relevance:
+    - High over/under totals indicate shootout games (more fantasy points)
+    - Large point spreads suggest blowouts (garbage time or early leads)
+    - Favorites typically have more rushing attempts and shorter fields
+    - Underdogs may pass more frequently when trailing
+
+    Betting Market Efficiency:
+    Vegas odds incorporate all available information including:
+    - Injury reports and player availability
+    - Weather forecasts and conditions
+    - Historical matchup data and trends
+    - Public betting sentiment and sharp money movement
+
+    This makes odds data extremely valuable for fantasy predictions as it
+    represents the collective wisdom of professional handicappers.
+    """
+
+    __tablename__ = "vegas_odds"
+
+    id = Column(Integer, primary_key=True, index=True)
+    game_id = Column(Integer, ForeignKey("games.id"), nullable=False, index=True)
+
+    # Relationships
+    game = relationship("Game")
+
+    # Betting lines - multiple books for line shopping
+    sportsbook = Column(
+        String(50), nullable=False, index=True
+    )  # "DraftKings", "FanDuel", "Caesars"
+
+    # Point spread betting
+    home_spread = Column(Float)  # Home team spread (negative = favored)
+    away_spread = Column(Float)  # Away team spread (positive = underdog)
+    spread_juice = Column(Integer, default=-110)  # Vig/juice for spread bets
+
+    # Totals (over/under) betting
+    total_points = Column(Float)  # Game total points over/under
+    over_juice = Column(Integer, default=-110)  # Over bet odds
+    under_juice = Column(Integer, default=-110)  # Under bet odds
+
+    # Moneyline betting (straight up winner)
+    home_moneyline = Column(Integer)  # Home team moneyline odds
+    away_moneyline = Column(Integer)  # Away team moneyline odds
+
+    # Derived metrics for analysis
+    implied_home_win_prob = Column(Float)  # Implied probability from moneyline
+    implied_away_win_prob = Column(Float)  # Implied probability from moneyline
+    total_vig = Column(Float)  # Sportsbook edge (vig/overround)
+
+    # Line movement tracking
+    opening_home_spread = Column(Float)  # Opening line
+    opening_total = Column(Float)  # Opening total
+    line_movement_spread = Column(Float)  # Change from opening
+    line_movement_total = Column(Float)  # Change from opening
+
+    # Market data
+    line_timestamp = Column(DateTime, nullable=False, index=True)  # When odds were recorded
+    is_live = Column(Boolean, default=True)  # Are these current/live odds
+
+    # Additional props (can be expanded)
+    first_td_odds = Column(String)  # JSON of first touchdown scorer odds
+    player_props = Column(String)  # JSON of player prop bets (passing yards, etc.)
+
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    # Constraints and indexes
+    __table_args__ = (
+        # One record per game per sportsbook per timestamp
+        UniqueConstraint("game_id", "sportsbook", "line_timestamp"),
+        Index("idx_odds_game_book", "game_id", "sportsbook"),
+        Index("idx_odds_timestamp", "line_timestamp"),
+        Index("idx_odds_total", "total_points"),  # For high/low scoring game queries
+    )
+
+
+class Stadium(Base):
+    """NFL stadium information and characteristics.
+
+    Stadium data significantly impacts fantasy football performance:
+    1. Playing Surface - turf vs grass affects injury rates and speed
+    2. Roof Type - domes eliminate weather but may favor passing
+    3. Altitude - Denver's thin air increases kicking distance and ball carry
+    4. Dimensions - wider/narrower fields can affect play calling
+    5. Fan Environment - noise levels impact road team communication
+
+    Performance Factors:
+    - Dome stadiums typically see higher scoring due to controlled conditions
+    - Grass fields may slow down players vs faster artificial turf
+    - Cold weather outdoor stadiums favor running games over passing
+    - High altitude stadiums see longer field goals and punt distances
+    - Loud stadiums create more false starts and communication issues
+
+    Data Sources:
+    Stadium information is relatively static but can change due to:
+    - Renovations (new playing surfaces, roof installations)
+    - Team relocations (new cities, new stadiums)
+    - Technology upgrades (better drainage, heating systems)
+
+    This model stores both current and historical stadium data to enable
+    time-based analysis of venue impacts on player performance.
+    """
+
+    __tablename__ = "stadiums"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Stadium identification
+    stadium_name = Column(String(100), nullable=False, index=True)
+    stadium_id = Column(String(20), unique=True, nullable=False, index=True)  # Unique identifier
+
+    # Location information
+    city = Column(String(50), nullable=False)
+    state = Column(String(2), nullable=False)  # US state abbreviation
+    country = Column(String(2), default="US")  # Country code
+
+    # Geographic coordinates for weather/environmental data
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    elevation_feet = Column(Integer)  # Above sea level (important for Denver)
+
+    # Physical characteristics
+    playing_surface = Column(
+        String(50), nullable=False, index=True
+    )  # "Grass", "FieldTurf", "Matrix Turf"
+    surface_brand = Column(String(50))  # Specific turf brand if artificial
+    roof_type = Column(String(20), nullable=False, index=True)  # "Outdoors", "Dome", "Retractable"
+
+    # Field dimensions
+    field_length_yards = Column(Integer, default=120)  # 100 + 2 end zones
+    field_width_yards = Column(Integer, default=53)  # Standard NFL width
+
+    # Environmental factors
+    climate_type = Column(String(20))  # "Cold", "Temperate", "Warm", "Desert"
+    typical_wind_speed = Column(Float)  # Average wind speed during season
+    drainage_quality = Column(String(20))  # "Excellent", "Good", "Fair", "Poor"
+
+    # Stadium characteristics affecting performance
+    seating_capacity = Column(Integer)
+    noise_level_db = Column(Float)  # Decibel level during games
+    home_field_advantage_score = Column(Float)  # Calculated advantage metric
+
+    # Historical data tracking
+    opened_year = Column(Integer)
+    last_renovation_year = Column(Integer)
+    surface_last_replaced = Column(Date)  # When playing surface was last updated
+
+    # Team associations (many-to-many relationship)
+    # Multiple teams can share stadiums (Giants/Jets, Rams/Chargers)
+    teams = relationship("Team", secondary="stadium_team_associations", back_populates="stadiums")
+
+    # Derived analytics
+    injury_rate_factor = Column(Float)  # Relative injury rate vs league average
+    scoring_factor = Column(Float)  # Relative scoring vs league average
+    passing_factor = Column(Float)  # Pass-friendly vs run-friendly rating
+    kicking_factor = Column(Float)  # Field goal success rate factor
+
+    # Status and metadata
+    is_active = Column(Boolean, default=True)  # Currently in use
+    notes = Column(String(500))  # Additional relevant information
+
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    # Constraints and indexes
+    __table_args__ = (
+        Index("idx_stadium_location", "city", "state"),
+        Index("idx_stadium_surface_roof", "playing_surface", "roof_type"),
+        Index("idx_stadium_coordinates", "latitude", "longitude"),
+    )
+
+
+# Association table for many-to-many relationship between teams and stadiums
+# Some teams share stadiums (Giants/Jets at MetLife, Rams/Chargers at SoFi)
+
+stadium_team_associations = Table(
+    "stadium_team_associations",
+    Base.metadata,
+    Column("stadium_id", Integer, ForeignKey("stadiums.id"), primary_key=True),
+    Column("team_id", Integer, ForeignKey("teams.id"), primary_key=True),
+    Column("primary_tenant", Boolean, default=True),  # Is this the team's primary stadium
+    Column("start_date", Date),  # When team started playing here
+    Column("end_date", Date),  # When team stopped (null = current)
+    Column("created_at", DateTime, default=func.now()),
+    Column("updated_at", DateTime, default=func.now(), onupdate=func.now()),
+)
