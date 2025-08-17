@@ -60,7 +60,7 @@ format:
 	@echo "Sorting imports with isort..."
 	@unset VIRTUAL_ENV && $(UV) run isort src/ tests/ scripts/
 	@echo "Formatting Markdown files..."
-	@unset VIRTUAL_ENV && $(UV) run mdformat --compact-tables docs/ *.md
+	@unset VIRTUAL_ENV && $(UV) run mdformat --compact-tables docs/ *.md --ignore-path web/
 	@echo "Formatting complete!"
 
 # Run linters

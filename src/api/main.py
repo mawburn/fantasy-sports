@@ -23,7 +23,7 @@ from fastapi import FastAPI  # Main framework class
 from fastapi.middleware.cors import CORSMiddleware  # Cross-Origin Resource Sharing
 
 # Import our custom routers that define API endpoints
-from src.api.routers import data, game_selection, predictions
+from src.api.routers import data, game_selection, optimization, predictions
 
 # Import application settings/configuration
 from src.config import settings
@@ -153,10 +153,12 @@ app.include_router(
     tags=["game-selection"],  # OpenAPI tags for documentation grouping
 )
 
-# Future routers to be added when those features are implemented:
 # Lineup optimization router for generating optimal DFS lineups
-# from src.api.routers import optimization
-# app.include_router(optimization.router, prefix="/api/optimize", tags=["optimization"])
+app.include_router(
+    optimization.router,  # The router object containing optimization endpoints
+    prefix="/api",  # URL prefix - routes will start with /api/optimize
+    tags=["optimization"],  # OpenAPI tags for documentation grouping
+)
 
 # The FastAPI application is now fully configured and ready to handle requests!
 # When run with uvicorn, it will serve on the configured host:port with automatic

@@ -352,10 +352,10 @@
 
 **See**: [API - Optimization Endpoints](./03-api-specifications.md#optimization-endpoints)
 
-- [ ] `/api/optimize/lineup` - Generate optimal single-entry lineup
-- [ ] `/api/optimize/alternate` - Generate alternate lineup options
-- [ ] `/api/optimize/validate` - Lineup validation
-- [ ] `/api/optimize/adjust` - Manual lineup adjustments
+- [x] `/api/optimize/lineup` - Generate optimal single-entry lineup
+- [x] `/api/optimize/alternate` - Generate alternate lineup options
+- [x] `/api/optimize/validate` - Lineup validation
+- [x] `/api/optimize/adjust` - Manual lineup adjustments
 
 ### Data Endpoints
 
