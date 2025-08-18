@@ -226,7 +226,7 @@ class FeatureExtractor:
             "position_WR": 1 if player.position == "WR" else 0,
             "position_TE": 1 if player.position == "TE" else 0,
             "position_K": 1 if player.position == "K" else 0,  # Kicker
-            "position_DEF": 1 if player.position == "DEF" else 0,  # Defense/ST
+            "position_DST": 1 if player.position in ["DST", "DEF"] else 0,  # Defense/Special Teams
             # Physical attributes (handle missing data with defaults)
             "height_inches": player.height or 0,  # Could use position average instead
             "weight_lbs": player.weight or 0,  # Could use position average instead
@@ -942,7 +942,7 @@ class FeatureExtractor:
         """
         game_date = _ensure_datetime(game_date)
         if positions is None:
-            positions = ["QB", "RB", "WR", "TE", "K", "DEF"]
+            positions = ["QB", "RB", "WR", "TE", "K", "DST"]
 
         # Get all games for the target date
         games = (

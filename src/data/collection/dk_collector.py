@@ -718,12 +718,22 @@ class DraftKingsCollector:
                     )
                     continue
 
+                # Update player's position based on DraftKings data (more reliable than nfl_data_py)
+                player = session.query(Player).filter_by(id=player_id).first()
+                if player and player.position != row["Position"]:
+                    logger.info(
+                        f"Updating position for {player.display_name}: {player.position} -> {row['Position']}"
+                    )
+                    player.position = row["Position"]
+                    session.flush()
+
                 # Create new salary record (existing ones were already cleared for existing contests)
                 salary = DraftKingsSalary(
                     player_id=player_id,
                     contest_id=contest.id,
                     salary=row["Salary"],
                     position=row["Position"],
+                    roster_position=row.get("Roster Position", row["Position"]),  # Store FLEX eligibility
                     dk_player_name=row["Name"],
                     dk_team_abbr=row.get("Team", ""),
                     game_info=row.get("Game Info", ""),

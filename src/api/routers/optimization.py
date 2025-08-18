@@ -17,6 +17,7 @@ The endpoints use the LineupBuilder class which implements:
 - Tournament optimization (high-ceiling focused)
 """
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -25,6 +26,8 @@ from sqlalchemy.orm import Session
 
 from src.database.connection import get_db
 from src.optimization.lineup_builder import LineupBuilder, LineupConstraints
+
+logger = logging.getLogger(__name__)
 
 
 # Request/Response Models
@@ -90,6 +93,7 @@ class PlayerProjectionResponse(BaseModel):
     player_id: int
     name: str
     position: str
+    roster_slot: str | None = None  # The actual roster slot (e.g., "FLEX" for flex position)
     team: str
     salary: int
     projected_points: float
@@ -154,12 +158,52 @@ async def optimize_lineup(
             )
 
         # Add ML predictions to player pool
-        # TODO: Integrate with ML prediction service
-        # For now, use placeholder projections
+        from src.api.routers.predictions import PredictionService
+        
+        prediction_service = PredictionService(db)
+        
+        # Generate predictions for each player
+        # Use position-based averages as fallback when models aren't available
+        position_averages = {
+            "QB": 18.0,
+            "RB": 12.0,
+            "WR": 11.0,
+            "TE": 8.0,
+            "DST": 7.0,
+        }
+        
         for player in player_pool:
-            player.projected_points = 10.0  # Placeholder
-            player.floor = 7.0
-            player.ceiling = 15.0
+            try:
+                # Try to get prediction from trained models
+                position = "DEF" if player.position == "DST" else player.position
+                # Get game date from contest (assuming next Sunday for now)
+                from datetime import datetime, timedelta
+                today = datetime.now()
+                days_ahead = 6 - today.weekday()  # Sunday is 6
+                if days_ahead <= 0:
+                    days_ahead += 7
+                game_date = today + timedelta(days=days_ahead)
+                
+                predictions = prediction_service.predict_player(
+                    player.player_id, game_date, position
+                )
+                
+                if predictions:
+                    player.projected_points = predictions.predicted_points
+                    player.floor = predictions.floor
+                    player.ceiling = predictions.ceiling
+                else:
+                    # Fallback for players without predictions
+                    player.projected_points = position_averages.get(player.position, 10.0)
+                    player.floor = player.projected_points * 0.7
+                    player.ceiling = player.projected_points * 1.3
+                    
+            except Exception as e:
+                # Use position-based fallback if model prediction fails
+                logger.debug(f"Using fallback for player {player.player_id}: {e}")
+                player.projected_points = position_averages.get(player.position, 10.0)
+                player.floor = player.projected_points * 0.7
+                player.ceiling = player.projected_points * 1.3
 
         # Set up constraints
         constraints = LineupConstraints(
@@ -198,21 +242,55 @@ async def optimize_lineup(
         else:
             result = builder.build_linear_programming_lineup(player_pool, constraints)
 
-        # Convert to response format
-        lineup_players = [
-            PlayerProjectionResponse(
-                player_id=p.player_id,
-                name=p.name,
-                position=p.position,
-                team=p.team_abbr,
-                salary=p.salary,
-                projected_points=p.projected_points,
-                floor=p.floor,
-                ceiling=p.ceiling,
-                value=p.value,
+        # Convert to response format with proper roster slot assignment
+        # DraftKings lineup order: QB, RB, RB, WR, WR, WR, TE, FLEX, DST
+        lineup_players = []
+        position_counts = {"QB": 0, "RB": 0, "WR": 0, "TE": 0, "DST": 0}
+        position_limits = {"QB": 1, "RB": 2, "WR": 3, "TE": 1, "DST": 1}
+        
+        # First pass: assign base positions
+        base_assigned = []
+        flex_candidate = None
+        
+        for p in result.lineup:
+            if position_counts.get(p.position, 0) < position_limits.get(p.position, 0):
+                # Base position slot
+                lineup_players.append(
+                    PlayerProjectionResponse(
+                        player_id=p.player_id,
+                        name=p.name,
+                        position=p.position,
+                        roster_slot=p.position,  # Base position
+                        team=p.team_abbr,
+                        salary=p.salary,
+                        projected_points=p.projected_points,
+                        floor=p.floor,
+                        ceiling=p.ceiling,
+                        value=p.value,
+                    )
+                )
+                position_counts[p.position] = position_counts.get(p.position, 0) + 1
+                base_assigned.append(p.player_id)
+            elif p.position in ["RB", "WR", "TE"] and not flex_candidate:
+                # This is the FLEX player
+                flex_candidate = p
+                
+        # Add FLEX player if found
+        if flex_candidate:
+            lineup_players.append(
+                PlayerProjectionResponse(
+                    player_id=flex_candidate.player_id,
+                    name=flex_candidate.name,
+                    position=flex_candidate.position,
+                    roster_slot="FLEX",  # Marked as FLEX
+                    team=flex_candidate.team_abbr,
+                    salary=flex_candidate.salary,
+                    projected_points=flex_candidate.projected_points,
+                    floor=flex_candidate.floor,
+                    ceiling=flex_candidate.ceiling,
+                    value=flex_candidate.value,
+                )
             )
-            for p in result.lineup
-        ]
 
         # Add stacking analysis if stacking was used
         stacking_analysis = None

@@ -77,6 +77,7 @@ class PlayerProjection:
     ownership_projection: float = 0.0
     value: float = 0.0  # Points per dollar
     team_abbr: str = ""  # Team abbreviation for stacking logic
+    roster_position: str = ""  # DraftKings roster position (e.g., "RB/FLEX", "TE")
 
     def __post_init__(self):
         """Calculate derived metrics after object creation.
@@ -114,7 +115,7 @@ class LineupConstraints:
     """
 
     salary_cap: int = 50000
-    positions: dict[str, int] = None  # {"QB": 1, "RB": 2, "WR": 3, "TE": 1, "FLEX": 1, "DEF": 1}
+    positions: dict[str, int] = None  # {"QB": 1, "RB": 2, "WR": 3, "TE": 1, "FLEX": 1, "DST": 1}
     min_salary: int = 0
     max_salary: int = 50000
 
@@ -134,7 +135,7 @@ class LineupConstraints:
         - 3 WR: Wide Receivers
         - 1 TE: Tight End
         - 1 FLEX: Additional RB/WR/TE (provides flexibility)
-        - 1 DEF: Defense/Special Teams
+        - 1 DST: Defense/Special Teams
 
         Total: 9 players, $50,000 salary cap
 
@@ -148,7 +149,7 @@ class LineupConstraints:
                 "WR": 3,  # Wide Receivers
                 "TE": 1,  # Tight End
                 "FLEX": 1,  # Flex position (RB/WR/TE)
-                "DEF": 1,  # Defense/Special Teams
+                "DST": 1,  # Defense/Special Teams
             }
 
 
@@ -246,7 +247,7 @@ class LineupBuilder:
             List of PlayerProjection objects ready for ML projections
         """
         if positions is None:
-            positions = ["QB", "RB", "WR", "TE", "DEF"]
+            positions = ["QB", "RB", "WR", "TE", "DST"]
 
         # Build database query to get all relevant player data
         from src.database.models import Team
@@ -276,6 +277,9 @@ class LineupBuilder:
         # Convert database results to PlayerProjection objects
         player_pool = []
         for salary_data, player_data, team_data in results:
+            # Use roster_position from DraftKings if available, otherwise use position
+            roster_pos = salary_data.roster_position or player_data.position
+            
             projection = PlayerProjection(
                 player_id=player_data.id,  # Database ID
                 name=player_data.display_name,  # Player name for display
@@ -287,6 +291,7 @@ class LineupBuilder:
                 team_abbr=(
                     team_data.team_abbr if team_data else ""
                 ),  # Team abbreviation for stacking
+                roster_position=roster_pos,  # DraftKings roster eligibility
             )
             player_pool.append(projection)
 
@@ -572,35 +577,65 @@ class LineupBuilder:
 
         # Position constraints
         position_groups = {}
+        flex_eligible_players = []  # Track players who can be used in FLEX
+        
         for pos in constraints.positions:
             position_groups[pos] = []
 
         for player in player_pool:
             if player.position in position_groups:
                 position_groups[player.position].append(player.player_id)
+            
+            # Check FLEX eligibility based on roster_position
+            # A player is FLEX-eligible if their roster_position contains "/FLEX"
+            if "/FLEX" in player.roster_position:
+                if player.position in ["RB", "WR", "TE"]:
+                    flex_eligible_players.append(player.player_id)
 
         # Add position constraints
+        # We need exactly the specified counts for base positions
+        # Plus exactly 1 additional RB/WR/TE for the FLEX spot
+        
+        # First, enforce base position requirements (minimum)
         for pos, required_count in constraints.positions.items():
-            if pos == "FLEX":
-                # FLEX can be filled by RB, WR, or TE
-                flex_players = (
-                    position_groups.get("RB", [])
-                    + position_groups.get("WR", [])
-                    + position_groups.get("TE", [])
+            if pos != "FLEX" and position_groups.get(pos):
+                # At least the required count for each position
+                prob += (
+                    lp.lpSum([player_vars[pid] for pid in position_groups[pos]])
+                    >= required_count
                 )
-                if flex_players:
-                    prob += lp.lpSum([player_vars[pid] for pid in flex_players]) >= (
-                        required_count
-                        + constraints.positions.get("RB", 0)
-                        + constraints.positions.get("WR", 0)
-                        + constraints.positions.get("TE", 0)
-                    )
-            else:
-                if position_groups[pos]:
-                    prob += (
-                        lp.lpSum([player_vars[pid] for pid in position_groups[pos]])
-                        >= required_count
-                    )
+        
+        # Total RB+WR+TE must equal their base requirements + 1 for FLEX
+        if "FLEX" in constraints.positions:
+            total_flex_positions = (
+                constraints.positions.get("RB", 0) +
+                constraints.positions.get("WR", 0) +
+                constraints.positions.get("TE", 0) +
+                constraints.positions.get("FLEX", 0)  # Should be 1
+            )
+            
+            # Get all RB/WR/TE players who are FLEX-eligible
+            flex_eligible_by_position = {
+                "RB": [pid for pid in position_groups.get("RB", []) 
+                       if pid in flex_eligible_players],
+                "WR": [pid for pid in position_groups.get("WR", []) 
+                       if pid in flex_eligible_players],
+                "TE": [pid for pid in position_groups.get("TE", []) 
+                       if pid in flex_eligible_players],
+            }
+            
+            all_flex_eligible = (
+                flex_eligible_by_position["RB"] +
+                flex_eligible_by_position["WR"] +
+                flex_eligible_by_position["TE"]
+            )
+            
+            if all_flex_eligible:
+                # Total RB+WR+TE must be exactly base + FLEX
+                prob += (
+                    lp.lpSum([player_vars[pid] for pid in all_flex_eligible])
+                    == total_flex_positions
+                )
 
         # Total lineup size constraint
         total_positions = sum(constraints.positions.values())
@@ -727,26 +762,53 @@ class LineupBuilder:
                 position_groups[player.position].append(player.player_id)
 
         # Add standard position constraints
+        flex_eligible_players = []
+        for player in player_pool:
+            # Check FLEX eligibility based on roster_position
+            if "/FLEX" in player.roster_position:
+                if player.position in ["RB", "WR", "TE"]:
+                    flex_eligible_players.append(player.player_id)
+        
+        # First, enforce base position requirements (minimum)
         for pos, required_count in constraints.positions.items():
-            if pos == "FLEX":
-                flex_players = (
-                    position_groups.get("RB", [])
-                    + position_groups.get("WR", [])
-                    + position_groups.get("TE", [])
+            if pos != "FLEX" and position_groups.get(pos):
+                # At least the required count for each position
+                prob += (
+                    lp.lpSum([player_vars[pid] for pid in position_groups[pos]])
+                    >= required_count
                 )
-                if flex_players:
-                    prob += lp.lpSum([player_vars[pid] for pid in flex_players]) >= (
-                        required_count
-                        + constraints.positions.get("RB", 0)
-                        + constraints.positions.get("WR", 0)
-                        + constraints.positions.get("TE", 0)
-                    )
-            else:
-                if position_groups[pos]:
-                    prob += (
-                        lp.lpSum([player_vars[pid] for pid in position_groups[pos]])
-                        >= required_count
-                    )
+        
+        # Total RB+WR+TE must equal their base requirements + 1 for FLEX
+        if "FLEX" in constraints.positions:
+            total_flex_positions = (
+                constraints.positions.get("RB", 0) +
+                constraints.positions.get("WR", 0) +
+                constraints.positions.get("TE", 0) +
+                constraints.positions.get("FLEX", 0)  # Should be 1
+            )
+            
+            # Get all RB/WR/TE players who are FLEX-eligible
+            flex_eligible_by_position = {
+                "RB": [pid for pid in position_groups.get("RB", []) 
+                       if pid in flex_eligible_players],
+                "WR": [pid for pid in position_groups.get("WR", []) 
+                       if pid in flex_eligible_players],
+                "TE": [pid for pid in position_groups.get("TE", []) 
+                       if pid in flex_eligible_players],
+            }
+            
+            all_flex_eligible = (
+                flex_eligible_by_position["RB"] +
+                flex_eligible_by_position["WR"] +
+                flex_eligible_by_position["TE"]
+            )
+            
+            if all_flex_eligible:
+                # Total RB+WR+TE must be exactly base + FLEX
+                prob += (
+                    lp.lpSum([player_vars[pid] for pid in all_flex_eligible])
+                    == total_flex_positions
+                )
 
         # Total lineup size constraint
         total_positions = sum(constraints.positions.values())

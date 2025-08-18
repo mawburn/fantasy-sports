@@ -87,6 +87,7 @@ class DataPreparator:
         test_size: float = 0.2,
         val_size: float = 0.2,
         feature_version: str = "v1.0",
+        use_correlations: bool = False,
     ) -> dict:
         """Prepare complete training dataset for a position.
 
@@ -141,9 +142,9 @@ class DataPreparator:
         train_data, val_data, test_data = self._temporal_split(raw_data, test_size, val_size)
 
         # Extract features for each split
-        X_train, y_train = self._extract_features_and_targets(train_data, position)
-        X_val, y_val = self._extract_features_and_targets(val_data, position)
-        X_test, y_test = self._extract_features_and_targets(test_data, position)
+        X_train, y_train = self._extract_features_and_targets(train_data, position, use_correlations)
+        X_val, y_val = self._extract_features_and_targets(val_data, position, use_correlations)
+        X_test, y_test = self._extract_features_and_targets(test_data, position, use_correlations)
 
         # Handle missing values and outliers
         X_train, y_train = self._clean_data(X_train, y_train)
@@ -304,7 +305,7 @@ class DataPreparator:
         return train_data, val_data, test_data
 
     def _extract_features_and_targets(
-        self, data: pd.DataFrame, position: str
+        self, data: pd.DataFrame, position: str, use_correlations: bool = False
     ) -> tuple[np.ndarray, np.ndarray]:
         """Extract features and targets from raw data.
 
@@ -364,6 +365,15 @@ class DataPreparator:
                         val = 0.0
                 feature_values.append(float(val))
 
+            # Add correlation features using real data (only if requested)
+            if use_correlations:
+                correlation_features = self._extract_correlation_features(
+                    row["player_id"], row["game_id"], position
+                )
+                feature_values.extend(correlation_features)
+                logger.debug(f"Added {len(correlation_features)} correlation features")
+
+            logger.debug(f"Sample {len(features_list)}: {len(feature_values)} total features, use_correlations={use_correlations}")
             features_list.append(feature_values)
 
             # Use fantasy points (or PPR) as target
@@ -381,6 +391,63 @@ class DataPreparator:
         logger.info(f"Extracted features shape: {X.shape}, targets shape: {y.shape}")
 
         return X, y
+
+    def _extract_correlation_features(self, player_id: int, game_id: int, position: str) -> list[float]:
+        """Extract real correlation features for a specific player and game.
+        
+        Args:
+            player_id: Player ID
+            game_id: Game ID
+            position: Player position
+            
+        Returns:
+            List of 18 correlation feature values
+        """
+        from .correlation_features import CorrelationFeatureExtractor
+        
+        try:
+            correlation_extractor = CorrelationFeatureExtractor(self.db)
+            
+            # Extract position-specific correlation features
+            if position == 'QB':
+                features = correlation_extractor.extract_qb_correlation_features(
+                    player_id, game_id
+                )
+            elif position == 'RB':
+                features = correlation_extractor.extract_rb_correlation_features(
+                    player_id, game_id
+                )
+            elif position == 'WR':
+                features = correlation_extractor.extract_wr_correlation_features(
+                    player_id, game_id
+                )
+            elif position == 'TE':
+                features = correlation_extractor.extract_te_correlation_features(
+                    player_id, game_id
+                )
+            elif position in ['DEF', 'DST']:
+                features = correlation_extractor.extract_def_correlation_features(
+                    player_id, game_id
+                )
+            else:
+                features = {}
+            
+            # Convert to list of 18 values
+            if features:
+                feature_values = list(features.values())[:18]  # Take first 18 values
+                # Pad with zeros if we have fewer than 18
+                while len(feature_values) < 18:
+                    feature_values.append(0.0)
+                # Truncate if we have more than 18
+                return feature_values[:18]
+            else:
+                # Return zeros if extraction failed
+                return [0.0] * 18
+                
+        except Exception as e:
+            logger.warning(f"Failed to extract correlation features for player {player_id}, game {game_id}: {e}")
+            # Return zeros as fallback
+            return [0.0] * 18
 
     def _clean_data(
         self, X: np.ndarray, y: np.ndarray, fit_scaler: bool = True

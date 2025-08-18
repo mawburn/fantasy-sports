@@ -22,6 +22,8 @@ import logging  # For error tracking and debugging
 from datetime import UTC, datetime  # Date/time handling for predictions
 from typing import Any  # Type hints for complex return types
 
+import pandas as pd  # For date calculations
+
 # FastAPI components for building REST API endpoints
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session  # Database session management
@@ -91,6 +93,53 @@ class PredictionService:
             HTTPException: Configured exception ready to be raised
         """
         return HTTPException(status_code=status_code, detail=detail)
+
+    def _validate_prediction_range(self, prediction: float, position: str) -> float:
+        """
+        Validate and adjust prediction to reasonable fantasy point ranges.
+        
+        Args:
+            prediction: Raw model prediction
+            position: Player position
+            
+        Returns:
+            Validated prediction within reasonable range
+        """
+        # Define realistic ranges for DraftKings scoring
+        position_ranges = {
+            'QB': {'min': 0.0, 'max': 45.0, 'typical_max': 35.0},
+            'RB': {'min': 0.0, 'max': 35.0, 'typical_max': 25.0},
+            'WR': {'min': 0.0, 'max': 30.0, 'typical_max': 22.0},
+            'TE': {'min': 0.0, 'max': 25.0, 'typical_max': 18.0},
+            'DEF': {'min': 0.0, 'max': 20.0, 'typical_max': 15.0},
+            'DST': {'min': 0.0, 'max': 20.0, 'typical_max': 15.0}
+        }
+        
+        ranges = position_ranges.get(position.upper(), 
+                                   {'min': 0.0, 'max': 30.0, 'typical_max': 20.0})
+        
+        # Handle None/invalid predictions
+        if prediction is None or not isinstance(prediction, (int, float)):
+            logger.warning(f"Invalid prediction value: {prediction}, using default")
+            return ranges['typical_max'] * 0.5  # Return middle of typical range
+        
+        original_prediction = prediction
+        
+        # Apply hard limits
+        prediction = max(ranges['min'], prediction)
+        prediction = min(ranges['max'], prediction)
+        
+        # Log warnings for extreme predictions
+        if original_prediction > ranges['typical_max']:
+            logger.warning(
+                f"High prediction for {position}: {original_prediction:.2f} -> {prediction:.2f}"
+            )
+        elif original_prediction < 0:
+            logger.warning(
+                f"Negative prediction for {position}: {original_prediction:.2f} -> {prediction:.2f}"
+            )
+            
+        return prediction
 
     def get_active_model(self, position: str) -> Any:
         """
@@ -197,12 +246,13 @@ class PredictionService:
 
         # Import here to avoid circular imports
         from src.ml.training.data_preparation import DataPreparator
+        from src.ml.training.correlation_features import CorrelationFeatureExtractor
 
         # DataPreparator handles feature engineering from raw data
         data_prep = DataPreparator(self.db)
 
         try:
-            # Extract features for ML prediction
+            # Extract base features for ML prediction
             # Returns: X (feature matrix), valid_player_ids (successfully processed players)
             X, valid_player_ids = data_prep.prepare_prediction_data(
                 [player_id], game_date, position
@@ -215,13 +265,82 @@ class PredictionService:
                     400, f"Unable to extract features for player {player_id}"
                 )
 
+            # Add correlation features (ALWAYS required for CorrelatedFantasyModel)
+            correlation_extractor = CorrelationFeatureExtractor(self.db)
+            
+            # Get the game for this player and date
+            from src.database.models import Game, Team
+            
+            # Get player's team
+            player_obj = self.db.query(Player).filter(Player.id == player_id).first()
+            if player_obj and player_obj.team_id:
+                # Find game for this team around this date
+                game = self.db.query(Game).join(
+                    Team, (Game.home_team_id == Team.id) | (Game.away_team_id == Team.id)
+                ).filter(
+                    Team.id == player_obj.team_id,
+                    Game.game_date >= game_date,
+                    Game.game_date < game_date + pd.Timedelta(days=7)
+                ).first()
+            else:
+                game = None
+            
+            # Extract correlation features if we have a game
+            import numpy as np
+            if game:
+                try:
+                    # Extract correlation features for this specific game
+                    corr_features = correlation_extractor.extract_all_correlation_features(
+                        player_id=player_id,
+                        game_id=game.id,
+                        position=position
+                    )
+                    
+                    # Convert dict to array (20 features expected)
+                    if corr_features:
+                        X_corr = np.array(list(corr_features.values())).reshape(1, -1)
+                        # Ensure we have exactly 18 features to match training
+                        if X_corr.shape[1] < 18:
+                            X_corr = np.pad(X_corr, ((0, 0), (0, 18 - X_corr.shape[1])), 'constant')
+                        elif X_corr.shape[1] > 18:
+                            X_corr = X_corr[:, :18]
+                        X = np.hstack([X, X_corr])
+                    else:
+                        logger.warning(f"No correlation features returned for player {player_id}")
+                        X = np.hstack([X, np.zeros((X.shape[0], 18))])
+                except Exception as e:
+                    logger.warning(f"Failed to extract correlation features: {e}")
+                    X = np.hstack([X, np.zeros((X.shape[0], 18))])
+            else:
+                # No game found, use zeros for correlation features
+                logger.warning(f"No game found for player {player_id} on {game_date}")
+                X = np.hstack([X, np.zeros((X.shape[0], 18))])
+                
+            logger.debug(f"Final feature count before model prediction: {X.shape[1]}")
+            
             # Run ML model inference
             # Returns prediction object with point estimate, confidence, bounds
             prediction_result = model.predict(X)
+            # Handle both scalar and array predictions
+            def extract_value(val):
+                """Extract a scalar value from various numpy/tensor formats."""
+                if val is None:
+                    return None
+                if hasattr(val, 'item'):  # numpy scalar
+                    return float(val.item())
+                if hasattr(val, '__len__') and len(val) > 0:  # array-like
+                    return float(val[0])
+                return float(val)
+            
+            prediction_value = extract_value(prediction_result.point_estimate)
+            
+            # Validate prediction ranges and apply safety limits
+            prediction_value = self._validate_prediction_range(prediction_value, position)
+            
             logger.debug(
                 "Generated prediction for player %s: %.2f points",
                 player_id,
-                prediction_result.point_estimate[0],
+                prediction_value,
             )
 
             # Get player information for response context
@@ -235,24 +354,16 @@ class PredictionService:
                 player_name=player.display_name,
                 position=player.position,
                 # Convert numpy types to Python floats for JSON serialization
-                predicted_points=float(prediction_result.point_estimate[0]),
+                predicted_points=float(prediction_value),
                 # Use default confidence if model doesn't provide it
                 confidence_score=(
-                    float(prediction_result.confidence_score[0])
+                    extract_value(prediction_result.confidence_score)
                     if prediction_result.confidence_score is not None
                     else 0.8  # Default confidence score
                 ),
                 # Floor/ceiling might be None depending on model type
-                floor=(
-                    float(prediction_result.floor[0])
-                    if prediction_result.floor is not None
-                    else None
-                ),
-                ceiling=(
-                    float(prediction_result.ceiling[0])
-                    if prediction_result.ceiling is not None
-                    else None
-                ),
+                floor=extract_value(prediction_result.floor),
+                ceiling=extract_value(prediction_result.ceiling),
                 # Metadata for tracking and debugging
                 model_version=prediction_result.model_version,
                 prediction_date=prediction_result.prediction_date,
@@ -364,12 +475,16 @@ class PredictionService:
                 # Create response objects
                 for i, player_id in enumerate(valid_player_ids):
                     player = next(p for p in position_players if p.id == player_id)
+                    
+                    # Validate prediction range
+                    raw_prediction = float(prediction_result.point_estimate[i])
+                    validated_prediction = self._validate_prediction_range(raw_prediction, player.position)
 
                     prediction = PredictionResponse(
                         player_id=player_id,
                         player_name=player.display_name,
                         position=player.position,
-                        predicted_points=float(prediction_result.point_estimate[i]),
+                        predicted_points=validated_prediction,
                         confidence_score=(
                             float(prediction_result.confidence_score[i])
                             if prediction_result.confidence_score is not None

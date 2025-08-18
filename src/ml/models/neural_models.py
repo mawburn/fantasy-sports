@@ -25,6 +25,7 @@ through backpropagation, gradually improving at pattern recognition.
 import logging
 import time
 from abc import abstractmethod
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -35,6 +36,16 @@ from torch.utils.data import DataLoader, TensorDataset
 from .base import BaseModel, ModelConfig, PredictionResult, TrainingResult
 
 logger = logging.getLogger(__name__)
+
+# Position-specific fantasy point ranges (DraftKings scoring)
+POSITION_RANGES = {
+    'QB': 45.0,   # QBs typically score 15-35, max ~45
+    'RB': 35.0,   # RBs typically score 8-25, max ~35
+    'WR': 30.0,   # WRs typically score 6-22, max ~30
+    'TE': 25.0,   # TEs typically score 4-18, max ~25
+    'DEF': 20.0,  # DEFs typically score 5-15, max ~20
+    'DST': 20.0   # Same as DEF
+}
 
 # Set PyTorch for reproducible, CPU-optimized training
 torch.manual_seed(42)
@@ -440,6 +451,40 @@ class BaseNeuralModel(BaseModel):
             ceiling=ceiling,
             model_version=self.config.version,
         )
+    
+    def load_model(self, path: Path) -> None:
+        """Load trained PyTorch model from disk.
+        
+        Args:
+            path: Path to saved model state_dict
+        """
+        import torch
+        
+        if not path.exists():
+            raise FileNotFoundError(f"Model file not found: {path}")
+        
+        try:
+            # Load the state dict
+            state_dict = torch.load(path, map_location='cpu', weights_only=False)
+            
+            if isinstance(state_dict, dict):
+                # Initialize the model architecture if not already done
+                if self.model is None:
+                    # Create a dummy input to initialize the model
+                    dummy_input = np.zeros((1, 100))  # Adjust size as needed
+                    self.train(dummy_input, np.zeros(1), dummy_input, np.zeros(1))
+                    
+                # Load the state dict into the model
+                self.model.load_state_dict(state_dict)
+                self.model.eval()  # Set to evaluation mode
+                self.is_trained = True
+                logger.info(f"Loaded PyTorch model from {path}")
+            else:
+                raise ValueError(f"Invalid state_dict format in {path}")
+                
+        except Exception as e:
+            logger.error(f"Failed to load PyTorch model: {e}")
+            raise
 
 
 class QBNeuralModel(BaseNeuralModel):
@@ -494,8 +539,13 @@ class QBNetwork(nn.Module):
             nn.Linear(64, 32), nn.Tanh(), nn.Linear(32, 64), nn.Softmax(dim=1)
         )
 
-        # Final prediction layer
-        self.output = nn.Linear(32 + 16, 1)  # Combine passing + rushing features
+        # Final prediction layer with scaling
+        self.output = nn.Sequential(
+            nn.Linear(32 + 16, 16),
+            nn.ReLU(),
+            nn.Linear(16, 1),
+            nn.Sigmoid()  # Output 0-1, will be scaled to position range
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Shared feature extraction
@@ -512,9 +562,11 @@ class QBNetwork(nn.Module):
         # Combine features
         combined = torch.cat([passing_features, rushing_features], dim=1)
 
-        # Final prediction
+        # Final prediction (0-1 range)
         output = self.output(combined)
-        return output
+        # Scale to QB range (0-45 points)
+        scaled_output = output * POSITION_RANGES['QB']
+        return scaled_output
 
 
 class RBNeuralModel(BaseNeuralModel):
@@ -565,8 +617,13 @@ class RBNetwork(nn.Module):
         # Efficiency-specific processing
         self.efficiency_branch = nn.Sequential(nn.Linear(48, 16), nn.ReLU(), nn.Dropout(0.1))
 
-        # Final prediction
-        self.output = nn.Linear(24 + 16, 1)
+        # Final prediction with scaling
+        self.output = nn.Sequential(
+            nn.Linear(24 + 16, 16),
+            nn.ReLU(),
+            nn.Linear(16, 1),
+            nn.Sigmoid()  # Output 0-1, will be scaled to position range
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         features = self.feature_layers(x)
@@ -575,8 +632,11 @@ class RBNetwork(nn.Module):
         efficiency_features = self.efficiency_branch(features)
 
         combined = torch.cat([workload_features, efficiency_features], dim=1)
+        # Final prediction (0-1 range)
         output = self.output(combined)
-        return output
+        # Scale to RB range (0-35 points)
+        scaled_output = output * POSITION_RANGES['RB']
+        return scaled_output
 
 
 class WRNeuralModel(BaseNeuralModel):
@@ -629,8 +689,13 @@ class WRNetwork(nn.Module):
         # Big play potential branch
         self.bigplay_branch = nn.Sequential(nn.Linear(28, 12), nn.ReLU(), nn.Dropout(0.1))
 
-        # Output layer
-        self.output = nn.Linear(16 + 12, 1)
+        # Output layer with scaling
+        self.output = nn.Sequential(
+            nn.Linear(16 + 12, 16),
+            nn.ReLU(),
+            nn.Linear(16, 1),
+            nn.Sigmoid()  # Output 0-1, will be scaled to position range
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         main_features = self.main_layers(x)
@@ -639,8 +704,11 @@ class WRNetwork(nn.Module):
         bigplay_features = self.bigplay_branch(main_features)
 
         combined = torch.cat([target_features, bigplay_features], dim=1)
+        # Final prediction (0-1 range)
         output = self.output(combined)
-        return output
+        # Scale to WR range (0-30 points)
+        scaled_output = output * POSITION_RANGES['WR']
+        return scaled_output
 
 
 class TENeuralModel(BaseNeuralModel):
@@ -688,13 +756,21 @@ class TENetwork(nn.Module):
             nn.Dropout(0.1),
         )
 
-        # Output layer (simpler than other positions)
-        self.output = nn.Linear(20, 1)
+        # Output layer with scaling
+        self.output = nn.Sequential(
+            nn.Linear(20, 12),
+            nn.ReLU(),
+            nn.Linear(12, 1),
+            nn.Sigmoid()  # Output 0-1, will be scaled to position range
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         features = self.feature_layers(x)
+        # Final prediction (0-1 range)
         output = self.output(features)
-        return output
+        # Scale to TE range (0-25 points)
+        scaled_output = output * POSITION_RANGES['TE']
+        return scaled_output
 
 
 class DEFNeuralModel(BaseNeuralModel):
@@ -749,8 +825,13 @@ class DEFNetwork(nn.Module):
         # Points allowed branch
         self.points_branch = nn.Sequential(nn.Linear(32, 8), nn.ReLU(), nn.Dropout(0.15))
 
-        # Final prediction
-        self.output = nn.Linear(16 + 12 + 8, 1)
+        # Final prediction with scaling
+        self.output = nn.Sequential(
+            nn.Linear(16 + 12 + 8, 18),
+            nn.ReLU(),
+            nn.Linear(18, 1),
+            nn.Sigmoid()  # Output 0-1, will be scaled to position range
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         shared = self.shared_layers(x)
@@ -760,5 +841,8 @@ class DEFNetwork(nn.Module):
         points_features = self.points_branch(shared)
 
         combined = torch.cat([pressure_features, turnover_features, points_features], dim=1)
+        # Final prediction (0-1 range)
         output = self.output(combined)
-        return output
+        # Scale to DEF range (0-20 points)
+        scaled_output = output * POSITION_RANGES['DEF']
+        return scaled_output

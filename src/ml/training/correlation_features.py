@@ -113,6 +113,13 @@ class CorrelationFeatureExtractor:
             AND g.game_finished = true
         """)
 
+        # Ensure game_date is a date object for timedelta operations
+        if isinstance(game_date, str):
+            try:
+                game_date = datetime.strptime(game_date[:10], '%Y-%m-%d').date()
+            except ValueError:
+                logger.warning(f"Could not parse game_date: {game_date}")
+                return {}
         start_date = game_date - timedelta(weeks=lookback_weeks)
         result = self.db.execute(query, {
             'team_id': team_id,
@@ -318,6 +325,13 @@ class CorrelationFeatureExtractor:
             LIMIT 3
         """)
 
+        # Ensure game_date is a date object for timedelta operations
+        if isinstance(game_date, str):
+            try:
+                game_date = datetime.strptime(game_date[:10], '%Y-%m-%d').date()
+            except ValueError:
+                logger.warning(f"Could not parse game_date: {game_date}")
+                return {}
         start_date = game_date - timedelta(weeks=lookback_weeks)
         results = self.db.execute(query, {
             'team_id': team_id,
@@ -346,8 +360,20 @@ class CorrelationFeatureExtractor:
 
         result = self.db.execute(query, {'game_id': game_id}).first()
         if result:
+            # Ensure game_date is a datetime object
+            game_date = result.game_date
+            if isinstance(game_date, str):
+                try:
+                    game_date = datetime.strptime(game_date, '%Y-%m-%d').date()
+                except ValueError:
+                    try:
+                        game_date = datetime.strptime(game_date[:10], '%Y-%m-%d').date()
+                    except ValueError:
+                        logger.warning(f"Could not parse game_date: {game_date}")
+                        return None
+
             return {
-                'game_date': result.game_date,
+                'game_date': game_date,
                 'season': result.season,
                 'week': result.week,
                 'home_team_id': result.home_team_id,
@@ -491,6 +517,13 @@ class CorrelationFeatureExtractor:
             AND g.game_date < :game_date
         """)
 
+        # Ensure game_date is a date object for timedelta operations
+        if isinstance(game_date, str):
+            try:
+                game_date = datetime.strptime(game_date[:10], '%Y-%m-%d').date()
+            except ValueError:
+                logger.warning(f"Could not parse game_date: {game_date}")
+                return {}
         start_date = game_date - timedelta(weeks=lookback_weeks)
         result = self.db.execute(query, {
             'player_id': player_id,
@@ -595,6 +628,13 @@ class CorrelationFeatureExtractor:
             ORDER BY avg_targets DESC
         """)
 
+        # Ensure game_date is a date object for timedelta operations
+        if isinstance(game_date, str):
+            try:
+                game_date = datetime.strptime(game_date[:10], '%Y-%m-%d').date()
+            except ValueError:
+                logger.warning(f"Could not parse game_date: {game_date}")
+                return {}
         start_date = game_date - timedelta(weeks=lookback_weeks)
         results = self.db.execute(query, {
             'team_id': team_id,
@@ -643,6 +683,13 @@ class CorrelationFeatureExtractor:
             LIMIT 1
         """)
 
+        # Ensure game_date is a date object for timedelta operations
+        if isinstance(game_date, str):
+            try:
+                game_date = datetime.strptime(game_date[:10], '%Y-%m-%d').date()
+            except ValueError:
+                logger.warning(f"Could not parse game_date: {game_date}")
+                return {}
         start_date = game_date - timedelta(weeks=lookback_weeks)
         result = self.db.execute(query, {
             'player_id': player_id,
@@ -698,6 +745,13 @@ class CorrelationFeatureExtractor:
             AND game_date < :game_date
         """)
 
+        # Ensure game_date is a date object for timedelta operations
+        if isinstance(game_date, str):
+            try:
+                game_date = datetime.strptime(game_date[:10], '%Y-%m-%d').date()
+            except ValueError:
+                logger.warning(f"Could not parse game_date: {game_date}")
+                return {}
         start_date = game_date - timedelta(weeks=lookback_weeks)
         result = self.db.execute(query, {
             'player_id': player_id,
@@ -760,6 +814,13 @@ class CorrelationFeatureExtractor:
             AND game_finished = true
         """)
 
+        # Ensure game_date is a date object for timedelta operations
+        if isinstance(game_date, str):
+            try:
+                game_date = datetime.strptime(game_date[:10], '%Y-%m-%d').date()
+            except ValueError:
+                logger.warning(f"Could not parse game_date: {game_date}")
+                return {}
         start_date = game_date - timedelta(weeks=lookback_weeks)
         result = self.db.execute(query, {
             'team_id': opp_team_id,

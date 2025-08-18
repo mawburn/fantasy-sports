@@ -22,6 +22,16 @@ from torch.utils.data import DataLoader, TensorDataset
 
 logger = logging.getLogger(__name__)
 
+# Position-specific fantasy point ranges (DraftKings scoring)
+POSITION_RANGES = {
+    'QB': 45.0,   # QBs typically score 15-35, max ~45
+    'RB': 35.0,   # RBs typically score 8-25, max ~35
+    'WR': 30.0,   # WRs typically score 6-22, max ~30
+    'TE': 25.0,   # TEs typically score 4-18, max ~25
+    'DEF': 20.0,  # DEFs typically score 5-15, max ~20
+    'DST': 20.0   # Same as DEF
+}
+
 
 class GameContextEncoder(nn.Module):
     """Encode game-level context that affects all players."""
@@ -87,11 +97,14 @@ class PositionSpecificHead(nn.Module):
             nn.Dropout(0.2),
         )
         
-        # Final prediction layers
+        # Final prediction layers with scaling
         self.predictor = nn.Sequential(
             nn.Linear(hidden_dim, 32),
             nn.ReLU(),
-            nn.Linear(32, 1)  # Fantasy points prediction
+            nn.Linear(32, 16),
+            nn.ReLU(),
+            nn.Linear(16, 1),  # Fantasy points prediction
+            nn.Sigmoid()  # Output 0-1 range, will be scaled by position
         )
         
         # Uncertainty estimation
@@ -217,9 +230,13 @@ class CorrelatedFantasyModel(nn.Module):
                     game_context,
                     player_features[pos]
                 )
-                predictions[pos] = pred
+                # Scale prediction to position-specific range (0-1 -> position max)
+                pos_range = POSITION_RANGES.get(pos.upper(), 30.0)
+                scaled_pred = pred * pos_range
+                
+                predictions[pos] = scaled_pred
                 uncertainties[pos] = unc
-                position_embeddings.append(pred.unsqueeze(1))
+                position_embeddings.append(scaled_pred.unsqueeze(1))
         
         # Model correlations between positions
         if len(position_embeddings) > 1:
@@ -260,7 +277,11 @@ class CorrelatedFantasyModel(nn.Module):
             game_context,
             player_features
         )
-        return prediction, uncertainty
+        # Scale prediction to position-specific range (0-1 -> position max)
+        pos_range = POSITION_RANGES.get(position.upper(), 30.0)
+        scaled_prediction = prediction * pos_range
+        
+        return scaled_prediction, uncertainty
 
 
 class CorrelatedModelTrainer:
