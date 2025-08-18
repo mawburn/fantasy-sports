@@ -4,17 +4,17 @@ This guide covers how to train, configure, and optimize machine learning models 
 
 ## Overview
 
-The system supports two types of models:
+The system uses PyTorch neural network models:
 
-- **Traditional ML Models**: XGBoost, LightGBM, Random Forest (faster training, good baseline performance)
-- **Neural Network Models**: PyTorch deep learning models (longer training, potentially better performance)
+- **Neural Network Models**: PyTorch deep learning models with position-specific architectures
+- Each position (QB, RB, WR, TE, DEF) has a custom neural architecture optimized for its scoring patterns
 
 ## Quick Start
 
 ### Train All Models at Once
 
 ```bash
-# Train traditional models for all positions
+# Train neural network models for all positions
 uv run python -m src.cli.train_models train-all-positions
 
 # Train with date range

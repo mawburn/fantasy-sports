@@ -55,9 +55,7 @@ def train_position(
     save_model: bool = typer.Option(True, help="Save trained model"),
     evaluate: bool = typer.Option(True, help="Evaluate model performance"),
     backtest: bool = typer.Option(False, help="Run backtesting analysis"),
-    use_neural: bool = typer.Option(
-        False, help="Use neural network model instead of traditional ML"
-    ),
+    use_neural: bool = typer.Option(True, help="Use neural network model (default)"),
 ) -> None:
     """Train a model for a specific position.
 
@@ -98,10 +96,10 @@ def train_position(
     - Tests model on historical predictions vs actual results
     - More realistic performance assessment than holdout validation
 
-    use_neural: Whether to use PyTorch neural networks instead of traditional ML
-    - True: Use deep learning models with position-specific architectures
-    - False: Use traditional ML (XGBoost, LightGBM, RandomForest)
-    - Neural models can capture more complex patterns but take longer to train
+    use_neural: Neural network models are used by default
+    - Deep learning models with PyTorch for all positions
+    - Position-specific architectures optimized for each role
+    - Can capture complex patterns and player interactions
 
     Usage Examples:
     python -m src.cli.train_models train-position QB
@@ -136,7 +134,7 @@ def train_position(
         trainer = ModelTrainer()
 
         # User feedback: Show what's happening
-        model_type = "neural network" if use_neural else "traditional ML"
+        model_type = "neural network"
         typer.echo(f"🏈 Training {position} {model_type} model from {start_date} to {end_date}")
         typer.echo(f"📝 Model name: {config.model_name}")
 

@@ -57,8 +57,8 @@ This is an NFL Daily Fantasy Sports (DFS) prediction and optimization system bui
 
 **Machine Learning (`src/ml/`)**:
 
-- `models/` - Position-specific ML models (QB, RB, WR, TE, DEF)
-- `training/` - Model training pipelines with cross-validation
+- `models/` - Position-specific neural network models (QB, RB, WR, TE, DEF)
+- `training/` - Neural network training pipelines with cross-validation
 - `registry.py` - Model versioning and deployment system
 
 **Optimization (`src/optimization/`)**:
@@ -103,7 +103,7 @@ This is an NFL Daily Fantasy Sports (DFS) prediction and optimization system bui
 - **Python 3.11+** with UV package management
 - **FastAPI** for API layer with Uvicorn server
 - **SQLite + SQLAlchemy** for data persistence
-- **PyTorch + XGBoost + LightGBM** for machine learning
+- **PyTorch** for deep learning neural networks
 - **PuLP** for linear programming optimization
 - **Pandas + NumPy** for data processing
 - **pytest** for comprehensive testing
@@ -112,7 +112,7 @@ This is an NFL Daily Fantasy Sports (DFS) prediction and optimization system bui
 
 - `src/config/settings.py` - Centralized configuration with environment variables
 - `src/database/models.py` - SQLAlchemy models for all entities
-- `src/ml/models/position_models.py` - Core ML model implementations
+- `src/ml/models/neural_models.py` - PyTorch neural network implementations
 - `docs/architecture/` - Comprehensive system documentation
 - `Makefile` - Development workflow automation
 - `pyproject.toml` - Project configuration with Ruff/Black/mypy settings

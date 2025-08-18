@@ -2,17 +2,23 @@
 
 from .base import BaseModel, ModelConfig, PredictionResult, TrainingResult
 from .ensemble import EnsembleModel
-from .position_models import DEFModel, QBModel, RBModel, TEModel, WRModel
+from .neural_models import (
+    DEFNeuralModel,
+    QBNeuralModel,
+    RBNeuralModel,
+    TENeuralModel,
+    WRNeuralModel,
+)
 
 __all__ = [
     "BaseModel",
-    "DEFModel",
+    "DEFNeuralModel",
     "EnsembleModel",
     "ModelConfig",
     "PredictionResult",
-    "QBModel",
-    "RBModel",
-    "TEModel",
+    "QBNeuralModel",
+    "RBNeuralModel",
+    "TENeuralModel",
     "TrainingResult",
-    "WRModel",
+    "WRNeuralModel",
 ]

@@ -11,8 +11,8 @@ make different types of errors, and by combining them intelligently, we can:
 4. Provide better uncertainty estimates
 
 Types of Ensemble Methods:
-1. Bagging: Train models on different data samples (Random Forest)
-2. Boosting: Train models sequentially, focusing on previous errors (XGBoost)
+1. Bagging: Train models on different data samples
+2. Boosting: Train models sequentially, focusing on previous errors
 3. Stacking: Use a meta-model to learn how to combine base model predictions
 4. Voting/Averaging: Simple combination by voting or weighted averaging
 
@@ -22,11 +22,11 @@ The ensemble learns optimal weights based on each model's validation performance
 and uses a Ridge regression meta-model to capture non-linear combinations.
 
 For Fantasy Sports:
-Different models excel at different aspects:
-- XGBoost: Captures feature interactions well
-- LightGBM: Handles categorical features effectively
-- Random Forest: Robust to outliers and noise
-- Neural Networks: Can learn complex patterns
+Different neural network architectures excel at different aspects:
+- Multi-task networks: Handle multiple outputs (passing + rushing for QBs)
+- Attention mechanisms: Capture player interactions and target competition
+- Workload embeddings: Model different usage patterns for RBs
+- Sequence models: Understand game flow and momentum
 
 Combining them provides more reliable player projections.
 """

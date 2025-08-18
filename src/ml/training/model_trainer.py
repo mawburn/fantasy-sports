@@ -48,7 +48,6 @@ from src.ml.models.neural_models import (
     TENeuralModel,
     WRNeuralModel,
 )
-from src.ml.models.position_models import DEFModel, QBModel, RBModel, TEModel, WRModel
 
 from .data_preparation import DataPreparator
 
@@ -77,18 +76,9 @@ class ModelTrainer:
     and storing model artifacts/metadata.
     """
 
-    # Factory pattern: Map position strings to model classes
+    # Factory pattern: Map position strings to neural model classes
     # ClassVar indicates this is a class-level constant shared by all instances
     MODEL_CLASSES: ClassVar[dict[str, type]] = {
-        "QB": QBModel,  # Quarterback model using XGBoost
-        "RB": RBModel,  # Running back model using LightGBM with clustering
-        "WR": WRModel,  # Wide receiver model using XGBoost
-        "TE": TEModel,  # Tight end model using LightGBM
-        "DEF": DEFModel,  # Defense/Special teams model using Random Forest
-    }
-
-    # Neural network model classes for deep learning alternatives
-    NEURAL_MODEL_CLASSES: ClassVar[dict[str, type]] = {
         "QB": QBNeuralModel,  # Neural QB model with multi-task learning
         "RB": RBNeuralModel,  # Neural RB model with workload clustering
         "WR": WRNeuralModel,  # Neural WR model with target competition attention
@@ -163,8 +153,8 @@ class ModelTrainer:
             - data_metadata: Information about training dataset
             - model_metadata: Database record for model tracking
         """
-        # Select appropriate model classes based on neural flag
-        model_classes = self.NEURAL_MODEL_CLASSES if use_neural else self.MODEL_CLASSES
+        # Use neural model classes
+        model_classes = self.MODEL_CLASSES
 
         # Validate that we support this position
         if position not in model_classes:
@@ -305,7 +295,7 @@ class ModelTrainer:
             config.model_name = f"{position}_trad_{i}"
             config.save_model = False  # Don't save individual models (only ensemble)
 
-            # Instantiate and train traditional model
+            # Instantiate and train neural model
             model_class = self.MODEL_CLASSES[position]
             model = model_class(config)
 
@@ -347,7 +337,7 @@ class ModelTrainer:
                 logger.info(f"Training neural base model {i + 1}/{len(neural_configs)}")
 
                 # Instantiate and train neural model
-                neural_class = self.NEURAL_MODEL_CLASSES[position]
+                neural_class = self.MODEL_CLASSES[position]
                 neural_model = neural_class(config)
 
                 # Train neural model
