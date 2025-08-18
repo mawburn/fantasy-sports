@@ -171,7 +171,7 @@ class PredictionService:
             self.db.query(ModelMetadata)
             .filter(
                 ModelMetadata.position == position,  # Position-specific model
-                ModelMetadata.status == "trained",  # Only fully trained models
+                ModelMetadata.status.in_(["trained", "deployed"]),  # Trained or deployed models
                 ModelMetadata.is_active,  # Manually activated model
             )
             .first()
@@ -184,7 +184,7 @@ class PredictionService:
                 self.db.query(ModelMetadata)
                 .filter(
                     ModelMetadata.position == position,
-                    ModelMetadata.status == "trained",
+                    ModelMetadata.status.in_(["trained", "deployed"]),
                 )
                 .order_by(ModelMetadata.created_at.desc())  # Most recent first
                 .first()

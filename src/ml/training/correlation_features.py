@@ -284,8 +284,8 @@ class CorrelationFeatureExtractor:
             features['team_implied_total'] = result.home_team_total or 22.5
 
             # Game script indicators
-            features['expected_shootout'] = 1 if features['vegas_total'] > 50 else 0
-            features['expected_blowout'] = 1 if features['vegas_spread'] > 10 else 0
+            features['expected_shootout'] = 1 if (features.get('vegas_total') or 0) > 50 else 0
+            features['expected_blowout'] = 1 if (features.get('vegas_spread') or 0) > 10 else 0
 
         return features
 
@@ -305,7 +305,12 @@ class CorrelationFeatureExtractor:
                 p.position,
                 p.display_name,
                 AVG(ps.targets) as avg_targets,
-                AVG(ps.target_share) as avg_target_share,
+                AVG(CAST(ps.targets AS FLOAT) / NULLIF((
+                    SELECT SUM(ps_team.targets)
+                    FROM player_stats ps_team
+                    JOIN players p_team ON ps_team.player_id = p_team.id
+                    WHERE p_team.team_id = :team_id AND ps_team.game_id = ps.game_id
+                ), 0)) as avg_target_share,
                 AVG(ps.receiving_yards) as avg_rec_yards,
                 COUNT(*) as games_together
             FROM player_stats ps
@@ -562,9 +567,10 @@ class CorrelationFeatureExtractor:
             spread = result.spread if is_home else -result.spread
 
             features['expected_team_total'] = team_total or 22.5
-            features['expected_point_differential'] = spread or 0
-            features['expected_positive_script'] = 1 if spread < -3 else 0
-            features['expected_negative_script'] = 1 if spread > 3 else 0
+            spread_value = spread or 0
+            features['expected_point_differential'] = spread_value
+            features['expected_positive_script'] = 1 if spread_value < -3 else 0
+            features['expected_negative_script'] = 1 if spread_value > 3 else 0
 
         return features
 
@@ -616,7 +622,12 @@ class CorrelationFeatureExtractor:
                 p.id,
                 p.display_name,
                 AVG(ps.targets) as avg_targets,
-                AVG(ps.target_share) as avg_share
+                AVG(CAST(ps.targets AS FLOAT) / NULLIF((
+                    SELECT SUM(ps_team.targets)
+                    FROM player_stats ps_team
+                    JOIN players p_team ON ps_team.player_id = p_team.id
+                    WHERE p_team.team_id = p.team_id AND ps_team.game_id = ps.game_id
+                ), 0)) as avg_share
             FROM player_stats ps
             JOIN players p ON ps.player_id = p.id
             JOIN games g ON ps.game_id = g.id
@@ -643,12 +654,11 @@ class CorrelationFeatureExtractor:
         }).fetchall()
 
         if results:
-            total_targets = sum(r.avg_targets for r in results)
             player_share = next((r.avg_share for r in results if r.id == player_id), 0)
 
             features['wr_target_share'] = player_share
             features['wr_target_competition'] = len(results) - 1
-            features['wr_target_concentration'] = max(r.avg_share for r in results) if results else 0
+            features['wr_target_concentration'] = max((r.avg_share or 0) for r in results) if results else 0
 
         return features
 
@@ -702,7 +712,7 @@ class CorrelationFeatureExtractor:
             features['qb_connection_games'] = result.games_together or 0
             features['qb_connection_targets'] = result.avg_targets_from_qb or 0
             features['qb_passing_volume'] = result.qb_avg_pass_yards or 0
-            features['qb_wr_rapport'] = (result.avg_yards_from_qb or 0) / max(result.qb_avg_pass_yards, 1)
+            features['qb_wr_rapport'] = (result.avg_yards_from_qb or 0) / max(result.qb_avg_pass_yards or 0, 1)
 
         return features
 
@@ -731,18 +741,21 @@ class CorrelationFeatureExtractor:
         game_date: datetime,
         lookback_weeks: int
     ) -> Dict[str, float]:
-        """Get red zone usage features."""
+        """Get red zone usage features using player_stats as proxy."""
         features = {}
 
         query = text("""
             SELECT
-                COUNT(*) as red_zone_targets,
-                SUM(CASE WHEN touchdown = 1 THEN 1 ELSE 0 END) as red_zone_tds
-            FROM play_by_play pbp
-            WHERE receiver_player_id = :player_id
-            AND yardline_100 <= 20
-            AND game_date >= :start_date
-            AND game_date < :game_date
+                SUM(ps.receiving_tds) as total_tds,
+                SUM(ps.targets) as total_targets,
+                COUNT(CASE WHEN ps.receiving_tds > 0 THEN 1 END) as td_games,
+                AVG(ps.targets) as avg_targets,
+                COUNT(*) as total_games
+            FROM player_stats ps
+            JOIN games g ON ps.game_id = g.id
+            WHERE ps.player_id = :player_id
+            AND g.game_date >= :start_date
+            AND g.game_date < :game_date
         """)
 
         # Ensure game_date is a date object for timedelta operations
@@ -753,15 +766,29 @@ class CorrelationFeatureExtractor:
                 logger.warning(f"Could not parse game_date: {game_date}")
                 return {}
         start_date = game_date - timedelta(weeks=lookback_weeks)
-        result = self.db.execute(query, {
-            'player_id': player_id,
-            'start_date': start_date,
-            'game_date': game_date
-        }).first()
 
-        if result:
-            features['red_zone_involvement'] = result.red_zone_targets or 0
-            features['red_zone_efficiency'] = (result.red_zone_tds or 0) / max(result.red_zone_targets, 1)
+        try:
+            result = self.db.execute(query, {
+                'player_id': player_id,
+                'start_date': start_date,
+                'game_date': game_date
+            }).first()
+
+            if result and result.total_games > 0:
+                # Use TD games and target rate as proxy for red zone involvement
+                red_zone_proxy = (result.td_games or 0) * (result.avg_targets or 0) / result.total_games
+                features['red_zone_involvement'] = red_zone_proxy
+
+                # Calculate efficiency as TDs per target (simplified red zone efficiency)
+                features['red_zone_efficiency'] = (result.total_tds or 0) / max(result.total_targets or 1, 1)
+            else:
+                features['red_zone_involvement'] = 0.0
+                features['red_zone_efficiency'] = 0.0
+
+        except Exception as e:
+            logger.warning(f"Failed to extract red zone features for player {player_id}: {e}")
+            features['red_zone_involvement'] = 0.0
+            features['red_zone_efficiency'] = 0.0
 
         return features
 
@@ -806,7 +833,16 @@ class CorrelationFeatureExtractor:
                     WHEN home_team_id = :team_id THEN home_score
                     ELSE away_score
                 END) as avg_team_points,
-                COUNT(CASE WHEN turnovers > 2 THEN 1 END) as high_turnover_games
+                COUNT(CASE
+                    WHEN (
+                        SELECT COUNT(*)
+                        FROM player_stats ps
+                        JOIN players p ON ps.player_id = p.id
+                        WHERE ps.game_id = g.id
+                        AND p.team_id = :team_id
+                        AND (ps.fumbles_lost + ps.passing_interceptions) > 2
+                    ) > 0 THEN 1
+                END) as high_turnover_games
             FROM games g
             WHERE (home_team_id = :team_id OR away_team_id = :team_id)
             AND game_date >= :start_date

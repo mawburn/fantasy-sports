@@ -165,11 +165,11 @@ async def optimize_lineup(
         # Generate predictions for each player
         # Use position-based averages as fallback when models aren't available
         position_averages = {
-            "QB": 18.0,
-            "RB": 12.0,
-            "WR": 11.0,
-            "TE": 8.0,
-            "DST": 7.0,
+            "QB": 22.0,  # Increased from 18.0 - top QBs average 20-25 points
+            "RB": 16.0,  # Increased from 12.0 - good RBs average 14-18 points  
+            "WR": 14.0,  # Increased from 11.0 - good WRs average 12-16 points
+            "TE": 10.0,  # Increased from 8.0 - good TEs average 8-12 points
+            "DST": 8.0,  # Increased from 7.0 - good DSTs average 6-10 points
         }
         
         for player in player_pool:
@@ -204,6 +204,12 @@ async def optimize_lineup(
                 player.projected_points = position_averages.get(player.position, 10.0)
                 player.floor = player.projected_points * 0.7
                 player.ceiling = player.projected_points * 1.3
+            
+            # Calculate value (points per $1000 of salary)
+            if hasattr(player, 'salary') and player.salary > 0:
+                player.value = player.projected_points / (player.salary / 1000.0)
+            else:
+                player.value = 0.0
 
         # Set up constraints
         constraints = LineupConstraints(

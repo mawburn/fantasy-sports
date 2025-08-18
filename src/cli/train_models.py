@@ -61,6 +61,8 @@ def train_position(
     evaluate: bool = typer.Option(True, help="Evaluate model performance"),
     backtest: bool = typer.Option(False, help="Run backtesting analysis"),
     use_correlations: bool = typer.Option(False, help="Use correlation-aware training with player interactions"),
+    auto_deploy: bool = typer.Option(False, help="Automatically deploy if model performs better than current"),
+    min_improvement: float = typer.Option(0.05, help="Minimum improvement threshold for auto-deployment"),
 ) -> None:
     """Train a model for a specific position.
 
@@ -293,13 +295,42 @@ def train_position(
 
         if save_model:
             typer.echo(f"💾 Model saved as: {config.model_name}")
-            typer.echo("   Use 'deploy-model' command to activate for predictions")
+            if not auto_deploy:
+                typer.echo("   Use 'deploy-model' command to activate for predictions")
+
+        # Step 8: Auto-deploy if requested and model was saved
+        if auto_deploy and save_model:
+            typer.echo("\n🤖 Auto-deploying trained model...")
+            try:
+                from src.ml.registry import ModelRegistry, DeploymentPipeline
+
+                registry = ModelRegistry()
+                pipeline = DeploymentPipeline(registry)
+
+                result = pipeline.auto_deploy_best_model(position, min_improvement)
+
+                if result["deployed"]:
+                    typer.echo("✅ Auto-deployment successful!")
+                    typer.echo(f"   Deployed model: {result['model_id']}")
+                    typer.echo(f"   Performance improvement: {result.get('improvement', 0):.3f}")
+                else:
+                    reason = result.get('reason', 'Unknown reason')
+                    typer.echo(f"⚠️  Auto-deployment skipped: {reason}")
+
+            except Exception as deploy_error:
+                typer.echo(f"❌ Auto-deployment failed: {deploy_error}")
+                typer.echo("   You can manually deploy later with 'deploy-model' command")
 
         typer.echo("\n🎯 Next steps:")
-        typer.echo("   1. Review evaluation metrics above")
-        typer.echo("   2. Compare with previous model versions")
-        typer.echo("   3. Deploy if performance is satisfactory")
-        typer.echo("   4. Monitor performance in production")
+        if auto_deploy and save_model:
+            typer.echo("   1. Review deployment results above")
+            typer.echo("   2. Test predictions with new model")
+            typer.echo("   3. Monitor performance in production")
+        else:
+            typer.echo("   1. Review evaluation metrics above")
+            typer.echo("   2. Compare with previous model versions")
+            typer.echo("   3. Deploy if performance is satisfactory")
+            typer.echo("   4. Monitor performance in production")
 
     except KeyboardInterrupt:
         # Handle Ctrl+C gracefully
@@ -331,6 +362,8 @@ def train_all(
     ensemble: bool = typer.Option(False, help="Train ensemble models"),
     _save_models: bool = typer.Option(True, help="Save trained models"),
     use_correlations: bool = typer.Option(False, help="Use correlation-aware training with player interactions"),
+    auto_deploy: bool = typer.Option(False, help="Automatically deploy models that perform better than current"),
+    min_improvement: float = typer.Option(0.05, help="Minimum improvement threshold for auto-deployment"),
 ) -> None:
     """Train models for all positions."""
     try:
@@ -401,6 +434,45 @@ def train_all(
                     r2 = test_metrics.r2
 
                 typer.echo(f"  {position}: ✅ MAE={mae:.3f}, R²={r2:.3f}")
+
+        # Auto-deploy trained models if requested
+        if auto_deploy and _save_models:
+            typer.echo("\n🤖 Auto-deploying trained models...")
+
+            from src.ml.registry import ModelRegistry, DeploymentPipeline
+
+            registry = ModelRegistry()
+            pipeline = DeploymentPipeline(registry)
+
+            deployed_count = 0
+            skipped_count = 0
+
+            for position, result in results.items():
+                if "error" not in result:  # Only deploy successful models
+                    try:
+                        deploy_result = pipeline.auto_deploy_best_model(position, min_improvement)
+
+                        if deploy_result["deployed"]:
+                            typer.echo(f"   ✅ {position}: Deployed {deploy_result['model_id']}")
+                            deployed_count += 1
+                        else:
+                            reason = deploy_result.get('reason', 'No improvement')
+                            typer.echo(f"   ⚠️  {position}: Skipped - {reason}")
+
+                            # Show detailed validation errors if available
+                            if 'validation_errors' in deploy_result:
+                                validation = deploy_result['validation_errors']
+                                typer.echo(f"      Validation details: {validation.get('checks', {})}")
+
+                            skipped_count += 1
+
+                    except Exception as deploy_error:
+                        typer.echo(f"   ❌ {position}: Deployment failed - {deploy_error}")
+                        skipped_count += 1
+
+            typer.echo(f"\n📊 Auto-deployment Summary:")
+            typer.echo(f"   Models deployed: {deployed_count}")
+            typer.echo(f"   Models skipped: {skipped_count}")
 
         typer.echo("\n✅ All models training completed!")
 
