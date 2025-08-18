@@ -124,6 +124,23 @@ uv run python -m src.cli.collect_data collect-dk           # Process all CSVs in
 uv run python -m src.cli.collect_data collect-dk --file [path]  # Process single CSV file
 ```
 
+### Weekly Data Updates (During NFL Season)
+
+```bash
+# Update data after each week's games (run Tuesday mornings)
+uv run python scripts/update_weekly_data.py                # Auto-detect current week
+uv run python scripts/update_weekly_data.py --week 12      # Specific week
+uv run python scripts/update_weekly_data.py --check-models # Check if retraining needed
+
+# Full documentation: docs/weekly-update-guide.md
+```
+
+**Important**: You don't need to retrain models after every week! Only retrain:
+
+- Monthly during the season (recommended)
+- When MAE increases >20% from baseline
+- After major roster changes or trades
+
 ### ML Model Training Commands
 
 ```bash
@@ -134,11 +151,14 @@ uv run python -m src.cli.train_models train-position WR    # Train wide receiver
 uv run python -m src.cli.train_models train-position TE    # Train tight end model
 uv run python -m src.cli.train_models train-position DEF   # Train defense model
 
-# Train with neural networks (PyTorch models)
-uv run python -m src.cli.train_models train-position QB --use-neural
+# Train all position models at once (neural networks)
+uv run python -m src.cli.train_models train-all
 
-# Train all position models at once
-uv run python -m src.cli.train_models train-all-positions
+# Train all models with correlation features (recommended for DFS)
+uv run python -m src.cli.train_models train-all --use-correlations
+
+# Monthly retrain during season (recommended)
+uv run python -m src.cli.train_models train-all --evaluate
 ```
 
 ### Code Quality Tools

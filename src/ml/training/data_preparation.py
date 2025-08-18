@@ -317,37 +317,68 @@ class DataPreparator:
         """
         features_list = []
         targets = []
+        all_feature_dicts = []
 
+        # First pass: collect all features to find the union of all feature names
         for _, row in data.iterrows():
             try:
                 # Extract features for this player-game combination
                 player_features = self.feature_extractor.extract_player_features(
                     player_id=row["player_id"], target_game_date=row["game_date"], lookback_games=5
                 )
-
-                # Convert features dict to array
-                feature_values = list(player_features.values())
-                features_list.append(feature_values)
-
-                # Use fantasy points (or PPR) as target
-                target = (
-                    row["fantasy_points_ppr"]
-                    if position in ["WR", "RB", "TE"]
-                    else row["fantasy_points"]
-                )
-                targets.append(target)
-
+                all_feature_dicts.append((player_features, row))
             except Exception as e:
                 logger.warning(
                     f"Failed to extract features for player {row['player_id']}, game {row['game_id']}: {e}"
                 )
                 continue
 
-        if not features_list:
+        if not all_feature_dicts:
             raise ValueError("No valid features extracted") from None
 
-        X = np.array(features_list)
-        y = np.array(targets)
+        # Get union of all feature names to ensure consistency
+        all_feature_names = set()
+        for features_dict, _ in all_feature_dicts:
+            all_feature_names.update(features_dict.keys())
+        feature_names = sorted(all_feature_names)
+
+        # Second pass: build feature arrays with consistent shape
+        for player_features, row in all_feature_dicts:
+            # Convert features dict to array with consistent ordering
+            feature_values = []
+            for fname in feature_names:
+                val = player_features.get(fname, 0.0)
+                # Ensure scalar values (handle None, lists, dicts)
+                if val is None:
+                    val = 0.0
+                elif isinstance(val, list | dict):
+                    logger.warning(f"Non-scalar feature {fname}: {type(val)}, using 0.0")
+                    val = 0.0
+                elif not isinstance(val, int | float | np.number):
+                    try:
+                        val = float(val)
+                    except (ValueError, TypeError):
+                        logger.warning(
+                            f"Cannot convert feature {fname} value {val} to float, using 0.0"
+                        )
+                        val = 0.0
+                feature_values.append(float(val))
+
+            features_list.append(feature_values)
+
+            # Use fantasy points (or PPR) as target
+            target = (
+                row["fantasy_points_ppr"]
+                if position in ["WR", "RB", "TE"]
+                else row["fantasy_points"]
+            )
+            targets.append(float(target) if target is not None else 0.0)
+
+        # Convert to numpy arrays with consistent shape
+        X = np.array(features_list, dtype=np.float32)
+        y = np.array(targets, dtype=np.float32)
+
+        logger.info(f"Extracted features shape: {X.shape}, targets shape: {y.shape}")
 
         return X, y
 

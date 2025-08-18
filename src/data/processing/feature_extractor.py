@@ -747,30 +747,43 @@ class FeatureExtractor:
             }
 
         # Extract relevant defensive metrics
+        # Handle potential binary data from database
+        def safe_float(value, default):
+            """Convert value to float, handling bytes and None."""
+            if value is None:
+                return default
+            if isinstance(value, bytes):
+                # Decode float from bytes (little-endian)
+                import struct
+                try:
+                    return struct.unpack('f', value)[0]
+                except:
+                    return default
+            return float(value)
+
         return {
-            "opponent_def_rank": def_stats.overall_def_rank or 16,
-            "opponent_points_allowed_avg": def_stats.total_points_allowed or 22.0,
-            "opponent_qb_def_rank": def_stats.qb_def_rank or 16,
-            "opponent_rb_def_rank": def_stats.rb_def_rank or 16,
-            "opponent_wr_def_rank": def_stats.wr_def_rank or 16,
-            "opponent_te_def_rank": def_stats.te_def_rank or 16,
-            "opponent_pass_yards_allowed": def_stats.pass_yards_allowed or 250.0,
-            "opponent_rush_yards_allowed": def_stats.rush_yards_allowed or 120.0,
-            "opponent_yards_per_play_allowed": def_stats.yards_per_play_allowed or 5.5,
-            "opponent_third_down_pct_allowed": def_stats.third_down_pct_allowed or 40.0,
-            "opponent_red_zone_pct_allowed": def_stats.red_zone_pct_allowed or 50.0,
-            "opponent_sacks_per_game": def_stats.sacks or 2.5,
-            "opponent_turnovers_forced": (def_stats.interceptions or 0)
-            + (def_stats.fumbles_recovered or 0),
+            "opponent_def_rank": safe_float(def_stats.overall_def_rank, 16),
+            "opponent_points_allowed_avg": safe_float(def_stats.total_points_allowed, 22.0),
+            "opponent_qb_def_rank": safe_float(def_stats.qb_def_rank, 16),
+            "opponent_rb_def_rank": safe_float(def_stats.rb_def_rank, 16),
+            "opponent_wr_def_rank": safe_float(def_stats.wr_def_rank, 16),
+            "opponent_te_def_rank": safe_float(def_stats.te_def_rank, 16),
+            "opponent_pass_yards_allowed": safe_float(def_stats.pass_yards_allowed, 250.0),
+            "opponent_rush_yards_allowed": safe_float(def_stats.rush_yards_allowed, 120.0),
+            "opponent_yards_per_play_allowed": safe_float(def_stats.yards_per_play_allowed, 5.5),
+            "opponent_third_down_pct_allowed": safe_float(def_stats.third_down_pct_allowed, 40.0),
+            "opponent_red_zone_pct_allowed": safe_float(def_stats.red_zone_pct_allowed, 50.0),
+            "opponent_sacks_per_game": safe_float(def_stats.sacks, 2.5),
+            "opponent_turnovers_forced": safe_float(def_stats.interceptions, 0) + safe_float(def_stats.fumbles_recovered, 0),
             # Position-specific fantasy points allowed (crucial for predictions)
-            "opponent_qb_fantasy_allowed": def_stats.qb_fantasy_points_allowed or 18.0,
-            "opponent_rb_fantasy_allowed": def_stats.rb_fantasy_points_allowed or 20.0,
-            "opponent_wr_fantasy_allowed": def_stats.wr_fantasy_points_allowed or 35.0,
-            "opponent_te_fantasy_allowed": def_stats.te_fantasy_points_allowed or 10.0,
+            "opponent_qb_fantasy_allowed": safe_float(def_stats.qb_fantasy_points_allowed, 18.0),
+            "opponent_rb_fantasy_allowed": safe_float(def_stats.rb_fantasy_points_allowed, 20.0),
+            "opponent_wr_fantasy_allowed": safe_float(def_stats.wr_fantasy_points_allowed, 35.0),
+            "opponent_te_fantasy_allowed": safe_float(def_stats.te_fantasy_points_allowed, 10.0),
             # Rolling averages for recent form
-            "opponent_rolling_points_allowed": def_stats.rolling_points_allowed or 22.0,
-            "opponent_rolling_qb_fantasy": def_stats.rolling_qb_fantasy_allowed or 18.0,
-            "opponent_rolling_rb_fantasy": def_stats.rolling_rb_fantasy_allowed or 20.0,
+            "opponent_rolling_points_allowed": safe_float(def_stats.rolling_points_allowed, 22.0),
+            "opponent_rolling_qb_fantasy": safe_float(def_stats.rolling_qb_fantasy_allowed, 18.0),
+            "opponent_rolling_rb_fantasy": safe_float(def_stats.rolling_rb_fantasy_allowed, 20.0),
         }
 
     def _get_vegas_context(self, game_id: int) -> dict:

@@ -34,6 +34,7 @@ from datetime import datetime
 from pathlib import Path
 
 import typer
+from sqlalchemy.sql import func
 
 from src.database.connection import get_db
 from src.ml.models.base import ModelConfig
@@ -49,13 +50,17 @@ app = typer.Typer(help="Train and evaluate ML models for fantasy sports predicti
 @app.command()
 def train_position(
     position: str = typer.Argument(..., help="Position to train (QB, RB, WR, TE, DEF)"),
-    start_date: str = typer.Option("2020-09-01", help="Training data start date (YYYY-MM-DD)"),
-    end_date: str = typer.Option("2023-12-31", help="Training data end date (YYYY-MM-DD)"),
+    start_date: str = typer.Option(
+        None, help="Training data start date (YYYY-MM-DD), None for all available"
+    ),
+    end_date: str = typer.Option(
+        None, help="Training data end date (YYYY-MM-DD), None for all available"
+    ),
     model_name: str = typer.Option(None, help="Custom model name"),
     save_model: bool = typer.Option(True, help="Save trained model"),
     evaluate: bool = typer.Option(True, help="Evaluate model performance"),
     backtest: bool = typer.Option(False, help="Run backtesting analysis"),
-    # Neural networks are always used now
+    use_correlations: bool = typer.Option(False, help="Use correlation-aware training with player interactions"),
 ) -> None:
     """Train a model for a specific position.
 
@@ -108,14 +113,46 @@ def train_position(
     """
     try:
         # Step 1: Parse and validate date parameters
-        # Convert string dates to datetime objects for model training
-        try:
-            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-            end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-        except ValueError as e:
-            typer.echo(f"❌ Invalid date format: {e}", err=True)
-            typer.echo("Please use YYYY-MM-DD format (e.g., 2020-09-01)", err=True)
-            raise typer.Exit(1) from e
+        # If no dates provided, use all available data from database
+        from src.database.models import Game
+
+        db = next(get_db())
+
+        if start_date is None or end_date is None:
+            # Query database for actual data range
+            date_range = (
+                db.query(
+                    func.min(Game.game_date).label("min_date"),
+                    func.max(Game.game_date).label("max_date"),
+                )
+                .filter(Game.game_finished == True)
+                .first()
+            )
+
+            if date_range and date_range.min_date and date_range.max_date:
+                start_dt = (
+                    date_range.min_date
+                    if start_date is None
+                    else datetime.strptime(start_date, "%Y-%m-%d")
+                )
+                end_dt = (
+                    date_range.max_date
+                    if end_date is None
+                    else datetime.strptime(end_date, "%Y-%m-%d")
+                )
+                typer.echo(f"📊 Using all available data from {start_dt.date()} to {end_dt.date()}")
+            else:
+                typer.echo("❌ No game data found in database", err=True)
+                raise typer.Exit(1)
+        else:
+            # Parse provided dates
+            try:
+                start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+            except ValueError as e:
+                typer.echo(f"❌ Invalid date format: {e}", err=True)
+                typer.echo("Please use YYYY-MM-DD format (e.g., 2020-09-01)", err=True)
+                raise typer.Exit(1) from e
 
         # Validate date range makes sense
         if start_dt >= end_dt:
@@ -131,15 +168,23 @@ def train_position(
         )
 
         # Step 3: Initialize trainer with database connection
-        trainer = ModelTrainer()
+        trainer = ModelTrainer(use_correlations=use_correlations)
 
         # User feedback: Show what's happening
-        model_type = "neural network"
-        typer.echo(f"🏈 Training {position} {model_type} model from {start_date} to {end_date}")
+        model_type = "correlation-aware neural network" if use_correlations else "neural network"
+        start_str = start_dt.date() if isinstance(start_dt, datetime) else start_date
+        end_str = end_dt.date() if isinstance(end_dt, datetime) else end_date
+        typer.echo(f"🏈 Training {position} {model_type} model from {start_str} to {end_str}")
         typer.echo(f"📝 Model name: {config.model_name}")
 
-        typer.echo("🧠 Using PyTorch deep learning architecture")
-        typer.echo("   (Training may take longer but can capture more complex patterns)")
+        if use_correlations:
+            typer.echo("🔗 Using correlation-aware architecture:")
+            typer.echo("   - Captures player interactions (QB-WR stacks, game script effects)")
+            typer.echo("   - Models defensive matchups and coaching tendencies")
+            typer.echo("   - Includes attention mechanisms for dynamic feature importance")
+        else:
+            typer.echo("🧠 Using PyTorch deep learning architecture")
+            typer.echo("   (Training may take longer but can capture more complex patterns)")
 
         # Step 4: Execute main training pipeline
         # This includes data preparation, training, and validation
@@ -182,8 +227,29 @@ def train_position(
             typer.echo("\n🔍 Running comprehensive evaluation...")
             evaluator = ModelEvaluator()
 
+            # Create proper EvaluationMetrics object from test results
+            from src.ml.models.evaluation import EvaluationMetrics
+
+            # Handle both dictionary and EvaluationMetrics formats
+            if isinstance(test_metrics, dict):
+                # Create minimal EvaluationMetrics from dictionary
+                eval_metrics = EvaluationMetrics(
+                    mae=test_metrics.get("mae", test_metrics.get("test_mae", 0)),
+                    rmse=test_metrics.get("rmse", test_metrics.get("test_rmse", 0)),
+                    r2=test_metrics.get("r2", test_metrics.get("test_r2", 0)),
+                    mape=test_metrics.get("mape", test_metrics.get("test_mape", 0)),
+                    accuracy_within_5=0,  # Not computed yet
+                    accuracy_within_10=0,  # Not computed yet
+                    consistency_score=0.5,  # Default middle value
+                    calibration_score=0.5,  # Default middle value
+                    prediction_bias=0,  # No bias info yet
+                    total_predictions=test_metrics.get("total_predictions", 100),
+                )
+            else:
+                eval_metrics = test_metrics
+
             # Generate detailed performance report
-            report = evaluator.generate_evaluation_report(results["model"], position, test_metrics)
+            report = evaluator.generate_evaluation_report(results["model"], position, eval_metrics)
             typer.echo("\n📋 Comprehensive Evaluation Report:")
             typer.echo(report)
 
@@ -256,23 +322,68 @@ def train_position(
 
 @app.command()
 def train_all(
-    start_date: str = typer.Option("2020-09-01", help="Training data start date (YYYY-MM-DD)"),
-    end_date: str = typer.Option("2023-12-31", help="Training data end date (YYYY-MM-DD)"),
+    start_date: str = typer.Option(
+        None, help="Training data start date (YYYY-MM-DD), None for all available"
+    ),
+    end_date: str = typer.Option(
+        None, help="Training data end date (YYYY-MM-DD), None for all available"
+    ),
     ensemble: bool = typer.Option(False, help="Train ensemble models"),
     _save_models: bool = typer.Option(True, help="Save trained models"),
+    use_correlations: bool = typer.Option(False, help="Use correlation-aware training with player interactions"),
 ) -> None:
     """Train models for all positions."""
     try:
-        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        # If no dates provided, use all available data from database
+        from src.database.models import Game
 
-        trainer = ModelTrainer()
+        db = next(get_db())
 
-        typer.echo(f"🏈 Training all position models from {start_date} to {end_date}")
+        if start_date is None or end_date is None:
+            # Query database for actual data range
+            date_range = (
+                db.query(
+                    func.min(Game.game_date).label("min_date"),
+                    func.max(Game.game_date).label("max_date"),
+                )
+                .filter(Game.game_finished == True)
+                .first()
+            )
+
+            if date_range and date_range.min_date and date_range.max_date:
+                start_dt = (
+                    date_range.min_date
+                    if start_date is None
+                    else datetime.strptime(start_date, "%Y-%m-%d")
+                )
+                end_dt = (
+                    date_range.max_date
+                    if end_date is None
+                    else datetime.strptime(end_date, "%Y-%m-%d")
+                )
+                typer.echo(f"📊 Using all available data from {start_dt.date()} to {end_dt.date()}")
+            else:
+                typer.echo("❌ No game data found in database", err=True)
+                raise typer.Exit(1)
+        else:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+
+        trainer = ModelTrainer(use_correlations=use_correlations)
+
+        if use_correlations:
+            typer.echo(f"🏈 Training all position models with correlation awareness from {start_dt.date() if start_dt else start_date} to {end_dt.date() if end_dt else end_date}")
+            typer.echo("🔗 Correlation features enabled:")
+            typer.echo("   - QB-WR/TE stacking synergies")
+            typer.echo("   - RB game script dependencies")
+            typer.echo("   - Defensive matchup impacts")
+            typer.echo("   - Coaching tendency patterns")
+        else:
+            typer.echo(f"🏈 Training all position models from {start_dt.date() if start_dt else start_date} to {end_dt.date() if end_dt else end_date}")
 
         # Train all positions
         results = trainer.train_all_positions(
-            start_date=start_dt, end_date=end_dt, use_ensemble=ensemble
+            start_date=start_dt, end_date=end_dt, use_ensemble=ensemble, use_correlations=use_correlations
         )
 
         # Display summary

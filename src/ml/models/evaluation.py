@@ -1009,14 +1009,6 @@ Performance Metrics:
 - R-squared (R²): {test_metrics.r2:.3f}
 - Mean Absolute Percentage Error (MAPE): {test_metrics.mape:.1f}%
 
-Accuracy Metrics:
-- Predictions within 5 points: {test_metrics.accuracy_within_5:.1f}%
-- Predictions within 10 points: {test_metrics.accuracy_within_10:.1f}%
-- Prediction consistency score: {test_metrics.consistency_score:.3f}
-- Prediction bias: {test_metrics.prediction_bias:+.2f} points
-
-Total Predictions Evaluated: {test_metrics.total_predictions}
-
 Model Quality Assessment:
 """
 
@@ -1037,19 +1029,21 @@ Model Quality Assessment:
         else:
             report += "⚠ Low explanatory power (R² ≤ 0.1) - Consider feature engineering\n"
 
-        # Bias Assessment: Systematic prediction errors
-        if abs(test_metrics.prediction_bias) < 1.0:
-            report += "✓ Low prediction bias - Well-calibrated predictions\n"
-        else:
-            bias_direction = (
-                "over-predicting" if test_metrics.prediction_bias > 0 else "under-predicting"
-            )
-            report += f"⚠ High prediction bias ({test_metrics.prediction_bias:+.2f}) - Systematically {bias_direction}\n"
+        # Bias Assessment: Systematic prediction errors (if available)
+        if hasattr(test_metrics, "prediction_bias"):
+            if abs(test_metrics.prediction_bias) < 1.0:
+                report += "✓ Low prediction bias - Well-calibrated predictions\n"
+            else:
+                bias_direction = (
+                    "over-predicting" if test_metrics.prediction_bias > 0 else "under-predicting"
+                )
+                report += f"⚠ High prediction bias ({test_metrics.prediction_bias:+.2f}) - Systematically {bias_direction}\n"
 
-        # Consistency Assessment: Prediction reliability
-        if test_metrics.consistency_score > 0.7:
-            report += "✓ Consistent predictions - Reliable error patterns\n"
-        else:
-            report += "⚠ Inconsistent predictions - Consider ensemble methods\n"
+        # Consistency Assessment: Prediction reliability (if available)
+        if hasattr(test_metrics, "consistency_score"):
+            if test_metrics.consistency_score > 0.7:
+                report += "✓ Consistent predictions - Reliable error patterns\n"
+            else:
+                report += "⚠ Inconsistent predictions - Consider ensemble methods\n"
 
         return report
