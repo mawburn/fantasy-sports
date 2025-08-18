@@ -125,11 +125,11 @@ class ModelRegistry:
         - Rollback Capability: Enable quick reversion to previous versions
 
         Model ID Format: {position}_{model_name}_{timestamp}
-        Example: QB_xgboost_20240315_143022
+        Example: QB_neural_20240315_143022
 
         Args:
             model: Trained model instance (must implement BaseModel interface)
-            model_name: Descriptive name for the model (e.g., 'xgboost', 'ensemble')
+            model_name: Descriptive name for the model (e.g., 'neural', 'ensemble')
             position: Player position (QB, RB, WR, TE, DEF)
             training_metadata: Dictionary with training process information
             performance_metrics: Dictionary with validation performance metrics

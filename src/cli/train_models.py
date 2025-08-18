@@ -55,7 +55,7 @@ def train_position(
     save_model: bool = typer.Option(True, help="Save trained model"),
     evaluate: bool = typer.Option(True, help="Evaluate model performance"),
     backtest: bool = typer.Option(False, help="Run backtesting analysis"),
-    use_neural: bool = typer.Option(True, help="Use neural network model (default)"),
+    # Neural networks are always used now
 ) -> None:
     """Train a model for a specific position.
 
@@ -96,7 +96,7 @@ def train_position(
     - Tests model on historical predictions vs actual results
     - More realistic performance assessment than holdout validation
 
-    use_neural: Neural network models are used by default
+    All models use neural networks:
     - Deep learning models with PyTorch for all positions
     - Position-specific architectures optimized for each role
     - Can capture complex patterns and player interactions
@@ -104,7 +104,7 @@ def train_position(
     Usage Examples:
     python -m src.cli.train_models train-position QB
     python -m src.cli.train_models train-position RB --start-date 2021-01-01 --backtest
-    python -m src.cli.train_models train-position WR --model-name WR_experiment_v1 --use-neural
+    python -m src.cli.train_models train-position WR --model-name WR_experiment_v1
     """
     try:
         # Step 1: Parse and validate date parameters
@@ -138,9 +138,8 @@ def train_position(
         typer.echo(f"🏈 Training {position} {model_type} model from {start_date} to {end_date}")
         typer.echo(f"📝 Model name: {config.model_name}")
 
-        if use_neural:
-            typer.echo("🧠 Using PyTorch deep learning architecture")
-            typer.echo("   (Training may take longer but can capture more complex patterns)")
+        typer.echo("🧠 Using PyTorch deep learning architecture")
+        typer.echo("   (Training may take longer but can capture more complex patterns)")
 
         # Step 4: Execute main training pipeline
         # This includes data preparation, training, and validation
@@ -150,7 +149,6 @@ def train_position(
             end_date=end_dt,
             config=config,
             save_model=save_model,
-            use_neural=use_neural,
         )
 
         # Step 5: Display core training results

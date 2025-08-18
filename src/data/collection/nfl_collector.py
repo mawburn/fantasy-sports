@@ -876,6 +876,19 @@ class NFLDataCollector:
             results["play_by_play"] = self.collect_play_by_play(seasons)
             results["injuries"] = self.collect_injuries(seasons)
 
+            # Collect new advanced data
+            logger.info("Collecting defensive statistics from PBP data...")
+            from src.data.collection.defensive_stats_collector import DefensiveStatsCollector
+
+            def_collector = DefensiveStatsCollector()
+            results["defensive_stats"] = def_collector.collect_defensive_stats(seasons)
+
+            logger.info("Collecting Vegas betting lines...")
+            from src.data.collection.vegas_collector import VegasLinesCollector
+
+            vegas_collector = VegasLinesCollector()
+            results["vegas_lines"] = vegas_collector.collect_vegas_lines(seasons)
+
             logger.info(f"Data collection complete: {results}")
             return results
 

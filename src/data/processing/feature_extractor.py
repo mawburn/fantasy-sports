@@ -38,7 +38,7 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from src.database.connection import get_db
-from src.database.models import Game, Player, PlayerStats, Team
+from src.database.models import Game, Player, PlayerStats, Team, TeamDefensiveStats, VegasLines
 
 logger = logging.getLogger(__name__)
 
@@ -497,8 +497,17 @@ class FeatureExtractor:
                 "is_home_game": 0,  # Default to away game
                 "game_week": 1,  # Default to week 1
                 "is_divisional_game": 0,  # Default to non-divisional
-                "opponent_def_rank": 15,  # Default to middle ranking
+                "opponent_def_rank": 16,  # Default to middle ranking
                 "opponent_points_allowed_avg": 22.0,  # Default to league average
+                "opponent_qb_def_rank": 16,
+                "opponent_rb_def_rank": 16,
+                "opponent_wr_def_rank": 16,
+                "opponent_te_def_rank": 16,
+                "opponent_pass_yards_allowed": 250.0,
+                "opponent_rush_yards_allowed": 120.0,
+                "vegas_spread": 0,
+                "vegas_total": 45.0,
+                "vegas_implied_team_total": 22.5,
             }
             # Add default weather features for consistency
             default_weather = self._extract_weather_features_from_game(None)
@@ -527,18 +536,15 @@ class FeatureExtractor:
         weather_features = self._extract_weather_features_from_game(target_game)
         features.update(weather_features)
 
-        # Opponent defensive analysis (currently placeholder - would be calculated from real data)
-        # In production, these would come from defensive stats aggregation:
-        # - Points allowed by position
-        # - Yards allowed by position
-        # - Fantasy points allowed rankings
-        # - Defensive pressure rates, coverage schemes, etc.
-        features.update(
-            {
-                "opponent_def_rank": 15,  # 1-32 ranking (1=best defense, 32=worst)
-                "opponent_points_allowed_avg": 22.0,  # Average points allowed per game
-            }
+        # Get real defensive statistics for opponent
+        defensive_stats = self._get_opponent_defensive_stats(
+            opponent_team_id, target_game.season, target_game.week
         )
+        features.update(defensive_stats)
+
+        # Get Vegas lines for game context
+        vegas_context = self._get_vegas_context(target_game.id)
+        features.update(vegas_context)
 
         return features
 
@@ -697,6 +703,112 @@ class FeatureExtractor:
             "weather_rain": weather_rain,  # Rain/storm conditions
             "weather_snow": weather_snow,  # Snow conditions
             "weather_impact_score": impact_score,  # Composite impact score (0-10)
+        }
+
+    def _get_opponent_defensive_stats(self, opponent_team_id: int, season: int, week: int) -> dict:
+        """Get real defensive statistics for opponent team.
+
+        Args:
+            opponent_team_id: Database ID of opponent team
+            season: NFL season
+            week: Week number
+
+        Returns:
+            Dictionary of defensive statistics
+        """
+        # Get most recent defensive stats (from previous week)
+        def_stats = (
+            self.db.query(TeamDefensiveStats)
+            .filter(
+                TeamDefensiveStats.team_id == opponent_team_id,
+                TeamDefensiveStats.season == season,
+                TeamDefensiveStats.week < week,  # Get stats from before this game
+            )
+            .order_by(TeamDefensiveStats.week.desc())
+            .first()
+        )
+
+        if not def_stats:
+            # Return defaults if no stats available
+            return {
+                "opponent_def_rank": 16,
+                "opponent_points_allowed_avg": 22.0,
+                "opponent_qb_def_rank": 16,
+                "opponent_rb_def_rank": 16,
+                "opponent_wr_def_rank": 16,
+                "opponent_te_def_rank": 16,
+                "opponent_pass_yards_allowed": 250.0,
+                "opponent_rush_yards_allowed": 120.0,
+                "opponent_yards_per_play_allowed": 5.5,
+                "opponent_third_down_pct_allowed": 40.0,
+                "opponent_red_zone_pct_allowed": 50.0,
+                "opponent_sacks_per_game": 2.5,
+                "opponent_turnovers_forced": 1.5,
+            }
+
+        # Extract relevant defensive metrics
+        return {
+            "opponent_def_rank": def_stats.overall_def_rank or 16,
+            "opponent_points_allowed_avg": def_stats.total_points_allowed or 22.0,
+            "opponent_qb_def_rank": def_stats.qb_def_rank or 16,
+            "opponent_rb_def_rank": def_stats.rb_def_rank or 16,
+            "opponent_wr_def_rank": def_stats.wr_def_rank or 16,
+            "opponent_te_def_rank": def_stats.te_def_rank or 16,
+            "opponent_pass_yards_allowed": def_stats.pass_yards_allowed or 250.0,
+            "opponent_rush_yards_allowed": def_stats.rush_yards_allowed or 120.0,
+            "opponent_yards_per_play_allowed": def_stats.yards_per_play_allowed or 5.5,
+            "opponent_third_down_pct_allowed": def_stats.third_down_pct_allowed or 40.0,
+            "opponent_red_zone_pct_allowed": def_stats.red_zone_pct_allowed or 50.0,
+            "opponent_sacks_per_game": def_stats.sacks or 2.5,
+            "opponent_turnovers_forced": (def_stats.interceptions or 0)
+            + (def_stats.fumbles_recovered or 0),
+            # Position-specific fantasy points allowed (crucial for predictions)
+            "opponent_qb_fantasy_allowed": def_stats.qb_fantasy_points_allowed or 18.0,
+            "opponent_rb_fantasy_allowed": def_stats.rb_fantasy_points_allowed or 20.0,
+            "opponent_wr_fantasy_allowed": def_stats.wr_fantasy_points_allowed or 35.0,
+            "opponent_te_fantasy_allowed": def_stats.te_fantasy_points_allowed or 10.0,
+            # Rolling averages for recent form
+            "opponent_rolling_points_allowed": def_stats.rolling_points_allowed or 22.0,
+            "opponent_rolling_qb_fantasy": def_stats.rolling_qb_fantasy_allowed or 18.0,
+            "opponent_rolling_rb_fantasy": def_stats.rolling_rb_fantasy_allowed or 20.0,
+        }
+
+    def _get_vegas_context(self, game_id: int) -> dict:
+        """Get Vegas betting context for the game.
+
+        Args:
+            game_id: Database game ID
+
+        Returns:
+            Dictionary of Vegas-related features
+        """
+        vegas = self.db.query(VegasLines).filter(VegasLines.game_id == game_id).first()
+
+        if not vegas:
+            # Return defaults if no Vegas data
+            return {
+                "vegas_spread": 0,
+                "vegas_total": 45.0,
+                "vegas_implied_team_total": 22.5,
+                "vegas_is_high_total": 0,
+                "vegas_is_low_total": 0,
+                "vegas_is_favorite": 0,
+                "vegas_is_underdog": 0,
+            }
+
+        # Determine if player's team is favorite or underdog
+        # Need to know if player is on home or away team
+        # This will be determined by the is_home_game feature
+
+        return {
+            "vegas_spread": vegas.spread or 0,
+            "vegas_total": vegas.total or 45.0,
+            "vegas_home_implied_total": vegas.home_team_total or 22.5,
+            "vegas_away_implied_total": vegas.away_team_total or 22.5,
+            "vegas_is_high_total": 1 if vegas.total and vegas.total > 48 else 0,
+            "vegas_is_low_total": 1 if vegas.total and vegas.total < 42 else 0,
+            "vegas_spread_movement": vegas.spread_movement or 0,
+            "vegas_total_movement": vegas.total_movement or 0,
         }
 
     def _is_divisional_matchup(self, team1_id: int, team2_id: int) -> int:

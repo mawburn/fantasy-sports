@@ -244,7 +244,7 @@ class ModelTrainer:
         Ensemble Learning: Combine multiple models to achieve better performance
         than any individual model. Common ensemble strategies:
         - Bagging: Train models on different data subsets (Random Forest)
-        - Boosting: Train models sequentially to correct errors (XGBoost)
+        - Boosting: Train models sequentially to correct errors
         - Voting: Combine predictions from diverse models (this implementation)
 
         Why Ensembles Work:

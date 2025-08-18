@@ -16,9 +16,9 @@ graph TB
     end
 
     subgraph "Model Training"
-        XGB[XGBoost Models]
-        LGBM[LightGBM Models]
         NN[Neural Networks]
+        ATT[Attention Mechanisms]
+        MTL[Multi-Task Learning]
         ENS[Ensemble]
     end
 
@@ -37,11 +37,11 @@ graph TB
     RAW --> FE
     FE --> SPLIT
     SPLIT --> SCALE
-    SCALE --> XGB
-    SCALE --> LGBM
     SCALE --> NN
-    XGB --> ENS
-    LGBM --> ENS
+    NN --> ATT
+    NN --> MTL
+    ATT --> ENS
+    MTL --> ENS
     NN --> ENS
     ENS --> EVAL
     EVAL --> BACK
@@ -203,19 +203,19 @@ The system is optimized for CPU-based training with the following considerations
 ```python
 class CPUOptimizationConfig:
     """CPU-specific optimization settings"""
-    
+
     # Thread configuration
     num_threads: int = 8  # Adjust based on CPU cores
     use_mkl: bool = True  # Intel MKL for optimized linear algebra
-    
+
     # Batch processing
     batch_size: int = 32  # Smaller batches for CPU memory efficiency
     prefetch_batches: int = 2  # Prefetch data while processing
-    
+
     # Training optimization
     use_mixed_precision: bool = False  # CPU doesn't benefit from mixed precision
     gradient_accumulation_steps: int = 1  # No need for gradient accumulation on CPU
-    
+
     # Future GPU support
     device_strategy: str = "cpu"  # Can be changed to "cuda" when GPU available
     gpu_ready: bool = True  # Architecture supports GPU acceleration when available

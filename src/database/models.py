@@ -108,6 +108,8 @@ class Team(Base):
     stadiums = relationship(
         "Stadium", secondary="stadium_team_associations", back_populates="teams"
     )
+    defensive_stats = relationship("TeamDefensiveStats", back_populates="team")
+    coaching_staff = relationship("CoachingStaff", back_populates="team")
 
     # Automatic timestamps for audit trail
     created_at = Column(DateTime, default=func.now())  # Set when record is created
@@ -286,6 +288,7 @@ class Game(Base):
     player_stats = relationship(
         "PlayerStats", back_populates="game"
     )  # All player stats from this game
+    vegas_lines = relationship("VegasLines", back_populates="game")
 
     # Audit timestamps
     created_at = Column(DateTime, default=func.now())
@@ -1137,3 +1140,205 @@ stadium_team_associations = Table(
     Column("created_at", DateTime, default=func.now()),
     Column("updated_at", DateTime, default=func.now(), onupdate=func.now()),
 )
+
+
+class TeamDefensiveStats(Base):
+    """Team defensive statistics aggregated from play-by-play data.
+
+    This table stores defensive performance metrics calculated from PBP data,
+    providing crucial opponent context for player predictions. Stats are
+    aggregated weekly and include position-specific defensive performance.
+
+    Key Metrics:
+    - Overall defensive rankings and efficiency
+    - Position-specific yards/points allowed
+    - Situational defense (red zone, third down)
+    - Turnover and pressure rates
+    """
+
+    __tablename__ = "team_defensive_stats"
+
+    id = Column(Integer, primary_key=True)
+
+    # Identifiers
+    team_id = Column(Integer, ForeignKey("teams.id"), nullable=False)
+    season = Column(Integer, nullable=False)
+    week = Column(Integer, nullable=False)
+
+    # Overall defensive metrics
+    total_yards_allowed = Column(Float)
+    total_points_allowed = Column(Float)
+    yards_per_play_allowed = Column(Float)
+    plays_faced = Column(Integer)
+
+    # Passing defense
+    pass_yards_allowed = Column(Float)
+    pass_tds_allowed = Column(Integer)
+    pass_attempts_faced = Column(Integer)
+    completions_allowed = Column(Integer)
+    completion_pct_allowed = Column(Float)
+    yards_per_pass_allowed = Column(Float)
+    qb_rating_allowed = Column(Float)
+    sacks = Column(Integer)
+    qb_hits = Column(Integer)
+    pressure_rate = Column(Float)
+
+    # Rushing defense
+    rush_yards_allowed = Column(Float)
+    rush_tds_allowed = Column(Integer)
+    rush_attempts_faced = Column(Integer)
+    yards_per_rush_allowed = Column(Float)
+    stuffed_runs = Column(Integer)  # Runs for 0 or negative yards
+    explosive_runs_allowed = Column(Integer)  # Runs of 15+ yards
+
+    # Position-specific fantasy points allowed
+    qb_fantasy_points_allowed = Column(Float)
+    rb_fantasy_points_allowed = Column(Float)
+    wr_fantasy_points_allowed = Column(Float)
+    te_fantasy_points_allowed = Column(Float)
+
+    # Turnovers and scoring
+    interceptions = Column(Integer)
+    fumbles_recovered = Column(Integer)
+    defensive_tds = Column(Integer)
+    safeties = Column(Integer)
+
+    # Situational defense
+    third_down_attempts_faced = Column(Integer)
+    third_down_conversions_allowed = Column(Integer)
+    third_down_pct_allowed = Column(Float)
+    red_zone_attempts_faced = Column(Integer)
+    red_zone_tds_allowed = Column(Integer)
+    red_zone_pct_allowed = Column(Float)
+
+    # Rolling averages (last 4 weeks)
+    rolling_yards_allowed = Column(Float)
+    rolling_points_allowed = Column(Float)
+    rolling_qb_fantasy_allowed = Column(Float)
+    rolling_rb_fantasy_allowed = Column(Float)
+    rolling_wr_fantasy_allowed = Column(Float)
+    rolling_te_fantasy_allowed = Column(Float)
+
+    # Rankings (1-32, lower is better defense)
+    overall_def_rank = Column(Integer)
+    pass_def_rank = Column(Integer)
+    rush_def_rank = Column(Integer)
+    qb_def_rank = Column(Integer)  # Rank in fantasy points allowed to QBs
+    rb_def_rank = Column(Integer)  # Rank in fantasy points allowed to RBs
+    wr_def_rank = Column(Integer)  # Rank in fantasy points allowed to WRs
+    te_def_rank = Column(Integer)  # Rank in fantasy points allowed to TEs
+
+    # Metadata
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    # Relationships
+    team = relationship("Team", back_populates="defensive_stats")
+
+    # Indexes for common queries
+    __table_args__ = (
+        UniqueConstraint("team_id", "season", "week"),
+        Index("idx_team_def_stats_lookup", "team_id", "season", "week"),
+        Index("idx_def_rankings", "season", "week", "overall_def_rank"),
+    )
+
+
+class VegasLines(Base):
+    """Vegas betting lines and game totals for context.
+
+    Vegas lines provide crucial game context for fantasy predictions:
+    - High totals indicate shootouts (more fantasy points)
+    - Large spreads suggest game script (winning team runs more)
+    - Team totals predict scoring opportunities
+    """
+
+    __tablename__ = "vegas_lines"
+
+    id = Column(Integer, primary_key=True)
+
+    # Game identifier
+    game_id = Column(Integer, ForeignKey("games.id"), nullable=False)
+
+    # Betting lines
+    spread = Column(Float)  # Negative = home favored, positive = away favored
+    total = Column(Float)  # Over/under total points
+    home_team_total = Column(Float)  # Implied home team points
+    away_team_total = Column(Float)  # Implied away team points
+
+    # Moneyline odds
+    home_moneyline = Column(Integer)  # e.g., -150
+    away_moneyline = Column(Integer)  # e.g., +130
+
+    # Movement tracking (how lines changed)
+    opening_spread = Column(Float)
+    opening_total = Column(Float)
+    spread_movement = Column(Float)  # Current - opening
+    total_movement = Column(Float)  # Current - opening
+
+    # Source and timing
+    source = Column(String(50))  # e.g., "DraftKings", "FanDuel", "Consensus"
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    # Relationships
+    game = relationship("Game", back_populates="vegas_lines")
+
+    # Indexes
+    __table_args__ = (
+        UniqueConstraint("game_id", "source"),
+        Index("idx_vegas_lines_game", "game_id"),
+    )
+
+
+class CoachingStaff(Base):
+    """Coaching staff information for teams.
+
+    Coaching impacts play-calling, game planning, and player usage.
+    Tracking coaches helps predict:
+    - Offensive philosophy (pass-heavy vs run-heavy)
+    - Defensive schemes (3-4 vs 4-3, zone vs man)
+    - Player usage patterns
+    - Situational tendencies
+    """
+
+    __tablename__ = "coaching_staff"
+
+    id = Column(Integer, primary_key=True)
+
+    # Identifiers
+    team_id = Column(Integer, ForeignKey("teams.id"), nullable=False)
+    season = Column(Integer, nullable=False)
+
+    # Coaching positions
+    head_coach = Column(String(100))
+    offensive_coordinator = Column(String(100))
+    defensive_coordinator = Column(String(100))
+    qb_coach = Column(String(100))
+    rb_coach = Column(String(100))
+    wr_coach = Column(String(100))
+
+    # Coaching tendencies (calculated from PBP)
+    pass_rate_overall = Column(Float)  # Percentage of offensive plays that are passes
+    pass_rate_red_zone = Column(Float)
+    pass_rate_first_down = Column(Float)
+    pace_of_play = Column(Float)  # Seconds per play
+    fourth_down_aggressiveness = Column(Float)  # Go-for-it rate
+
+    # Historical performance
+    prev_season_wins = Column(Integer)
+    prev_season_losses = Column(Integer)
+    prev_season_ppg = Column(Float)  # Points per game
+
+    # Metadata
+    start_date = Column(Date)
+    end_date = Column(Date)  # NULL if current
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    # Relationships
+    team = relationship("Team", back_populates="coaching_staff")
+
+    # Indexes
+    __table_args__ = (
+        UniqueConstraint("team_id", "season"),
+        Index("idx_coaching_staff_lookup", "team_id", "season"),
+    )

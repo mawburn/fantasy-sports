@@ -85,8 +85,8 @@ graph TB
 
 ### 3. Machine Learning Pipeline
 
-- **Position-Specific Models**: Separate architectures for each position
-- **Ensemble Methods**: XGBoost, LightGBM, and Neural Networks
+- **Position-Specific Models**: Separate neural network architectures for each position
+- **Deep Learning**: PyTorch-based neural networks with attention mechanisms
 - **Self-Improvement Loop**: Automated learning from prediction errors
 - **Backtesting Framework**: Historical validation and optimization
 
@@ -114,10 +114,10 @@ graph TB
 ### Core Technologies
 
 - **Language**: Python 3.10+
-- **Package Management**: Poetry
+- **Package Management**: UV (Fast Rust-based package manager)
 - **Database**: SQLite with SQLAlchemy ORM
 - **API Framework**: FastAPI with Uvicorn
-- **ML Frameworks**: PyTorch, XGBoost, LightGBM, scikit-learn
+- **ML Frameworks**: PyTorch, scikit-learn
 
 ### Supporting Libraries
 

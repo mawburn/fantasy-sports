@@ -27,7 +27,6 @@ class TrainingPipeline:
         positions: list[str],
         start_date: str | None = None,
         end_date: str | None = None,
-        use_neural: bool = False,
         ensemble: bool = False,
         **kwargs: Any,
     ) -> dict[str, Any]:
@@ -37,7 +36,6 @@ class TrainingPipeline:
             positions: List of positions to train models for
             start_date: Start date for training data
             end_date: End date for training data
-            use_neural: Whether to use neural network models
             ensemble: Whether to create ensemble models
             **kwargs: Additional arguments for training
 
@@ -59,9 +57,7 @@ class TrainingPipeline:
 
             # Step 2: Model training
             logger.info("Step 2: Training models")
-            training_results = self._train_models(
-                positions=positions, use_neural=use_neural, ensemble=ensemble, **kwargs
-            )
+            training_results = self._train_models(positions=positions, ensemble=ensemble, **kwargs)
             results["training"] = training_results
 
             # Step 3: Pipeline summary
@@ -73,7 +69,7 @@ class TrainingPipeline:
                 "end_time": pipeline_end.isoformat(),
                 "duration_seconds": pipeline_duration,
                 "positions_trained": positions,
-                "use_neural": use_neural,
+                "model_type": "neural",
                 "ensemble": ensemble,
                 "success": True,
             }
@@ -105,7 +101,7 @@ class TrainingPipeline:
         }
 
     def _train_models(
-        self, positions: list[str], use_neural: bool = False, ensemble: bool = False, **kwargs: Any
+        self, positions: list[str], ensemble: bool = False, **kwargs: Any
     ) -> dict[str, Any]:
         """Train models for all specified positions."""
         training_results = {}
@@ -119,15 +115,11 @@ class TrainingPipeline:
                     result = self.model_trainer.train_ensemble_model(position=position, **kwargs)
                 else:
                     # Train individual model
-                    result = self.model_trainer.train_position_model(
-                        position=position, use_neural=use_neural, **kwargs
-                    )
+                    result = self.model_trainer.train_position_model(position=position, **kwargs)
 
                 training_results[position] = {
                     "status": "success",
-                    "model_type": (
-                        "ensemble" if ensemble else ("neural" if use_neural else "traditional")
-                    ),
+                    "model_type": "ensemble" if ensemble else "neural",
                     "metrics": result.get("metrics", {}),
                     "model_id": result.get("model_id"),
                 }

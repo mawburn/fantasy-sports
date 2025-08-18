@@ -270,7 +270,7 @@ class BaseModel(ABC):
         self.config = config
 
         # Core model components (initially None until training)
-        self.model = None  # The actual ML model (XGBoost, LightGBM, etc.)
+        self.model = None  # The actual ML model (PyTorch neural network)
         self.preprocessor = None  # Data scaling/transformation pipeline
 
         # Feature information (learned during training)
@@ -291,15 +291,15 @@ class BaseModel(ABC):
 
         This abstract method must be implemented by each position-specific model.
         Each position uses different ML algorithms optimized for their characteristics:
-        - QBs might use XGBoost for handling passing/rushing combinations
-        - RBs might use LightGBM with clustering for workload types
-        - WRs might use ensemble methods for high variance predictions
+        - QBs use multi-task learning for passing/rushing combinations
+        - RBs use workload-aware networks with clustering embeddings
+        - WRs use attention mechanisms for target competition modeling
 
         The @abstractmethod decorator from Python's abc module ensures that
         any class inheriting from BaseModel MUST implement this method.
 
         Returns:
-            Configured model instance (XGBoost, LightGBM, RandomForest, etc.)
+            Configured neural network model instance (PyTorch nn.Module)
         """
         pass
 
