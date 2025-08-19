@@ -187,7 +187,7 @@ def collect_nfl_data(seasons: List[int], db_path: str = "data/nfl_dfs.db") -> No
     try:
         for season in seasons:
             logger.info(f"Collecting data for {season} season...")
-            
+
             try:
                 # Collect schedule data
                 schedule = nfl.import_schedules([season])
@@ -406,13 +406,18 @@ def load_draftkings_csv(csv_path: str, contest_id: str = None, db_path: str = "d
                 game_info = row.get('Game Info', '').strip()
                 team_abbr = row.get('TeamAbbrev', '').strip()
 
-                # Use provided contest_id or generate one from filename/date
+                # Use provided contest_id or generate one from game date in CSV
                 if contest_id is None:
                     from pathlib import Path
-                    from datetime import datetime
-                    filename = Path(csv_path).stem
-                    date_str = datetime.now().strftime('%Y%m%d')
-                    contest_id = f"{filename}_{date_str}"
+                    import re
+                    # Extract date from game_info (e.g., "CIN@CLE 09/07/2025 01:00PM ET")
+                    date_match = re.search(r'(\d{2}/\d{2}/\d{4})', game_info)
+                    if date_match:
+                        game_date = date_match.group(1).replace('/', '')
+                        contest_id = f"DK_{game_date}"
+                    else:
+                        filename = Path(csv_path).stem
+                        contest_id = f"{filename}_unknown"
 
                 # Handle DST/Defense teams specially
                 if roster_position == 'DST':
@@ -423,12 +428,28 @@ def load_draftkings_csv(csv_path: str, contest_id: str = None, db_path: str = "d
                     player_id = find_player_by_name_and_team(player_name, team_abbr, conn)
 
                 if player_id:
-                    conn.execute(
-                        """INSERT OR REPLACE INTO draftkings_salaries
-                           (contest_id, player_id, salary, roster_position, game_info, team_abbr, opponent)
-                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                        (contest_id, player_id, salary, roster_position, game_info, team_abbr, '')
-                    )
+                    # Check if this player already exists for this contest
+                    existing = conn.execute(
+                        "SELECT id FROM draftkings_salaries WHERE contest_id = ? AND player_id = ?",
+                        (contest_id, player_id)
+                    ).fetchone()
+
+                    if existing:
+                        # Update existing entry
+                        conn.execute(
+                            """UPDATE draftkings_salaries
+                               SET salary = ?, roster_position = ?, game_info = ?, team_abbr = ?, opponent = ?
+                               WHERE contest_id = ? AND player_id = ?""",
+                            (salary, roster_position, game_info, team_abbr, '', contest_id, player_id)
+                        )
+                    else:
+                        # Insert new entry
+                        conn.execute(
+                            """INSERT INTO draftkings_salaries
+                               (contest_id, player_id, salary, roster_position, game_info, team_abbr, opponent)
+                               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                            (contest_id, player_id, salary, roster_position, game_info, team_abbr, '')
+                        )
                 else:
                     logger.warning(f"Could not find player: {player_name} ({team_abbr})")
 
@@ -448,7 +469,7 @@ def get_or_create_defense_player(team_abbr: str, conn: sqlite3.Connection) -> Op
         return None
 
     defense_name = f"{team_abbr} Defense"
-    
+
     # Try to find existing defense player
     cursor = conn.execute(
         "SELECT id FROM players WHERE player_name = ? AND team_id = ? AND position = ?",

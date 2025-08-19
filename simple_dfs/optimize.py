@@ -748,6 +748,77 @@ def generate_multiple_lineups(
     return lineups
 
 
+def format_lineup_display(result: OptimizationResult) -> str:
+    """Format lineup with proper FLEX identification."""
+    if not result.is_valid or not result.lineup:
+        return "Invalid lineup"
+    
+    # Group players by position
+    position_players = {}
+    for player in result.lineup:
+        pos = player.position
+        if pos not in position_players:
+            position_players[pos] = []
+        position_players[pos].append(player)
+    
+    # DraftKings roster requirements
+    roster_requirements = {"QB": 1, "RB": 2, "WR": 3, "TE": 1, "DST": 1}
+    
+    # Track which players are assigned to base positions vs FLEX
+    assigned_players = []
+    flex_player = None
+    
+    # Assign base positions first (highest salary players get base positions)
+    for pos, required in roster_requirements.items():
+        pos_players = position_players.get(pos, [])
+        pos_players.sort(key=lambda x: x.salary, reverse=True)
+        
+        for i in range(min(required, len(pos_players))):
+            assigned_players.append((pos, pos_players[i]))
+    
+    # Find the FLEX player (remaining RB/WR/TE)
+    assigned_ids = {player.player_id for _, player in assigned_players}
+    
+    for player in result.lineup:
+        if player.player_id not in assigned_ids and player.position in ['RB', 'WR', 'TE']:
+            flex_player = player
+            break
+    
+    # Build display
+    display_lines = []
+    display_lines.append(f"=== OPTIMAL LINEUP ===")
+    display_lines.append(f"Total Salary: ${result.total_salary:,}")
+    display_lines.append(f"Projected Points: {result.projected_points:.1f}")
+    display_lines.append("")
+    
+    # Group assigned players by position for display
+    assigned_by_pos = {}
+    for pos, player in assigned_players:
+        if pos not in assigned_by_pos:
+            assigned_by_pos[pos] = []
+        assigned_by_pos[pos].append(player)
+    
+    # Show lineup in DraftKings order
+    lineup_order = ["QB", "RB", "RB", "WR", "WR", "WR", "TE", "FLEX", "DST"]
+    position_counters = {"QB": 0, "RB": 0, "WR": 0, "TE": 0, "DST": 0}
+    
+    for slot in lineup_order:
+        if slot == "FLEX":
+            if flex_player:
+                display_lines.append(f"FLEX ({flex_player.position}):  {flex_player.name} - ${flex_player.salary} - {flex_player.projected_points:.1f} pts")
+            else:
+                display_lines.append("FLEX: (not assigned)")
+        else:
+            pos_players = assigned_by_pos.get(slot, [])
+            if position_counters[slot] < len(pos_players):
+                player = pos_players[position_counters[slot]]
+                display_lines.append(f"{slot}:   {player.name} - ${player.salary} - {player.projected_points:.1f} pts")
+                position_counters[slot] += 1
+            else:
+                display_lines.append(f"{slot}: (not assigned)")
+    
+    return "\n".join(display_lines)
+
 def export_lineup_to_csv(lineup: OptimizationResult, filename: str = None) -> str:
     """Export lineup to DraftKings CSV format."""
     if filename is None:
@@ -757,33 +828,67 @@ def export_lineup_to_csv(lineup: OptimizationResult, filename: str = None) -> st
     lineup_data = []
     position_order = ["QB", "RB", "RB", "WR", "WR", "WR", "TE", "FLEX", "DST"]
 
-    # Sort players by position requirements
-    position_players = {pos: [] for pos in ["QB", "RB", "WR", "TE", "DST"]}
+    # Use same logic as display format to properly identify FLEX
+    position_players = {}
     for player in lineup.lineup:
-        position_players[player.position].append(player)
-
-    # Build ordered lineup
+        pos = player.position
+        if pos not in position_players:
+            position_players[pos] = []
+        position_players[pos].append(player)
+    
+    # Assign base positions first
+    roster_requirements = {"QB": 1, "RB": 2, "WR": 3, "TE": 1, "DST": 1}
+    assigned_players = []
+    flex_player = None
+    
+    for pos, required in roster_requirements.items():
+        pos_players = position_players.get(pos, [])
+        pos_players.sort(key=lambda x: x.salary, reverse=True)
+        
+        for i in range(min(required, len(pos_players))):
+            assigned_players.append((pos, pos_players[i]))
+    
+    # Find FLEX player
+    assigned_ids = {player.player_id for _, player in assigned_players}
+    for player in lineup.lineup:
+        if player.player_id not in assigned_ids and player.position in ['RB', 'WR', 'TE']:
+            flex_player = player
+            break
+    
+    # Build ordered lineup for CSV
+    assigned_by_pos = {}
+    for pos, player in assigned_players:
+        if pos not in assigned_by_pos:
+            assigned_by_pos[pos] = []
+        assigned_by_pos[pos].append(player)
+    
+    position_counters = {"QB": 0, "RB": 0, "WR": 0, "TE": 0, "DST": 0}
     ordered_lineup = []
-    for pos in position_order:
-        if pos == "FLEX":
-            # Find flex player (RB/WR/TE not already used)
-            for flex_pos in ["RB", "WR", "TE"]:
-                if position_players[flex_pos]:
-                    ordered_lineup.append(position_players[flex_pos].pop())
-                    break
+    
+    for slot in position_order:
+        if slot == "FLEX":
+            if flex_player:
+                ordered_lineup.append(flex_player)
         else:
-            if position_players[pos]:
-                ordered_lineup.append(position_players[pos].pop(0))
+            pos_players = assigned_by_pos.get(slot, [])
+            if position_counters[slot] < len(pos_players):
+                ordered_lineup.append(pos_players[position_counters[slot]])
+                position_counters[slot] += 1
 
     # Create CSV data
     for i, player in enumerate(ordered_lineup):
-        lineup_data.append({
-            "Position": position_order[i],
-            "Name": player.name,
-            "Salary": player.salary,
-            "Projected": player.projected_points,
-            "Team": player.team_abbr
-        })
+        if player:  # Make sure player exists
+            display_position = position_order[i]
+            if display_position == "FLEX":
+                display_position = f"FLEX ({player.position})"
+            
+            lineup_data.append({
+                "Position": display_position,
+                "Name": player.name,
+                "Salary": player.salary,
+                "Projected": player.projected_points,
+                "Team": player.team_abbr
+            })
 
     df = pd.DataFrame(lineup_data)
     df.to_csv(filename, index=False)
