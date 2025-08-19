@@ -43,6 +43,19 @@ DEFAULT_DB_PATH = "data/nfl_dfs.db"
 DEFAULT_MODELS_DIR = "models"
 
 
+def get_available_seasons(db_path: str = DEFAULT_DB_PATH) -> List[int]:
+    """Get all seasons available in the database."""
+    from data import get_db_connection
+    conn = get_db_connection(db_path)
+    try:
+        seasons = conn.execute(
+            "SELECT DISTINCT season FROM games ORDER BY season"
+        ).fetchall()
+        return [season[0] for season in seasons]
+    finally:
+        conn.close()
+
+
 def collect_data(seasons: List[int] = None, csv_path: str = None, contest_id: str = None):
     """Collect NFL data and optionally DraftKings salaries.
 
@@ -98,12 +111,11 @@ def train_models(positions: List[str] = None, seasons: List[int] = None):
         seasons: List of seasons for training data (default: last 3 years)
     """
     if positions is None:
-        positions = ['QB', 'RB', 'WR', 'TE', 'DEF']
+        positions = ['QB', 'RB', 'WR', 'TE', 'DST']
 
     if seasons is None:
-        from datetime import datetime
-        current_year = datetime.now().year
-        seasons = [current_year - 2, current_year - 1, current_year]
+        seasons = get_available_seasons()
+        logger.info(f"Using all available seasons: {seasons}")
 
     # Create models directory
     models_dir = Path(DEFAULT_MODELS_DIR)
@@ -171,12 +183,13 @@ def predict_players(contest_id: str = None, output_file: str = None):
     models_dir = Path(DEFAULT_MODELS_DIR)
     models = {}
 
-    for position in ['QB', 'RB', 'WR', 'TE', 'DEF', 'DST']:
+    for position in ['QB', 'RB', 'WR', 'TE', 'DST']:
         model_path = models_dir / f"{position.lower()}_model.pth"
         if model_path.exists():
             try:
-                # Get feature count from training data
-                X, y, feature_names = get_training_data(position, [2023, 2024], DEFAULT_DB_PATH)
+                # Get feature count from training data using all available seasons
+                available_seasons = get_available_seasons()
+                X, y, feature_names = get_training_data(position, available_seasons, DEFAULT_DB_PATH)
                 if len(X) > 0:
                     config = ModelConfig(position=position, features=feature_names)
                     model = create_model(position, config)
@@ -187,12 +200,13 @@ def predict_players(contest_id: str = None, output_file: str = None):
                 logger.warning(f"Failed to load {position} model: {e}")
 
     # Cache feature names for each position to avoid repeated training data extraction
+    available_seasons = get_available_seasons()
     position_feature_names = {}
     for position in models.keys():
         if position not in position_feature_names:
-            _, _, feature_names = get_training_data(position, [2023, 2024], DEFAULT_DB_PATH)
+            _, _, feature_names = get_training_data(position, available_seasons, DEFAULT_DB_PATH)
             position_feature_names[position] = feature_names
-            logger.info(f"Cached {len(feature_names)} feature names for {position}")
+            logger.info(f"Cached {len(feature_names)} feature names for {position} using {len(available_seasons)} seasons")
 
     # Generate predictions using trained models
     predictions = []
@@ -223,8 +237,8 @@ def predict_players(contest_id: str = None, output_file: str = None):
                     features_dict = get_player_features(player_id, recent_game[0])
                     
                     if features_dict:
-                        # Get feature names from model training
-                        _, _, feature_names = get_training_data(position, [2023, 2024], DEFAULT_DB_PATH)
+                        # Use cached feature names
+                        feature_names = position_feature_names.get(position, [])
                         if len(feature_names) > 0:
                             # Create feature vector in the same order as training
                             feature_vector = [features_dict.get(name, 0) for name in feature_names]
@@ -428,7 +442,7 @@ def main():
     # Train command
     train_parser = subparsers.add_parser('train', help='Train models')
     train_parser.add_argument('--positions', nargs='+',
-                             choices=['QB', 'RB', 'WR', 'TE', 'DEF', 'DST'],
+                             choices=['QB', 'RB', 'WR', 'TE', 'DST'],
                              help='Positions to train')
     train_parser.add_argument('--seasons', nargs='+', type=int,
                              help='Seasons for training data')

@@ -1,12 +1,10 @@
 Position,Name,Salary,Projected,Team
-QB,Jayden Daniels,7000,22.7,WAS
-RB,Josh Jacobs,6700,15.3,GB
-RB,Chuba Hubbard,6000,13.9,CAR
-WR,Ja'Marr Chase,8100,16.7,CIN
-WR,Tee Higgins,6400,13.2,CIN
-WR,Jakobi Meyers,5100,11.3,LV
-TE,Ko Kieft,2500,5.5,TB
-FLEX (RB),Kenny McIntosh,4400,10.7,SEA
-DST,DEN Defense,3800,14.5,DEN
-
-are we just hardcoding the last 2 seasons? We should be using all the data right?                                                          │
+QB,Baker Mayfield,6600,20.6,TB
+RB,Jahmyr Gibbs,7700,19.8,DET
+RB,Jonathan Taylor,6800,18.1,IND
+WR,Mike Evans,6600,14.3,TB
+WR,Cedric Tillman,4400,12.7,CLE
+WR,Jalen McMillan,4100,11.9,TB
+TE,David Njoku,4700,13.7,CLE
+FLEX (RB),Isaac Guerendo,5300,16.1,SF
+DST,DEN Defense,3800,6.3,DEN
