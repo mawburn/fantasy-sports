@@ -519,15 +519,44 @@ class BaseNeuralModel(ABC):
         num_batches = 0
 
         for batch_X, batch_y in train_loader:
+            # Check for NaN in input data
+            if torch.isnan(batch_X).any() or torch.isnan(batch_y).any():
+                logger.warning("NaN detected in batch input, skipping...")
+                continue
+
             self.optimizer.zero_grad()
             predictions = self.network(batch_X)
 
             if predictions.dim() > 1 and predictions.size(1) == 1:
                 predictions = predictions.squeeze(1)
 
+            # Check for NaN in predictions
+            if torch.isnan(predictions).any():
+                logger.warning("NaN detected in predictions, skipping batch...")
+                continue
+
             loss = self.criterion(predictions, batch_y)
+
+            # Check for NaN loss
+            if torch.isnan(loss):
+                logger.warning("NaN loss detected, skipping batch...")
+                continue
+
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.network.parameters(), max_norm=1.0)
+            # More aggressive gradient clipping
+            torch.nn.utils.clip_grad_norm_(self.network.parameters(), max_norm=0.5)
+
+            # Check for NaN gradients
+            has_nan_grad = False
+            for param in self.network.parameters():
+                if param.grad is not None and torch.isnan(param.grad).any():
+                    has_nan_grad = True
+                    break
+
+            if has_nan_grad:
+                logger.warning("NaN gradients detected, skipping update...")
+                continue
+
             self.optimizer.step()
 
             total_loss += loss.item()
@@ -562,6 +591,25 @@ class BaseNeuralModel(ABC):
 
         self._validate_inputs(X_train, y_train)
         self._validate_inputs(X_val, y_val)
+
+        # Additional data cleaning before training
+        logger.info("Performing final data cleaning before model training...")
+        X_train = np.nan_to_num(X_train, nan=0.0, posinf=0.0, neginf=0.0)
+        y_train = np.nan_to_num(y_train, nan=0.0, posinf=0.0, neginf=0.0)
+        X_val = np.nan_to_num(X_val, nan=0.0, posinf=0.0, neginf=0.0)
+        y_val = np.nan_to_num(y_val, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Check for extreme values and clip them
+        X_train = np.clip(X_train, -1000, 1000)
+        y_train = np.clip(y_train, -10, 50)  # DST fantasy points range
+        X_val = np.clip(X_val, -1000, 1000)
+        y_val = np.clip(y_val, -10, 50)
+
+        # Feature scaling for stability
+        X_mean = np.mean(X_train, axis=0)
+        X_std = np.std(X_train, axis=0) + 1e-8  # Add epsilon to prevent division by zero
+        X_train = (X_train - X_mean) / X_std
+        X_val = (X_val - X_mean) / X_std
 
         if self.network is None:
             input_size = X_train.shape[1]
@@ -626,13 +674,31 @@ class BaseNeuralModel(ABC):
             train_pred = train_pred_tensor.cpu().numpy()
             val_pred = val_pred_tensor.cpu().numpy()
 
-        train_mae = np.mean(np.abs(y_train - train_pred))
-        val_mae = np.mean(np.abs(y_val - val_pred))
-        train_rmse = np.sqrt(np.mean((y_train - train_pred) ** 2))
-        val_rmse = np.sqrt(np.mean((y_val - val_pred) ** 2))
+        # Check for NaN predictions and handle gracefully
+        if np.isnan(train_pred).any() or np.isnan(val_pred).any():
+            logger.error("NaN predictions detected after training!")
+            train_mae = val_mae = float('nan')
+            train_rmse = val_rmse = float('nan')
+            train_r2 = val_r2 = float('nan')
+        else:
+            train_mae = np.mean(np.abs(y_train - train_pred))
+            val_mae = np.mean(np.abs(y_val - val_pred))
+            train_rmse = np.sqrt(np.mean((y_train - train_pred) ** 2))
+            val_rmse = np.sqrt(np.mean((y_val - val_pred) ** 2))
 
-        train_r2 = 1 - np.sum((y_train - train_pred) ** 2) / np.sum((y_train - np.mean(y_train)) ** 2)
-        val_r2 = 1 - np.sum((y_val - val_pred) ** 2) / np.sum((y_val - np.mean(y_val)) ** 2)
+            # Calculate R² with safeguards against division by zero
+            train_ss_tot = np.sum((y_train - np.mean(y_train)) ** 2)
+            val_ss_tot = np.sum((y_val - np.mean(y_val)) ** 2)
+
+            if train_ss_tot == 0:
+                train_r2 = 0.0  # If no variance in target, R² is undefined, set to 0
+            else:
+                train_r2 = 1 - np.sum((y_train - train_pred) ** 2) / train_ss_tot
+
+            if val_ss_tot == 0:
+                val_r2 = 0.0  # If no variance in target, R² is undefined, set to 0
+            else:
+                val_r2 = 1 - np.sum((y_val - val_pred) ** 2) / val_ss_tot
 
         self._residual_std = np.std(y_val - val_pred)
         self.is_trained = True
@@ -717,44 +783,49 @@ class QBNetwork(nn.Module):
     def __init__(self, input_size: int):
         super().__init__()
 
-        # Use LayerNorm instead of BatchNorm for better MPS performance
-        self.shared_layers = nn.Sequential(
+        # Use BatchNorm instead of LayerNorm for better stability with sparse features
+        # Set eps higher to prevent division by zero
+        self.feature_layers = nn.Sequential(
             nn.Linear(input_size, 128),
-            nn.LayerNorm(128),  # Better than BatchNorm on MPS
+            nn.BatchNorm1d(128, eps=1e-3),  # Higher eps for stability
             nn.ReLU(),
             nn.Dropout(0.2),
             nn.Linear(128, 64),
-            nn.LayerNorm(64),
+            nn.BatchNorm1d(64, eps=1e-3),
             nn.ReLU(),
             nn.Dropout(0.15),
         )
 
-        self.passing_branch = nn.Sequential(nn.Linear(64, 32), nn.ReLU(), nn.Dropout(0.1))
-        self.rushing_branch = nn.Sequential(nn.Linear(64, 16), nn.ReLU(), nn.Dropout(0.1))
-
-        self.attention = nn.Sequential(
-            nn.Linear(64, 32), nn.Tanh(), nn.Linear(32, 64), nn.Softmax(dim=1)
+        self.passing_branch = nn.Sequential(
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Dropout(0.1)
+        )
+        self.rushing_branch = nn.Sequential(
+            nn.Linear(64, 16),
+            nn.ReLU(),
+            nn.Dropout(0.1)
         )
 
         self.output = nn.Sequential(
             nn.Linear(32 + 16, 16),
             nn.ReLU(),
-            nn.Linear(16, 1),
-            nn.Sigmoid()
+            nn.Linear(16, 1)
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        shared_features = self.shared_layers(x)
-        attention_weights = self.attention(shared_features)
-        attended_features = shared_features * attention_weights
+        # Add small epsilon to prevent issues with sparse features
+        x = x + 1e-8
 
-        passing_features = self.passing_branch(attended_features)
-        rushing_features = self.rushing_branch(attended_features)
+        shared_features = self.feature_layers(x)
+
+        passing_features = self.passing_branch(shared_features)
+        rushing_features = self.rushing_branch(shared_features)
         combined = torch.cat([passing_features, rushing_features], dim=1)
 
         output = self.output(combined)
-        scaled_output = output * POSITION_RANGES['QB']
-        return scaled_output
+        # Use direct linear output - let the network learn the proper scaling
+        return output.squeeze(-1)
 
 
 class RBNetwork(nn.Module):
@@ -911,8 +982,9 @@ class QBNeuralModel(BaseNeuralModel):
 
     def __init__(self, config: ModelConfig):
         super().__init__(config)
-        self.learning_rate = 0.001
-        self.batch_size = 64
+        self.learning_rate = 0.00015
+        self.batch_size = 50
+        self.epochs = 200
 
     def build_network(self, input_size: int) -> nn.Module:
         return QBNetwork(input_size)
@@ -923,8 +995,9 @@ class RBNeuralModel(BaseNeuralModel):
 
     def __init__(self, config: ModelConfig):
         super().__init__(config)
-        self.learning_rate = 0.0015
-        self.batch_size = 32
+        self.learning_rate = 0.00001
+        self.batch_size = 50
+        self.epochs = 250
 
     def build_network(self, input_size: int) -> nn.Module:
         return RBNetwork(input_size)
@@ -935,8 +1008,9 @@ class WRNeuralModel(BaseNeuralModel):
 
     def __init__(self, config: ModelConfig):
         super().__init__(config)
-        self.learning_rate = 0.002
-        self.batch_size = 48
+        self.learning_rate = 0.0001
+        self.batch_size = 50
+        self.epochs = 200
 
     def build_network(self, input_size: int) -> nn.Module:
         return WRNetwork(input_size)
@@ -947,8 +1021,9 @@ class TENeuralModel(BaseNeuralModel):
 
     def __init__(self, config: ModelConfig):
         super().__init__(config)
-        self.learning_rate = 0.0012
-        self.batch_size = 40
+        self.learning_rate = 0.000
+        self.batch_size = 50
+        self.epochs = 200
 
     def build_network(self, input_size: int) -> nn.Module:
         return TENetwork(input_size)
@@ -959,9 +1034,11 @@ class DEFNeuralModel(BaseNeuralModel):
 
     def __init__(self, config: ModelConfig):
         super().__init__(config)
-        self.learning_rate = 0.0025
-        self.batch_size = 24
-        self.patience = 20
+        # Optimized for smaller DST dataset (~1K samples)
+        self.learning_rate = 0.001  # Lower learning rate for stability
+        self.batch_size = 16        # Smaller batch size for small dataset
+        self.epochs = 200           # More epochs since dataset is small
+        self.patience = 25          # More patience for small dataset
 
     def build_network(self, input_size: int) -> nn.Module:
         return DEFNetwork(input_size)

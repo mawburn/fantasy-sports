@@ -1801,47 +1801,47 @@ def get_dst_training_data(
     conn = get_db_connection(db_path)
 
     try:
-        # Get DST stats for specified seasons
+        # Get DST stats for specified seasons with window functions
         data_query = """
             SELECT
-                d.team_abbr,
-                d.season,
-                d.week,
-                d.points_allowed,
-                d.sacks,
-                d.interceptions,
-                d.fumbles_recovered,
-                d.safeties,
-                d.defensive_tds,
-                d.fantasy_points,
-                -- Add recent performance features
-                AVG(d2.fantasy_points) OVER (
-                    PARTITION BY d.team_abbr
-                    ORDER BY d.season, d.week
+                team_abbr,
+                season,
+                week,
+                points_allowed,
+                sacks,
+                interceptions,
+                fumbles_recovered,
+                safeties,
+                defensive_tds,
+                fantasy_points,
+                -- Add recent performance features using window functions
+                AVG(fantasy_points) OVER (
+                    PARTITION BY team_abbr
+                    ORDER BY season, week
                     ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
                 ) as avg_recent_points,
-                AVG(d2.points_allowed) OVER (
-                    PARTITION BY d.team_abbr
-                    ORDER BY d.season, d.week
+                AVG(points_allowed) OVER (
+                    PARTITION BY team_abbr
+                    ORDER BY season, week
                     ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
                 ) as avg_recent_points_allowed,
-                AVG(d2.sacks) OVER (
-                    PARTITION BY d.team_abbr
-                    ORDER BY d.season, d.week
+                AVG(sacks) OVER (
+                    PARTITION BY team_abbr
+                    ORDER BY season, week
                     ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
                 ) as avg_recent_sacks
-            FROM dst_stats d
-            LEFT JOIN dst_stats d2 ON d.team_abbr = d2.team_abbr
-            WHERE d.season IN ({})
-            AND d.week >= 4  -- Only include games where we have historical data
-            ORDER BY d.season, d.week, d.team_abbr
+            FROM dst_stats
+            WHERE season IN ({})
+            AND week >= 4  -- Only include games where we have historical data
+            ORDER BY season, week, team_abbr
         """.format(','.join('?' * len(seasons)))
 
         cursor = conn.execute(data_query, seasons)
         rows = cursor.fetchall()
 
         if not rows:
-            logger.warning("No DST training data found")
+            logger.warning("No DST training data found - dst_stats table may be empty")
+            logger.info("Consider running data collection to populate dst_stats table")
             return np.array([]), np.array([]), []
 
         # Extract features and targets
@@ -1870,7 +1870,7 @@ def get_dst_training_data(
                 row[11],  # avg_recent_points_allowed
                 row[12],  # avg_recent_sacks
                 row[2],   # week
-                row[1]    # season
+                row[1] - 2000  # season (normalize to reduce magnitude)
             ]
 
             target = row[9]  # fantasy_points
@@ -1894,12 +1894,69 @@ def get_dst_training_data(
     finally:
         conn.close()
 
+
+def batch_get_defensive_features(
+    opponent_abbr: str,
+    season: int,
+    week: int,
+    conn: sqlite3.Connection
+) -> Dict[str, float]:
+    """Batch compute defensive matchup features."""
+    features = {}
+
+    try:
+        # Get basic defensive stats from PbP data
+        def_stats = conn.execute(
+            """SELECT
+                AVG(yards_gained) as avg_yards_allowed,
+                AVG(CASE WHEN rush_attempt = 1 THEN yards_gained ELSE NULL END) as avg_rush_yards,
+                AVG(CASE WHEN pass_attempt = 1 THEN yards_gained ELSE NULL END) as avg_pass_yards,
+                AVG(CASE WHEN touchdown = 1 THEN 1.0 ELSE 0.0 END) as td_rate_allowed,
+                COUNT(*) as total_plays
+               FROM play_by_play
+               WHERE defteam = ? AND season = ? AND week < ?
+               AND week >= ?""",
+            (opponent_abbr, season, week, max(1, week - 4))
+        ).fetchone()
+
+        if def_stats:
+            features.update({
+                'def_avg_yards_allowed': def_stats[0] or 0,
+                'def_rush_yards_allowed': def_stats[1] or 0,
+                'def_pass_yards_allowed': def_stats[2] or 0,
+                'def_td_rate_allowed': def_stats[3] or 0,
+                'def_total_plays': def_stats[4] or 0
+            })
+
+        # Get red zone defense
+        rz_defense = conn.execute(
+            """SELECT
+                AVG(CASE WHEN touchdown = 1 THEN 1.0 ELSE 0.0 END) as rz_td_rate,
+                COUNT(*) as rz_plays
+               FROM play_by_play
+               WHERE defteam = ? AND season = ? AND week < ? AND week >= ?
+               AND yardline_100 <= 20""",
+            (opponent_abbr, season, max(1, week - 4), week)
+        ).fetchone()
+
+        if rz_defense:
+            features.update({
+                'def_rz_td_rate_allowed': rz_defense[0] or 0,
+                'def_rz_plays_allowed': rz_defense[1] or 0
+            })
+
+    except Exception as e:
+        logger.warning(f"Error getting defensive features for {opponent_abbr}: {e}")
+
+    return features
+
+
 def get_training_data(
     position: str,
     seasons: List[int],
     db_path: str = "data/nfl_dfs.db"
 ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
-    """Get training data for a specific position."""
+    """Get training data for a specific position using optimized batch queries."""
     # Handle DST position specially
     if position in ['DST', 'DEF']:
         return get_dst_training_data(seasons, db_path)
@@ -1907,12 +1964,20 @@ def get_training_data(
     conn = get_db_connection(db_path)
 
     try:
+        logger.info(f"Loading training data for {position} position...")
+
         # Get all player-game combinations for the position
         data_query = """
-            SELECT ps.player_id, ps.game_id, ps.fantasy_points
+            SELECT ps.player_id, ps.game_id, ps.fantasy_points,
+                   p.position, p.team_id, t.team_abbr,
+                   g.game_date, g.season, g.week, g.home_team_id, g.away_team_id,
+                   ht.team_abbr as home_abbr, at.team_abbr as away_abbr
             FROM player_stats ps
             JOIN players p ON ps.player_id = p.id
+            JOIN teams t ON p.team_id = t.id
             JOIN games g ON ps.game_id = g.id
+            JOIN teams ht ON g.home_team_id = ht.id
+            JOIN teams at ON g.away_team_id = at.id
             WHERE p.position = ? AND g.season IN ({})
             AND g.game_finished = 1
             ORDER BY g.game_date
@@ -1925,17 +1990,157 @@ def get_training_data(
             logger.warning(f"No training data found for position {position}")
             return np.array([]), np.array([]), []
 
-        # Extract features for each player-game
+        logger.info(f"Found {len(rows)} player-game combinations, computing features...")
+
+        # Pre-compute all player stats in batch to avoid N+1 queries
+        player_ids = list(set(row[0] for row in rows))
+
+        # Batch load recent stats for all players with ALL columns
+        player_stats_query = """
+            SELECT ps.player_id, ps.game_id, ps.fantasy_points, ps.passing_yards,
+                   ps.rushing_yards, ps.receiving_yards, ps.targets, ps.passing_tds,
+                   ps.rushing_tds, ps.receiving_tds, ps.passing_interceptions, ps.fumbles_lost,
+                   ps.rushing_attempts, ps.receptions,
+                   g.game_date, g.season, g.week
+            FROM player_stats ps
+            JOIN games g ON ps.game_id = g.id
+            WHERE ps.player_id IN ({})
+            AND g.season IN ({})
+            ORDER BY ps.player_id, g.game_date DESC
+        """.format(','.join('?' * len(player_ids)), ','.join('?' * len(seasons)))
+
+        all_stats = conn.execute(player_stats_query, player_ids + seasons).fetchall()
+
+        # Group stats by player for fast lookup
+        player_stats = {}
+        for stat_row in all_stats:
+            pid = stat_row[0]
+            if pid not in player_stats:
+                player_stats[pid] = []
+            player_stats[pid].append(stat_row)
+
+        # Pre-compute defensive matchup features for all unique team-opponent combinations
+        unique_matchups = set()
+        for row in rows:
+            team_id, home_team_id, away_team_id = row[4], row[9], row[10]
+            team_abbr, home_abbr, away_abbr = row[5], row[11], row[12]
+            season, week = row[7], row[8]
+
+            # Determine opponent
+            opponent_abbr = away_abbr if team_id == home_team_id else home_abbr
+            unique_matchups.add((opponent_abbr, season, week))
+
+        logger.info(f"Pre-computing defensive features for {len(unique_matchups)} unique matchups...")
+        defensive_features_cache = {}
+        for opponent_abbr, season, week in unique_matchups:
+            def_features = batch_get_defensive_features(opponent_abbr, season, week, conn)
+            defensive_features_cache[(opponent_abbr, season, week)] = def_features
+
+        # First pass: collect all possible features to ensure consistency
+        logger.info("Collecting all possible feature names...")
+        all_features_dict = {}
+
+        # Pre-define expected statistical features that all positions should have
+        expected_stat_features = [
+            'avg_fantasy_points', 'avg_passing_yards', 'avg_rushing_yards', 'avg_receiving_yards',
+            'avg_targets', 'avg_pass_tds', 'avg_rush_tds', 'avg_rec_tds', 'avg_interceptions',
+            'avg_fumbles', 'avg_rush_attempts', 'avg_receptions', 'yards_per_carry',
+            'yards_per_reception', 'catch_rate', 'games_played', 'max_points', 'min_points', 'consistency'
+        ]
+
+        # Always include expected statistical features
+        for feat in expected_stat_features:
+            all_features_dict[feat] = 0.0
+
+        # Sample more comprehensively to get all feature types
+        sample_indices = []
+        # Sample from beginning, middle, and end to get variety
+        sample_indices.extend(range(0, min(50, len(rows)), 5))  # Every 5th in first 50
+        if len(rows) > 100:
+            mid_start = len(rows) // 2
+            sample_indices.extend(range(mid_start, min(mid_start + 50, len(rows)), 5))
+        if len(rows) > 200:
+            end_start = len(rows) - 50
+            sample_indices.extend(range(end_start, len(rows), 5))
+
+        # Remove duplicates and limit sample size
+        sample_indices = sorted(list(set(sample_indices)))[:100]
+
+        logger.info(f"Sampling {len(sample_indices)} rows to identify all features...")
+
+        for i in sample_indices:
+            row = rows[i]
+            player_id, game_id = row[0], row[1]
+            game_date = datetime.strptime(row[6], '%Y-%m-%d').date()
+            player_recent_stats = player_stats.get(player_id, [])
+
+            # Get all feature types
+            stat_features = compute_features_from_stats(player_recent_stats, game_date, lookback_weeks=4)
+            team_id, home_team_id = row[4], row[9]
+            home_abbr, away_abbr = row[11], row[12]
+            season, week = row[7], row[8]
+            opponent_abbr = away_abbr if team_id == home_team_id else home_abbr
+
+            context_features = {'season': season, 'week': week, 'is_home': 1 if team_id == home_team_id else 0}
+            def_features = defensive_features_cache.get((opponent_abbr, season, week), {})
+
+            # Add correlation features if available
+            try:
+                import importlib
+                models_module = importlib.import_module('models')
+                correlation_extractor = models_module.CorrelationFeatureExtractor(db_path)
+                correlation_features = correlation_extractor.extract_correlation_features(
+                    player_id, game_id, position
+                )
+            except:
+                correlation_features = {}
+
+            # Collect all unique feature names
+            all_features_dict.update(stat_features)
+            all_features_dict.update(context_features)
+            all_features_dict.update(def_features)
+            all_features_dict.update(correlation_features)
+
+        feature_names = sorted(list(all_features_dict.keys()))
+        logger.info(f"Found {len(feature_names)} total features")
+
+        # Second pass: extract features for each player-game using consistent feature space
         X_list = []
         y_list = []
-        feature_names = None
 
-        for player_id, game_id, fantasy_points in rows:
-            features = get_player_features(player_id, game_id, db_path=db_path)
+        for row_idx, row in enumerate(rows):
+            if row_idx % 100 == 0:
+                logger.info(f"Processing {row_idx}/{len(rows)} samples...")
 
-            # Add correlation features from PbP data if available
+            player_id, game_id, fantasy_points = row[0], row[1], row[2]
+            game_date = datetime.strptime(row[6], '%Y-%m-%d').date()
+
+            # Extract all feature types
+            features = {}
+
+            # Player statistical features
+            player_recent_stats = player_stats.get(player_id, [])
+            stat_features = compute_features_from_stats(player_recent_stats, game_date, lookback_weeks=4)
+            features.update(stat_features)
+
+            # Game context features
+            team_id, home_team_id = row[4], row[9]
+            home_abbr, away_abbr = row[11], row[12]
+            season, week = row[7], row[8]
+            opponent_abbr = away_abbr if team_id == home_team_id else home_abbr
+
+            features.update({
+                'season': season,
+                'week': week,
+                'is_home': 1 if team_id == home_team_id else 0
+            })
+
+            # Defensive matchup features
+            def_features = defensive_features_cache.get((opponent_abbr, season, week), {})
+            features.update(def_features)
+
+            # Correlation features
             try:
-                # Import here to avoid circular imports
                 import importlib
                 models_module = importlib.import_module('models')
                 correlation_extractor = models_module.CorrelationFeatureExtractor(db_path)
@@ -1943,16 +2148,13 @@ def get_training_data(
                     player_id, game_id, position
                 )
                 features.update(correlation_features)
-            except (ImportError, ModuleNotFoundError):
-                # If models module not available, continue without correlation features
+            except (ImportError, ModuleNotFoundError, Exception) as e:
+                logger.debug(f"Correlation features not available: {e}")
                 pass
 
-            if features and fantasy_points is not None:
-                if feature_names is None:
-                    feature_names = list(features.keys())
-
-                # Ensure consistent feature order
-                feature_vector = [features.get(name, 0) for name in feature_names]
+            if fantasy_points is not None:
+                # Use consistent feature order - missing features default to 0
+                feature_vector = [features.get(name, 0.0) for name in feature_names]
                 X_list.append(feature_vector)
                 y_list.append(fantasy_points)
 
@@ -1963,7 +2165,26 @@ def get_training_data(
         X = np.array(X_list, dtype=np.float32)
         y = np.array(y_list, dtype=np.float32)
 
-        logger.info(f"Extracted {len(X)} training samples for {position}")
+        # Clean data: handle NaNs and remove constant features
+        logger.info(f"Cleaning {len(X)} training samples...")
+
+        # Replace NaNs with 0 (since missing features should be 0)
+        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+        y = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Remove constant features (zero variance)
+        if len(X) > 1:
+            feature_variance = np.var(X, axis=0)
+            non_constant_mask = feature_variance > 1e-8  # Very small threshold
+
+            if not np.all(non_constant_mask):
+                constant_features = [feature_names[i] for i, keep in enumerate(non_constant_mask) if not keep]
+                logger.info(f"Removing {len(constant_features)} constant features: {constant_features[:5]}...")
+
+                X = X[:, non_constant_mask]
+                feature_names = [feature_names[i] for i, keep in enumerate(non_constant_mask) if keep]
+
+        logger.info(f"Final dataset: {len(X)} training samples for {position} with {len(feature_names)} features")
         return X, y, feature_names
 
     except Exception as e:
@@ -1971,6 +2192,102 @@ def get_training_data(
         return np.array([]), np.array([]), []
     finally:
         conn.close()
+
+
+def compute_features_from_stats(
+    player_stats: List[Tuple],
+    target_game_date,
+    lookback_weeks: int = 4
+) -> Dict[str, float]:
+    """Compute features from pre-loaded player stats."""
+    features = {}
+
+    if not player_stats:
+        return features
+
+    # Filter to recent games before target date
+    cutoff_date = target_game_date - timedelta(weeks=lookback_weeks)
+    recent_stats = [
+        stat for stat in player_stats
+        if datetime.strptime(stat[14], '%Y-%m-%d').date() >= cutoff_date
+        and datetime.strptime(stat[14], '%Y-%m-%d').date() < target_game_date
+    ]
+
+    # If no recent stats, expand the window to get any historical data
+    if not recent_stats:
+        # Try with all available data before the target date
+        recent_stats = [
+            stat for stat in player_stats
+            if datetime.strptime(stat[14], '%Y-%m-%d').date() < target_game_date
+        ]
+        # Take the most recent games if we have too many
+        if len(recent_stats) > 8:
+            recent_stats = recent_stats[-8:]  # Take last 8 games
+
+    if not recent_stats:
+        return features
+
+    # Extract all stats from enhanced query
+    # Schema: player_id(0), game_id(1), fantasy_points(2), passing_yards(3),
+    #         rushing_yards(4), receiving_yards(5), targets(6), passing_tds(7),
+    #         rushing_tds(8), receiving_tds(9), passing_interceptions(10), fumbles_lost(11),
+    #         rushing_attempts(12), receptions(13), game_date(14), season(15), week(16)
+
+    recent_points = [stat[2] for stat in recent_stats if stat[2] is not None]
+    recent_pass_yards = [stat[3] for stat in recent_stats if stat[3] is not None]
+    recent_rush_yards = [stat[4] for stat in recent_stats if stat[4] is not None]
+    recent_rec_yards = [stat[5] for stat in recent_stats if stat[5] is not None]
+    recent_targets = [stat[6] for stat in recent_stats if stat[6] is not None]
+    recent_pass_tds = [stat[7] for stat in recent_stats if stat[7] is not None]
+    recent_rush_tds = [stat[8] for stat in recent_stats if stat[8] is not None]
+    recent_rec_tds = [stat[9] for stat in recent_stats if stat[9] is not None]
+    recent_interceptions = [stat[10] for stat in recent_stats if stat[10] is not None]
+    recent_fumbles = [stat[11] for stat in recent_stats if stat[11] is not None]
+    recent_rush_attempts = [stat[12] for stat in recent_stats if stat[12] is not None]
+    recent_receptions = [stat[13] for stat in recent_stats if stat[13] is not None]
+
+    # Compute basic averages
+    features['avg_fantasy_points'] = np.mean(recent_points) if recent_points else 0
+    features['avg_passing_yards'] = np.mean(recent_pass_yards) if recent_pass_yards else 0
+    features['avg_rushing_yards'] = np.mean(recent_rush_yards) if recent_rush_yards else 0
+    features['avg_receiving_yards'] = np.mean(recent_rec_yards) if recent_rec_yards else 0
+    features['avg_targets'] = np.mean(recent_targets) if recent_targets else 0
+    features['avg_pass_tds'] = np.mean(recent_pass_tds) if recent_pass_tds else 0
+    features['avg_rush_tds'] = np.mean(recent_rush_tds) if recent_rush_tds else 0
+    features['avg_rec_tds'] = np.mean(recent_rec_tds) if recent_rec_tds else 0
+    features['avg_interceptions'] = np.mean(recent_interceptions) if recent_interceptions else 0
+    features['avg_fumbles'] = np.mean(recent_fumbles) if recent_fumbles else 0
+    features['avg_rush_attempts'] = np.mean(recent_rush_attempts) if recent_rush_attempts else 0
+    features['avg_receptions'] = np.mean(recent_receptions) if recent_receptions else 0
+
+    # Advanced metrics
+    if recent_rush_attempts and recent_rush_yards:
+        features['yards_per_carry'] = np.mean([y/max(a, 1) for y, a in zip(recent_rush_yards, recent_rush_attempts)])
+    else:
+        features['yards_per_carry'] = 0
+
+    if recent_receptions and recent_rec_yards:
+        features['yards_per_reception'] = np.mean([y/max(r, 1) for y, r in zip(recent_rec_yards, recent_receptions)])
+    else:
+        features['yards_per_reception'] = 0
+
+    if recent_targets and recent_receptions:
+        features['catch_rate'] = np.mean([r/max(t, 1) for r, t in zip(recent_receptions, recent_targets)])
+    else:
+        features['catch_rate'] = 0
+
+    # Games played and consistency metrics
+    features['games_played'] = len(recent_stats)
+    if recent_points:
+        features['max_points'] = max(recent_points)
+        features['min_points'] = min(recent_points)
+        features['consistency'] = 1 - (np.std(recent_points) / (np.mean(recent_points) + 1e-6))
+    else:
+        features['max_points'] = 0
+        features['min_points'] = 0
+        features['consistency'] = 0
+
+    return features
 
 def get_latest_contest_id(db_path: str = "data/nfl_dfs.db") -> Optional[str]:
     """Get the most recently loaded contest ID."""
