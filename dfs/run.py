@@ -2,9 +2,10 @@
 
 This module provides a simple command-line interface for the core DFS operations:
 1. collect - Collect NFL data from nfl_data_py and DraftKings CSV
-2. train - Train PyTorch models for all positions
-3. predict - Generate player predictions for current week
-4. optimize - Build optimal lineups
+2. weather - Collect weather data for outdoor stadium games (with rate limiting)
+3. train - Train PyTorch models for all positions
+4. predict - Generate player predictions for current week
+5. optimize - Build optimal lineups
 
 No complex CLI framework - just direct function calls with basic argument parsing.
 """
@@ -20,8 +21,8 @@ import numpy as np
 # Import our simplified modules
 from data import (
     init_database, load_teams, collect_nfl_data, load_draftkings_csv,
-    get_training_data, get_current_week_players, cleanup_database,
-    validate_data_quality
+    collect_weather_data, get_training_data, get_current_week_players,
+    cleanup_database, validate_data_quality
 )
 from models import (
     create_model, ModelConfig, CorrelationFeatureExtractor
@@ -95,12 +96,46 @@ def collect_data(seasons: List[int] = None, csv_path: str = None, contest_id: st
             load_draftkings_csv(csv_path, None, DEFAULT_DB_PATH)
             logger.info("Auto-generated contest ID from filename")
 
+
     # Validate data quality
     issues = validate_data_quality(DEFAULT_DB_PATH)
     if issues:
         logger.warning(f"Data quality issues found: {issues}")
     else:
         logger.info("Data collection completed successfully")
+
+
+def collect_weather(limit: Optional[int] = None, rate_limit: float = 1.5, batch_mode: bool = True):
+    """Collect weather data for outdoor stadium games.
+
+    Args:
+        limit: Maximum number of API calls to make (default: no limit)
+        rate_limit: Delay between API calls in seconds (default: 1.5)
+        batch_mode: Use optimized batch processing for date ranges (default: True)
+    """
+    logger.info("Starting weather data collection...")
+    logger.info(f"Rate limit: {rate_limit}s between requests")
+    logger.info(f"Batch mode: {'enabled' if batch_mode else 'disabled'}")
+    if limit:
+        logger.info(f"Limited to {limit} API calls")
+
+    # Initialize database if needed
+    init_database(DEFAULT_DB_PATH)
+
+    # Collect weather data with rate limiting
+    try:
+        if batch_mode:
+            from data import collect_weather_data_optimized
+            collect_weather_data_optimized(DEFAULT_DB_PATH, limit=limit, rate_limit_delay=rate_limit)
+        else:
+            from data import collect_weather_data_with_limits
+            collect_weather_data_with_limits(DEFAULT_DB_PATH, limit=limit, rate_limit_delay=rate_limit)
+        logger.info("Weather data collection completed")
+    except Exception as e:
+        logger.error(f"Weather data collection failed: {e}")
+        return False
+
+    return True
 
 
 def train_models(positions: List[str] = None, seasons: List[int] = None):
@@ -221,11 +256,11 @@ def predict_players(contest_id: str = None, output_file: str = None):
                 # Get the most recent game for this player to use for feature extraction
                 from data import get_db_connection
                 conn = get_db_connection(DEFAULT_DB_PATH)
-                
+
                 recent_game = conn.execute(
-                    """SELECT g.id FROM games g 
-                       JOIN player_stats ps ON g.id = ps.game_id 
-                       WHERE ps.player_id = ? 
+                    """SELECT g.id FROM games g
+                       JOIN player_stats ps ON g.id = ps.game_id
+                       WHERE ps.player_id = ?
                        ORDER BY g.game_date DESC LIMIT 1""",
                     (player_id,)
                 ).fetchone()
@@ -235,7 +270,7 @@ def predict_players(contest_id: str = None, output_file: str = None):
                     # Extract features using the player's most recent game context
                     from data import get_player_features
                     features_dict = get_player_features(player_id, recent_game[0])
-                    
+
                     if features_dict:
                         # Use cached feature names
                         feature_names = position_feature_names.get(position, [])
@@ -243,15 +278,15 @@ def predict_players(contest_id: str = None, output_file: str = None):
                             # Create feature vector in the same order as training
                             feature_vector = [features_dict.get(name, 0) for name in feature_names]
                             X_pred = np.array([feature_vector], dtype=np.float32)
-                            
+
                             # Get model prediction
                             model = models[position]
                             prediction_result = model.predict(X_pred)
-                            
+
                             projected_points = float(prediction_result.point_estimate[0])
                             floor_points = float(prediction_result.floor[0])
                             ceiling_points = float(prediction_result.ceiling[0])
-                            
+
                             logger.debug(f"Model prediction for {player_data['name']}: {projected_points:.1f}")
                         else:
                             # Fallback if no training features available
@@ -277,7 +312,7 @@ def predict_players(contest_id: str = None, output_file: str = None):
                 if 'DST' in models:
                     # Try to get DST features (simplified for now)
                     # Use basic DST features - in a full system would extract real defensive stats
-                    
+
                     # Simple feature vector for DST (points_allowed, sacks, etc.)
                     # This is simplified - ideally would get recent team defensive stats
                     dst_features = [
@@ -293,11 +328,11 @@ def predict_players(contest_id: str = None, output_file: str = None):
                         10,   # week (mid-season)
                         2024  # season
                     ]
-                    
+
                     X_dst = np.array([dst_features], dtype=np.float32)
                     model = models['DST']
                     prediction_result = model.predict(X_dst)
-                    
+
                     projected_points = float(prediction_result.point_estimate[0])
                     floor_points = float(prediction_result.floor[0])
                     ceiling_points = float(prediction_result.ceiling[0])
@@ -439,6 +474,14 @@ def main():
     collect_parser.add_argument('--csv', help='DraftKings CSV file path')
     collect_parser.add_argument('--contest-id', help='DraftKings contest ID')
 
+    # Weather command
+    weather_parser = subparsers.add_parser('weather', help='Collect weather data for outdoor stadium games')
+    weather_parser.add_argument('--limit', type=int, help='Maximum number of API calls to make')
+    weather_parser.add_argument('--rate-limit', type=float, default=1.5,
+                               help='Delay between API calls in seconds (default: 1.5)')
+    weather_parser.add_argument('--no-batch', action='store_true',
+                               help='Disable batch processing (one API call per game)')
+
     # Train command
     train_parser = subparsers.add_parser('train', help='Train models')
     train_parser.add_argument('--positions', nargs='+',
@@ -472,6 +515,10 @@ def main():
     try:
         if args.command == 'collect':
             collect_data(args.seasons, args.csv, args.contest_id)
+
+        elif args.command == 'weather':
+            batch_mode = not getattr(args, 'no_batch', False)
+            collect_weather(args.limit, getattr(args, 'rate_limit', 1.5), batch_mode)
 
         elif args.command == 'train':
             train_models(args.positions, args.seasons)

@@ -14,4 +14,7 @@ pulp>=2.7.0
 # NFL data collection
 nfl-data-py>=0.3.0
 
+# HTTP requests for API calls
+requests>=2.28.0
+
 # That's it - no FastAPI, SQLAlchemy, Click, Pydantic, or other complexity

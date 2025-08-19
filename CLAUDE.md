@@ -21,36 +21,36 @@ The system has four main components consolidated into single-file modules:
 
 ```bash
 cd dfs/
-pip install -r requirements.txt
+uv pip install -r requirements.txt
 ```
 
 ### Core Workflow Commands
 
 ```bash
 # 1. Collect NFL data and DraftKings salaries
-python run.py collect --seasons 2022 2023 --csv data/DKSalaries.csv
+uv run python run.py collect --seasons 2022 2023 --csv data/DKSalaries.csv
 
 # 2. Train position-specific neural network models
-python run.py train
+uv run python run.py train
 
 # 3. Generate player predictions for current contest
-python run.py predict --contest-id <contest_id> --output predictions.csv
+uv run python run.py predict --contest-id <contest_id> --output predictions.csv
 
 # 4. Build optimal lineups
-python run.py optimize --strategy balanced --count 5 --output-dir lineups/
+uv run python run.py optimize --strategy balanced --count 5 --output-dir lineups/
 ```
 
 ### Development and Testing
 
 ```bash
 # Run the CLI help
-python run.py --help
+uv run python run.py --help
 
 # Test optimization functions
-python optimize.py
+uv run python optimize.py
 
 # Check data quality after collection
-python -c "from data import validate_data_quality; print(validate_data_quality('data/nfl_dfs.db'))"
+uv run python -c "from data import validate_data_quality; print(validate_data_quality('data/nfl_dfs.db'))"
 ```
 
 ## Key Technical Details

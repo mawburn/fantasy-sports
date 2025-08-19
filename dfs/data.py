@@ -12,13 +12,16 @@ No abstractions or complex classes - just functions that work.
 
 import csv
 import logging
+import os
 import sqlite3
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
 import numpy as np
 import pandas as pd
+import requests
 
 try:
     import nfl_data_py as nfl
@@ -117,6 +120,59 @@ DB_SCHEMA = {
             special_teams_tds INTEGER DEFAULT 0,
             fantasy_points REAL DEFAULT 0.0,
             UNIQUE(team_abbr, game_id)
+        )
+    ''',
+    'play_by_play': '''
+        CREATE TABLE IF NOT EXISTS play_by_play (
+            id INTEGER PRIMARY KEY,
+            play_id TEXT UNIQUE,
+            game_id TEXT,
+            season INTEGER,
+            week INTEGER,
+            home_team TEXT,
+            away_team TEXT,
+            posteam TEXT,
+            defteam TEXT,
+            play_type TEXT,
+            description TEXT,
+            down INTEGER,
+            ydstogo INTEGER,
+            yardline_100 INTEGER,
+            quarter_seconds_remaining INTEGER,
+            yards_gained INTEGER DEFAULT 0,
+            touchdown INTEGER DEFAULT 0,
+            pass_attempt INTEGER DEFAULT 0,
+            rush_attempt INTEGER DEFAULT 0,
+            complete_pass INTEGER DEFAULT 0,
+            incomplete_pass INTEGER DEFAULT 0,
+            interception INTEGER DEFAULT 0,
+            fumble INTEGER DEFAULT 0,
+            fumble_lost INTEGER DEFAULT 0,
+            sack INTEGER DEFAULT 0,
+            safety INTEGER DEFAULT 0,
+            penalty INTEGER DEFAULT 0,
+            FOREIGN KEY (game_id) REFERENCES games (id)
+        )
+    ''',
+    'weather': '''
+        CREATE TABLE IF NOT EXISTS weather (
+            id INTEGER PRIMARY KEY,
+            game_id TEXT,
+            stadium_name TEXT,
+            latitude REAL,
+            longitude REAL,
+            temperature INTEGER,
+            feels_like INTEGER,
+            humidity INTEGER,
+            wind_speed INTEGER,
+            wind_direction TEXT,
+            precipitation_chance INTEGER,
+            conditions TEXT,
+            visibility INTEGER,
+            pressure REAL,
+            collected_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(game_id),
+            FOREIGN KEY (game_id) REFERENCES games (id)
         )
     '''
 }
@@ -325,6 +381,13 @@ def collect_nfl_data(seasons: List[int], db_path: str = "data/nfl_dfs.db") -> No
                         logger.warning(f"Error processing player stats: {e}")
                         continue
 
+            # Collect play-by-play data
+            try:
+                logger.info(f"Collecting play-by-play data for {season} season...")
+                collect_pbp_data(season, conn)
+            except Exception as e:
+                logger.warning(f"Could not collect play-by-play data for {season}: {e}")
+
             # Collect DST data from play-by-play
             try:
                 logger.info(f"Collecting DST data for {season} season...")
@@ -462,6 +525,687 @@ def calculate_dst_fantasy_points(stats: Dict[str, int]) -> float:
     points += stats.get('special_teams_tds', 0) * 6
 
     return round(points, 2)
+
+def collect_pbp_data(season: int, conn: sqlite3.Connection) -> None:
+    """Collect and store play-by-play data."""
+    if nfl is None:
+        logger.warning("nfl_data_py not available for play-by-play data")
+        return
+
+    try:
+        logger.info(f"Loading play-by-play data for season {season}...")
+        pbp_data = nfl.import_pbp_data([season], downcast=True)
+    except (NameError, Exception) as e:
+        if "Error" in str(e) and "not defined" in str(e):
+            logger.warning(f"nfl_data_py library bug for season {season}: {e}")
+        elif "404" in str(e) or "Not Found" in str(e):
+            logger.warning(f"No play-by-play data available for season {season}")
+        else:
+            logger.warning(f"Could not load PBP data for season {season}: {e}")
+        return
+
+    # Store play-by-play data
+    play_count = 0
+    for _, play in pbp_data.iterrows():
+        try:
+            # Skip invalid plays
+            if pd.isna(play.get('play_id')) or not play.get('game_id'):
+                continue
+
+            game_id = str(play.get('game_id', ''))
+
+            # Check if the referenced game exists in the games table
+            existing_game = conn.execute(
+                "SELECT id FROM games WHERE id = ?", (game_id,)
+            ).fetchone()
+
+            if not existing_game:
+                # Skip plays for games that don't exist in our games table
+                continue
+
+            def safe_int(val, default=0):
+                try:
+                    return int(val) if pd.notna(val) and val != '' else default
+                except (ValueError, TypeError):
+                    return default
+
+            play_data = (
+                str(play.get('play_id', '')),
+                game_id,
+                season,
+                safe_int(play.get('week')),
+                str(play.get('home_team', '') or ''),
+                str(play.get('away_team', '') or ''),
+                str(play.get('posteam', '') or ''),
+                str(play.get('defteam', '') or ''),
+                str(play.get('play_type', '') or ''),
+                str(play.get('desc', '') or '')[:500],  # Limit description length
+                safe_int(play.get('down')),
+                safe_int(play.get('ydstogo')),
+                safe_int(play.get('yardline_100')),
+                safe_int(play.get('quarter_seconds_remaining')),
+                safe_int(play.get('yards_gained')),
+                safe_int(play.get('touchdown')),
+                safe_int(play.get('pass_attempt')),
+                safe_int(play.get('rush_attempt')),
+                safe_int(play.get('complete_pass')),
+                safe_int(play.get('incomplete_pass')),
+                safe_int(play.get('interception')),
+                safe_int(play.get('fumble')),
+                safe_int(play.get('fumble_lost')),
+                safe_int(play.get('sack')),
+                safe_int(play.get('safety')),
+                safe_int(play.get('penalty'))
+            )
+
+            conn.execute(
+                """INSERT OR REPLACE INTO play_by_play
+                   (play_id, game_id, season, week, home_team, away_team, posteam, defteam,
+                    play_type, description, down, ydstogo, yardline_100, quarter_seconds_remaining,
+                    yards_gained, touchdown, pass_attempt, rush_attempt, complete_pass,
+                    incomplete_pass, interception, fumble, fumble_lost, sack, safety, penalty)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                play_data
+            )
+            play_count += 1
+
+        except Exception as e:
+            logger.warning(f"Error processing play {play.get('play_id', 'unknown')}: {e}")
+            continue
+
+    logger.info(f"Stored {play_count} plays for season {season}")
+
+def load_env_file():
+    """Load .env file manually if it exists."""
+    env_path = Path(".env")
+    if env_path.exists():
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    os.environ[key] = value
+
+# Load .env file
+load_env_file()
+
+def collect_weather_data_optimized(db_path: str = "data/nfl_dfs.db", limit: int = None, rate_limit_delay: float = 1.5, max_days_per_batch: int = 30) -> None:
+    """Collect weather data using batch API calls for date ranges to minimize requests."""
+    conn = get_db_connection(db_path)
+
+    # NFL Stadium locations - OUTDOOR ONLY (weather affects gameplay)
+    outdoor_stadiums = {
+        'BAL': {'name': 'M&T Bank Stadium', 'lat': 39.2781, 'lon': -76.6227},
+        'BUF': {'name': 'Highmark Stadium', 'lat': 42.7738, 'lon': -78.7870},
+        'CAR': {'name': 'Bank of America Stadium', 'lat': 35.2258, 'lon': -80.8533},
+        'CHI': {'name': 'Soldier Field', 'lat': 41.8623, 'lon': -87.6167},
+        'CIN': {'name': 'Paycor Stadium', 'lat': 39.0955, 'lon': -84.5160},
+        'CLE': {'name': 'FirstEnergy Stadium', 'lat': 41.5061, 'lon': -81.6995},
+        'DEN': {'name': 'Empower Field at Mile High', 'lat': 39.7439, 'lon': -105.0201},
+        'GB': {'name': 'Lambeau Field', 'lat': 44.5013, 'lon': -88.0622},
+        'JAX': {'name': 'TIAA Bank Field', 'lat': 32.0815, 'lon': -81.6370},
+        'KC': {'name': 'Arrowhead Stadium', 'lat': 39.0489, 'lon': -94.4839},
+        'MIA': {'name': 'Hard Rock Stadium', 'lat': 25.9581, 'lon': -80.2389},
+        'NE': {'name': 'Gillette Stadium', 'lat': 42.0909, 'lon': -71.2643},
+        'NYG': {'name': 'MetLife Stadium', 'lat': 40.8135, 'lon': -74.0745},
+        'NYJ': {'name': 'MetLife Stadium', 'lat': 40.8135, 'lon': -74.0745},
+        'PHI': {'name': 'Lincoln Financial Field', 'lat': 39.9008, 'lon': -75.1675},
+        'PIT': {'name': 'Acrisure Stadium', 'lat': 40.4468, 'lon': -80.0158},
+        'SEA': {'name': 'Lumen Field', 'lat': 47.5952, 'lon': -122.3316},
+        'TB': {'name': 'Raymond James Stadium', 'lat': 27.9756, 'lon': -82.5034},
+        'TEN': {'name': 'Nissan Stadium', 'lat': 36.1665, 'lon': -86.7713},
+        'WAS': {'name': 'FedExField', 'lat': 38.9077, 'lon': -76.8645}
+    }
+
+    try:
+        # Get ALL games needing weather data (historical only)
+        games_for_weather = conn.execute(
+            """SELECT g.id, ht.team_abbr as home_team, g.game_date
+               FROM games g
+               JOIN teams ht ON g.home_team_id = ht.id
+               WHERE g.id NOT IN (SELECT game_id FROM weather WHERE game_id IS NOT NULL)
+               AND g.game_date < ?
+               AND ht.team_abbr IN ('BAL', 'BUF', 'CAR', 'CHI', 'CIN', 'CLE', 'DEN', 'GB', 'JAX', 'KC', 'MIA', 'NE', 'NYG', 'NYJ', 'PHI', 'PIT', 'SEA', 'TB', 'TEN', 'WAS')
+               ORDER BY ht.team_abbr, g.game_date""",
+            (datetime.now().date().strftime('%Y-%m-%d'),)
+        ).fetchall()
+
+        # Group games by stadium for batch processing
+        stadium_games = {}
+        for game_id, home_team, game_date in games_for_weather:
+            if home_team not in stadium_games:
+                stadium_games[home_team] = []
+            stadium_games[home_team].append((game_id, game_date))
+
+        weather_count = 0
+        api_calls_made = 0
+
+        logger.info(f"Found {len(games_for_weather)} games needing weather data across {len(stadium_games)} stadiums")
+        if limit:
+            logger.info(f"Processing limited to {limit} API calls")
+
+        for home_team, games in stadium_games.items():
+            if limit and api_calls_made >= limit:
+                logger.info(f"Reached API call limit ({limit}), stopping collection")
+                break
+
+            stadium = outdoor_stadiums[home_team]
+            logger.info(f"Processing {len(games)} games for {stadium['name']}")
+
+            # Sort games by date
+            games.sort(key=lambda x: x[1])
+
+            # Group games into date ranges
+            i = 0
+            while i < len(games):
+                batch_games = []
+                batch_start_date = games[i][1]
+                current_date = batch_start_date
+
+                # Collect consecutive games within max_days_per_batch
+                while (i < len(games) and
+                       len(batch_games) < max_days_per_batch and
+                       (datetime.strptime(games[i][1], '%Y-%m-%d') -
+                        datetime.strptime(batch_start_date, '%Y-%m-%d')).days <= max_days_per_batch):
+                    batch_games.append(games[i])
+                    current_date = games[i][1]
+                    i += 1
+
+                if limit and api_calls_made >= limit:
+                    break
+
+                # Make batch API call
+                batch_end_date = current_date
+                try:
+                    logger.info(f"Fetching weather batch for {stadium['name']}: {batch_start_date} to {batch_end_date} ({len(batch_games)} games)")
+
+                    batch_data = get_historical_weather_batch(
+                        stadium['lat'], stadium['lon'],
+                        batch_start_date, batch_end_date,
+                        rate_limit_delay
+                    )
+                    api_calls_made += 1
+
+                    if not batch_data:
+                        logger.warning(f"Failed to get batch weather for {stadium['name']} - may have hit API limit")
+                        break
+
+                    # Process each day in the batch response
+                    if batch_data.get('days'):
+                        days_data = {day['datetime']: day for day in batch_data['days']}
+
+                        for game_id, game_date in batch_games:
+                            if game_date in days_data:
+                                day_data = days_data[game_date]
+
+                                weather_record = (
+                                    game_id,
+                                    stadium['name'],
+                                    stadium['lat'],
+                                    stadium['lon'],
+                                    day_data.get('temp'),
+                                    day_data.get('feelslike'),
+                                    day_data.get('humidity'),
+                                    day_data.get('windspeed'),
+                                    day_data.get('winddir'),
+                                    day_data.get('precipprob'),
+                                    day_data.get('conditions'),
+                                    day_data.get('visibility'),
+                                    day_data.get('pressure')
+                                )
+
+                                conn.execute(
+                                    """INSERT OR REPLACE INTO weather
+                                       (game_id, stadium_name, latitude, longitude, temperature, feels_like,
+                                        humidity, wind_speed, wind_direction, precipitation_chance, conditions,
+                                        visibility, pressure, collected_at)
+                                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                                    weather_record
+                                )
+                                weather_count += 1
+                            else:
+                                logger.warning(f"No weather data for {game_date} in batch response")
+
+                    if weather_count % 20 == 0:
+                        logger.info(f"Collected weather for {weather_count} games ({api_calls_made} API calls)")
+
+                except Exception as e:
+                    logger.warning(f"Error collecting batch weather for {stadium['name']}: {e}")
+                    continue
+
+        conn.commit()
+        logger.info(f"Stored weather data for {weather_count} games using {api_calls_made} API calls")
+
+    except Exception as e:
+        logger.error(f"Error collecting weather data: {e}")
+    finally:
+        conn.close()
+
+
+def collect_weather_data_with_limits(db_path: str = "data/nfl_dfs.db", limit: int = None, rate_limit_delay: float = 1.5) -> None:
+    """Collect weather data with API rate limiting and request limits."""
+    conn = get_db_connection(db_path)
+
+    # NFL Stadium locations - OUTDOOR ONLY (weather affects gameplay)
+    outdoor_stadiums = {
+        'BAL': {'name': 'M&T Bank Stadium', 'lat': 39.2781, 'lon': -76.6227},
+        'BUF': {'name': 'Highmark Stadium', 'lat': 42.7738, 'lon': -78.7870},
+        'CAR': {'name': 'Bank of America Stadium', 'lat': 35.2258, 'lon': -80.8533},
+        'CHI': {'name': 'Soldier Field', 'lat': 41.8623, 'lon': -87.6167},
+        'CIN': {'name': 'Paycor Stadium', 'lat': 39.0955, 'lon': -84.5160},
+        'CLE': {'name': 'FirstEnergy Stadium', 'lat': 41.5061, 'lon': -81.6995},
+        'DEN': {'name': 'Empower Field at Mile High', 'lat': 39.7439, 'lon': -105.0201},
+        'GB': {'name': 'Lambeau Field', 'lat': 44.5013, 'lon': -88.0622},
+        'JAX': {'name': 'TIAA Bank Field', 'lat': 32.0815, 'lon': -81.6370},
+        'KC': {'name': 'Arrowhead Stadium', 'lat': 39.0489, 'lon': -94.4839},
+        'MIA': {'name': 'Hard Rock Stadium', 'lat': 25.9581, 'lon': -80.2389},
+        'NE': {'name': 'Gillette Stadium', 'lat': 42.0909, 'lon': -71.2643},
+        'NYG': {'name': 'MetLife Stadium', 'lat': 40.8135, 'lon': -74.0745},
+        'NYJ': {'name': 'MetLife Stadium', 'lat': 40.8135, 'lon': -74.0745},
+        'PHI': {'name': 'Lincoln Financial Field', 'lat': 39.9008, 'lon': -75.1675},
+        'PIT': {'name': 'Acrisure Stadium', 'lat': 40.4468, 'lon': -80.0158},
+        'SEA': {'name': 'Lumen Field', 'lat': 47.5952, 'lon': -122.3316},
+        'TB': {'name': 'Raymond James Stadium', 'lat': 27.9756, 'lon': -82.5034},
+        'TEN': {'name': 'Nissan Stadium', 'lat': 36.1665, 'lon': -86.7713},
+        'WAS': {'name': 'FedExField', 'lat': 38.9077, 'lon': -76.8645}
+        # Domes/covered stadiums excluded: ARI, ATL, DAL, DET, HOU, IND, LAC, LAR, LV, MIN, NO, SF
+    }
+
+    try:
+        # Get ALL games needing weather data (all historical + upcoming)
+        games_for_weather = conn.execute(
+            """SELECT g.id, ht.team_abbr as home_team, g.game_date
+               FROM games g
+               JOIN teams ht ON g.home_team_id = ht.id
+               WHERE g.id NOT IN (SELECT game_id FROM weather WHERE game_id IS NOT NULL)
+               ORDER BY g.game_date DESC"""
+        ).fetchall()
+
+        weather_count = 0
+        api_calls_made = 0
+
+        logger.info(f"Found {len(games_for_weather)} games needing weather data")
+        if limit:
+            logger.info(f"Processing limited to {limit} API calls")
+
+        for game_id, home_team, game_date in games_for_weather:
+            # Check API call limit
+            if limit and api_calls_made >= limit:
+                logger.info(f"Reached API call limit ({limit}), stopping collection")
+                break
+
+            # Only collect weather for outdoor stadiums
+            stadium = outdoor_stadiums.get(home_team)
+            if not stadium:
+                logger.debug(f"Skipping weather for {home_team} - dome/covered stadium")
+                continue
+
+            try:
+                # For historical games, use Visual Crossing API for historical data
+                # For future games, get forecast from weather.gov
+                if game_date < datetime.now().date().strftime('%Y-%m-%d'):
+                    # Historical weather from Visual Crossing API with rate limiting
+                    weather_data = get_historical_weather(stadium['lat'], stadium['lon'], game_date, rate_limit_delay=rate_limit_delay)
+                    api_calls_made += 1
+
+                    if not weather_data:
+                        # Check if we hit daily limit
+                        logger.warning(f"Failed to get weather for {game_id} - may have hit API limit")
+                        break
+                else:
+                    # Future games - get forecast (free)
+                    weather_data = get_weather_forecast(stadium['lat'], stadium['lon'])
+
+                if weather_data:
+                    weather_record = (
+                        game_id,
+                        stadium['name'],
+                        stadium['lat'],
+                        stadium['lon'],
+                        weather_data.get('temperature'),
+                        weather_data.get('feels_like'),
+                        weather_data.get('humidity'),
+                        weather_data.get('wind_speed'),
+                        weather_data.get('wind_direction'),
+                        weather_data.get('precipitation_chance'),
+                        weather_data.get('conditions'),
+                        weather_data.get('visibility'),
+                        weather_data.get('pressure')
+                    )
+
+                    conn.execute(
+                        """INSERT OR REPLACE INTO weather
+                           (game_id, stadium_name, latitude, longitude, temperature, feels_like,
+                            humidity, wind_speed, wind_direction, precipitation_chance, conditions,
+                            visibility, pressure, collected_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                        weather_record
+                    )
+                    weather_count += 1
+                    if weather_count % 10 == 0:
+                        logger.info(f"Collected weather for {weather_count} games ({api_calls_made} API calls)")
+
+            except Exception as e:
+                logger.warning(f"Error collecting weather for {game_id}: {e}")
+                continue
+
+        conn.commit()
+        logger.info(f"Stored weather data for {weather_count} games (made {api_calls_made} API calls)")
+
+    except Exception as e:
+        logger.error(f"Error collecting weather data: {e}")
+    finally:
+        conn.close()
+
+
+def collect_weather_data(db_path: str = "data/nfl_dfs.db") -> None:
+    """Collect weather data for upcoming games using weather.gov API."""
+    conn = get_db_connection(db_path)
+
+    # NFL Stadium locations - OUTDOOR ONLY (weather affects gameplay)
+    outdoor_stadiums = {
+        'BAL': {'name': 'M&T Bank Stadium', 'lat': 39.2781, 'lon': -76.6227},
+        'BUF': {'name': 'Highmark Stadium', 'lat': 42.7738, 'lon': -78.7870},
+        'CAR': {'name': 'Bank of America Stadium', 'lat': 35.2258, 'lon': -80.8533},
+        'CHI': {'name': 'Soldier Field', 'lat': 41.8623, 'lon': -87.6167},
+        'CIN': {'name': 'Paycor Stadium', 'lat': 39.0955, 'lon': -84.5160},
+        'CLE': {'name': 'FirstEnergy Stadium', 'lat': 41.5061, 'lon': -81.6995},
+        'DEN': {'name': 'Empower Field at Mile High', 'lat': 39.7439, 'lon': -105.0201},
+        'GB': {'name': 'Lambeau Field', 'lat': 44.5013, 'lon': -88.0622},
+        'JAX': {'name': 'TIAA Bank Field', 'lat': 32.0815, 'lon': -81.6370},
+        'KC': {'name': 'Arrowhead Stadium', 'lat': 39.0489, 'lon': -94.4839},
+        'MIA': {'name': 'Hard Rock Stadium', 'lat': 25.9581, 'lon': -80.2389},
+        'NE': {'name': 'Gillette Stadium', 'lat': 42.0909, 'lon': -71.2643},
+        'NYG': {'name': 'MetLife Stadium', 'lat': 40.8135, 'lon': -74.0745},
+        'NYJ': {'name': 'MetLife Stadium', 'lat': 40.8135, 'lon': -74.0745},
+        'PHI': {'name': 'Lincoln Financial Field', 'lat': 39.9008, 'lon': -75.1675},
+        'PIT': {'name': 'Acrisure Stadium', 'lat': 40.4468, 'lon': -80.0158},
+        'SEA': {'name': 'Lumen Field', 'lat': 47.5952, 'lon': -122.3316},
+        'TB': {'name': 'Raymond James Stadium', 'lat': 27.9756, 'lon': -82.5034},
+        'TEN': {'name': 'Nissan Stadium', 'lat': 36.1665, 'lon': -86.7713},
+        'WAS': {'name': 'FedExField', 'lat': 38.9077, 'lon': -76.8645}
+        # Domes/covered stadiums excluded: ARI, ATL, DAL, DET, HOU, IND, LAC, LAR, LV, MIN, NO, SF
+    }
+
+    try:
+        # Get ALL games needing weather data (all historical + upcoming)
+        games_for_weather = conn.execute(
+            """SELECT g.id, ht.team_abbr as home_team, g.game_date
+               FROM games g
+               JOIN teams ht ON g.home_team_id = ht.id
+               WHERE g.id NOT IN (SELECT game_id FROM weather WHERE game_id IS NOT NULL)
+               ORDER BY g.game_date DESC"""
+        ).fetchall()
+
+        weather_count = 0
+        for game_id, home_team, game_date in games_for_weather:
+            # Only collect weather for outdoor stadiums
+            stadium = outdoor_stadiums.get(home_team)
+            if not stadium:
+                logger.debug(f"Skipping weather for {home_team} - dome/covered stadium")
+                continue
+
+            try:
+                # For historical games, use Visual Crossing API for historical data
+                # For future games, get forecast from weather.gov
+                if game_date < datetime.now().date().strftime('%Y-%m-%d'):
+                    # Historical weather from Visual Crossing API with rate limiting
+                    weather_data = get_historical_weather(stadium['lat'], stadium['lon'], game_date, rate_limit_delay=1.5)
+                    if not weather_data:
+                        # Fallback to placeholder if API fails
+                        weather_data = {
+                            'temperature': None,
+                            'feels_like': None,
+                            'humidity': None,
+                            'wind_speed': None,
+                            'wind_direction': None,
+                            'precipitation_chance': None,
+                            'conditions': 'Historical data unavailable',
+                            'visibility': None,
+                            'pressure': None
+                        }
+                else:
+                    # Future games - get forecast
+                    weather_data = get_weather_forecast(stadium['lat'], stadium['lon'])
+
+                if weather_data:
+                    weather_record = (
+                        game_id,
+                        stadium['name'],
+                        stadium['lat'],
+                        stadium['lon'],
+                        weather_data.get('temperature'),
+                        weather_data.get('feels_like'),
+                        weather_data.get('humidity'),
+                        weather_data.get('wind_speed'),
+                        weather_data.get('wind_direction'),
+                        weather_data.get('precipitation_chance'),
+                        weather_data.get('conditions'),
+                        weather_data.get('visibility'),
+                        weather_data.get('pressure')
+                    )
+
+                    conn.execute(
+                        """INSERT OR REPLACE INTO weather
+                           (game_id, stadium_name, latitude, longitude, temperature, feels_like,
+                            humidity, wind_speed, wind_direction, precipitation_chance, conditions,
+                            visibility, pressure)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        weather_record
+                    )
+                    weather_count += 1
+
+            except Exception as e:
+                logger.warning(f"Error collecting weather for {home_team}: {e}")
+                continue
+
+        conn.commit()
+        logger.info(f"Stored weather data for {weather_count} games")
+
+    except Exception as e:
+        logger.error(f"Error collecting weather data: {e}")
+    finally:
+        conn.close()
+
+def get_historical_weather_batch(lat: float, lon: float, start_date: str, end_date: str, rate_limit_delay: float = 1.0) -> Optional[Dict]:
+    """Get historical weather data for a date range from Visual Crossing API."""
+    visual_crossing_key = os.environ.get('VISUAL_CROSSING_API_KEY')
+    if not visual_crossing_key:
+        logger.warning("VISUAL_CROSSING_API_KEY not found in environment")
+        return None
+
+    try:
+        # Rate limiting - wait between requests
+        time.sleep(rate_limit_delay)
+
+        # Visual Crossing Timeline API for date range: location/start_date/end_date
+        url = f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/{lat},{lon}/{start_date}/{end_date}"
+        params = {
+            'key': visual_crossing_key,
+            'unitGroup': 'us',  # Fahrenheit, mph, inches
+            'include': 'days',  # Only daily data
+            'elements': 'datetime,temp,feelslike,humidity,windspeed,winddir,precipprob,conditions,visibility,pressure'
+        }
+
+        response = requests.get(url, params=params, timeout=30)  # Longer timeout for batch requests
+
+        # Log response headers for rate limit debugging
+        logger.debug(f"API headers for {start_date} to {end_date}: {dict(response.headers)}")
+
+        if response.status_code == 429:
+            logger.warning(f"Rate limit exceeded for {start_date} to {end_date} at {lat},{lon}")
+            # Check for Retry-After header
+            retry_after = response.headers.get('Retry-After', '60')
+            try:
+                wait_time = int(retry_after)
+            except ValueError:
+                wait_time = 60
+            logger.warning(f"Waiting {wait_time} seconds before retry")
+            time.sleep(wait_time)
+            return None
+        elif response.status_code == 400 and "Maximum daily cost exceeded" in response.text:
+            logger.error("Daily API limit exceeded - stopping weather collection")
+            return None
+        elif response.status_code != 200:
+            logger.warning(f"Visual Crossing API error: {response.status_code} for {start_date} to {end_date} at {lat},{lon}")
+            logger.debug(f"Response body: {response.text[:200]}")
+            if response.status_code == 401:
+                logger.warning("API authentication failed - check VISUAL_CROSSING_API_KEY")
+            return None
+
+        data = response.json()
+        query_cost = data.get('queryCost', 0)
+        logger.debug(f"API batch response for {start_date} to {end_date}: {query_cost} query cost")
+
+        # Log remaining quota if available in response
+        if 'remainingCost' in data:
+            logger.debug(f"Remaining API cost: {data['remainingCost']}")
+
+        return data
+
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"Network error fetching batch weather for {start_date} to {end_date}: {e}")
+        return None
+    except ValueError as e:
+        logger.warning(f"JSON parsing error for batch weather {start_date} to {end_date}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error fetching batch weather for {start_date} to {end_date}: {e}")
+        return None
+
+
+def get_historical_weather(lat: float, lon: float, game_date: str, rate_limit_delay: float = 1.0) -> Optional[Dict]:
+    """Get historical weather data from Visual Crossing API with rate limiting."""
+    visual_crossing_key = os.environ.get('VISUAL_CROSSING_API_KEY')
+    if not visual_crossing_key:
+        logger.warning("VISUAL_CROSSING_API_KEY not found in environment")
+        return None
+
+    try:
+        # Rate limiting - wait between requests
+        time.sleep(rate_limit_delay)
+
+        # Visual Crossing Timeline API for historical weather
+        url = f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/{lat},{lon}/{game_date}"
+        params = {
+            'key': visual_crossing_key,
+            'unitGroup': 'us',  # Fahrenheit, mph, inches
+            'include': 'days',  # Only daily data
+            'elements': 'temp,feelslike,humidity,windspeed,winddir,precipprob,conditions,visibility,pressure'
+        }
+
+        response = requests.get(url, params=params, timeout=15)
+
+        # Log response headers for rate limit debugging
+        logger.debug(f"API headers for {game_date}: {dict(response.headers)}")
+
+        if response.status_code == 429:
+            logger.warning(f"Rate limit exceeded for {game_date} at {lat},{lon}")
+            # Check for Retry-After header
+            retry_after = response.headers.get('Retry-After', '60')
+            try:
+                wait_time = int(retry_after)
+            except ValueError:
+                wait_time = 60
+            logger.warning(f"Waiting {wait_time} seconds before retry")
+            time.sleep(wait_time)
+            return None
+        elif response.status_code == 400 and "Maximum daily cost exceeded" in response.text:
+            logger.error("Daily API limit exceeded - stopping weather collection")
+            return None
+        elif response.status_code != 200:
+            logger.warning(f"Visual Crossing API error: {response.status_code} for {game_date} at {lat},{lon}")
+            logger.debug(f"Response body: {response.text[:200]}")
+            if response.status_code == 401:
+                logger.warning("API authentication failed - check VISUAL_CROSSING_API_KEY")
+            return None
+
+        data = response.json()
+        query_cost = data.get('queryCost', 0)
+        logger.debug(f"API response for {game_date}: {query_cost} query cost")
+
+        # Log remaining quota if available in response
+        if 'remainingCost' in data:
+            logger.debug(f"Remaining API cost: {data['remainingCost']}")
+
+        # Extract daily weather data
+        if data.get('days') and len(data['days']) > 0:
+            day_data = data['days'][0]
+
+            return {
+                'temperature': day_data.get('temp'),
+                'feels_like': day_data.get('feelslike'),
+                'humidity': day_data.get('humidity'),
+                'wind_speed': day_data.get('windspeed'),
+                'wind_direction': day_data.get('winddir'),
+                'precipitation_chance': day_data.get('precipprob'),
+                'conditions': day_data.get('conditions', ''),
+                'visibility': day_data.get('visibility'),
+                'pressure': day_data.get('pressure')
+            }
+
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"Network error fetching historical weather for {game_date}: {e}")
+        return None
+    except ValueError as e:
+        logger.warning(f"JSON parsing error for historical weather {game_date}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error fetching historical weather for {game_date}: {e}")
+        return None
+
+def get_weather_forecast(lat: float, lon: float) -> Optional[Dict]:
+    """Get weather forecast from weather.gov API."""
+    try:
+        # First get the grid coordinates
+        points_url = f"https://api.weather.gov/points/{lat:.4f},{lon:.4f}"
+        headers = {'User-Agent': 'NFL-DFS-Weather-Collector (contact@example.com)'}
+
+        response = requests.get(points_url, headers=headers, timeout=10)
+        if response.status_code != 200:
+            logger.warning(f"Weather.gov points API error: {response.status_code}")
+            return None
+
+        points_data = response.json()
+        forecast_url = points_data['properties']['forecast']
+
+        # Get the forecast
+        forecast_response = requests.get(forecast_url, headers=headers, timeout=10)
+        if forecast_response.status_code != 200:
+            logger.warning(f"Weather.gov forecast API error: {forecast_response.status_code}")
+            return None
+
+        forecast_data = forecast_response.json()
+
+        # Extract current conditions (first period)
+        if forecast_data.get('properties', {}).get('periods'):
+            current = forecast_data['properties']['periods'][0]
+
+            return {
+                'temperature': current.get('temperature'),
+                'feels_like': current.get('temperature'),  # weather.gov doesn't provide feels like
+                'humidity': None,  # Not in basic forecast
+                'wind_speed': parse_wind_speed(current.get('windSpeed', '')),
+                'wind_direction': current.get('windDirection', ''),
+                'precipitation_chance': None,  # Would need detailed forecast
+                'conditions': current.get('shortForecast', ''),
+                'visibility': None,  # Not in basic forecast
+                'pressure': None   # Not in basic forecast
+            }
+
+    except Exception as e:
+        logger.warning(f"Error fetching weather forecast: {e}")
+        return None
+
+def parse_wind_speed(wind_str: str) -> Optional[int]:
+    """Parse wind speed from string like '10 mph'."""
+    try:
+        if wind_str and 'mph' in wind_str:
+            return int(wind_str.split()[0])
+    except:
+        pass
+    return None
+
 
 def collect_dst_data(season: int, conn: sqlite3.Connection) -> None:
     """Collect DST data from play-by-play data."""
@@ -1075,7 +1819,11 @@ def validate_data_quality(db_path: str = "data/nfl_dfs.db") -> Dict[str, Any]:
         if latest_game:
             latest_date = datetime.strptime(latest_game, '%Y-%m-%d').date()
             days_old = (datetime.now().date() - latest_date).days
-            if days_old > 14:
+            # Only flag as stale during active season (Sep-Feb)
+            current_month = datetime.now().month
+            in_season = current_month >= 9 or current_month <= 2
+            threshold = 14 if in_season else 365  # More lenient in off-season
+            if days_old > threshold:
                 issues['stale_data_days'] = days_old
 
     except Exception as e:

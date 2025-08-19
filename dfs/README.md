@@ -23,6 +23,9 @@ uv pip install -r requirements.txt
 # Collect NFL data
 uv run python run.py collect --seasons 2023 2024
 
+# Collect weather data for outdoor stadiums (optional, batch-optimized)
+uv run python run.py weather --limit 50 --rate-limit 1.5
+
 # Train models
 uv run python run.py train
 
@@ -75,10 +78,13 @@ simple_dfs/
 # 1. Collect data
 uv run python run.py collect --seasons 2022 2023 2024
 
-# 2. Train models
+# 2. Collect weather data (optional, batch-optimized for enhanced predictions)
+uv run python run.py weather --limit 25
+
+# 3. Train models
 uv run python run.py train --positions QB RB WR TE DEF
 
-# 3. Build optimal lineups (includes predictions automatically)
+# 4. Build optimal lineups (includes predictions automatically)
 uv run python run.py optimize --strategy balanced --count 3
 
 # Or save predictions too
@@ -116,6 +122,41 @@ The system offers different optimization strategies for different contest types:
 -   Good for tournaments when you want to be different
 -   Reduces player values based on projected ownership
 -   Best for: Large tournaments with ownership data
+
+### Weather Data Collection
+
+Weather data can enhance predictions for outdoor stadium games. The weather command uses the Visual Crossing Weather API with intelligent batch processing:
+
+```bash
+# Optimized batch collection (default - MUCH more efficient)
+uv run python run.py weather --limit 25
+
+# Conservative daily collection (stays well within API limits)  
+uv run python run.py weather --limit 50 --rate-limit 2.0
+
+# Disable batch processing (less efficient, one call per game)
+uv run python run.py weather --limit 20 --no-batch
+
+# Unlimited collection (use all available API quota)
+uv run python run.py weather --rate-limit 1.5
+```
+
+**Batch Processing Benefits:**
+- **10x more efficient**: Groups games by stadium and date ranges
+- **Fewer API calls**: 1 call can fetch weather for 30 games at same stadium  
+- **Smart batching**: Processes 30-day chunks per stadium location
+- **Incremental**: Only collects missing weather data, resumes where left off
+
+**API Limits (Visual Crossing Free Tier):**
+- **1000 requests/day** - resets daily
+- **No standard rate limit headers** returned
+- **Batch vs individual requests**: Same API cost (1 query per call)
+
+**System Features:**
+- Automatically detects rate limits and daily quota exceeded
+- Only processes outdoor stadiums (skips domes: ATL, DAL, HOU, etc.)
+- Resumes where it left off if interrupted  
+- Logs progress every 20 successful weather records
 
 ### Advanced Usage
 
