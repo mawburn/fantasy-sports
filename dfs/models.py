@@ -40,13 +40,42 @@ POSITION_RANGES = {
     'DST': 20.0   # Same as DEF
 }
 
-# Set PyTorch for reproducible, CPU-optimized training
+# Set PyTorch for reproducible, Apple Silicon M-series optimized training
+import os
 torch.manual_seed(42)
-torch.set_num_threads(8)
-if torch.cuda.is_available():
-    logger.info("CUDA available but using CPU for compatibility")
+
+# Optimize for Apple Silicon M-series chips
+cpu_count = os.cpu_count()
+torch.set_num_threads(cpu_count)  # Use all available cores (P-cores + E-cores)
+
+# Device selection optimized for Apple Silicon
+def get_optimal_device():
+    """Get the best available device for Apple Silicon M-series."""
+    if torch.backends.mps.is_available():
+        # MPS (Metal Performance Shaders) for M-series GPU acceleration
+        device = torch.device("mps")
+        logger.info(f"Using MPS (Metal) acceleration on Apple Silicon with {cpu_count} CPU threads")
+        return device
+    elif torch.cuda.is_available():
+        device = torch.device("cuda")
+        logger.info("Using CUDA acceleration")
+        return device
+    else:
+        device = torch.device("cpu")
+        logger.info(f"Using CPU with {cpu_count} threads")
+        return device
+
+# Global optimal device
+OPTIMAL_DEVICE = get_optimal_device()
+
+# Set deterministic behavior (MPS supports deterministic operations)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
+
+# Apple Silicon memory optimizations
+if OPTIMAL_DEVICE.type == "mps":
+    # Enable memory efficient attention for M-series
+    torch.backends.mps.enable_fallback = True  # Fallback to CPU for unsupported ops
 
 
 @dataclass
@@ -417,7 +446,7 @@ class BaseNeuralModel(ABC):
     def __init__(self, config: ModelConfig):
         """Initialize neural network base model."""
         self.config = config
-        self.device = torch.device("cpu")
+        self.device = OPTIMAL_DEVICE  # Use Apple Silicon optimized device
         self.network: nn.Module = None
         self.optimizer: optim.Optimizer = None
         self.scheduler: optim.lr_scheduler._LRScheduler = None
@@ -450,20 +479,35 @@ class BaseNeuralModel(ABC):
     def _create_data_loaders(
         self, X_train: np.ndarray, y_train: np.ndarray, X_val: np.ndarray, y_val: np.ndarray
     ) -> Tuple[DataLoader, DataLoader]:
-        """Create PyTorch data loaders for training and validation."""
-        train_X = torch.tensor(X_train, dtype=torch.float32, device=self.device)
-        train_y = torch.tensor(y_train, dtype=torch.float32, device=self.device)
-        val_X = torch.tensor(X_val, dtype=torch.float32, device=self.device)
-        val_y = torch.tensor(y_val, dtype=torch.float32, device=self.device)
+        """Create PyTorch data loaders optimized for Apple Silicon."""
+        # Create tensors on CPU first, then move to device for better memory management
+        train_X = torch.tensor(X_train, dtype=torch.float32).to(self.device, non_blocking=True)
+        train_y = torch.tensor(y_train, dtype=torch.float32).to(self.device, non_blocking=True)
+        val_X = torch.tensor(X_val, dtype=torch.float32).to(self.device, non_blocking=True)
+        val_y = torch.tensor(y_val, dtype=torch.float32).to(self.device, non_blocking=True)
 
         train_dataset = TensorDataset(train_X, train_y)
         val_dataset = TensorDataset(val_X, val_y)
 
+        # Optimize DataLoader settings for Apple Silicon
+        num_workers = 0 if self.device.type == "mps" else min(4, os.cpu_count() // 2)
+        pin_memory = self.device.type == "cuda"  # Only useful for CUDA
+
         train_loader = DataLoader(
-            train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=0
+            train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=False  # Better for MPS
         )
         val_loader = DataLoader(
-            val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=0
+            val_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=False
         )
 
         return train_loader, val_loader
@@ -668,16 +712,19 @@ class BaseNeuralModel(ABC):
 
 
 class QBNetwork(nn.Module):
-    """Neural network architecture for quarterback predictions."""
+    """Neural network architecture for quarterback predictions, optimized for Apple Silicon."""
 
     def __init__(self, input_size: int):
         super().__init__()
 
+        # Use LayerNorm instead of BatchNorm for better MPS performance
         self.shared_layers = nn.Sequential(
             nn.Linear(input_size, 128),
+            nn.LayerNorm(128),  # Better than BatchNorm on MPS
             nn.ReLU(),
             nn.Dropout(0.2),
             nn.Linear(128, 64),
+            nn.LayerNorm(64),
             nn.ReLU(),
             nn.Dropout(0.15),
         )
@@ -716,12 +763,14 @@ class RBNetwork(nn.Module):
     def __init__(self, input_size: int):
         super().__init__()
 
+        # Optimized for Apple Silicon MPS
         self.feature_layers = nn.Sequential(
             nn.Linear(input_size, 96),
+            nn.LayerNorm(96),  # LayerNorm works better than BatchNorm on MPS
             nn.ReLU(),
-            nn.BatchNorm1d(96),
             nn.Dropout(0.25),
             nn.Linear(96, 48),
+            nn.LayerNorm(48),
             nn.ReLU(),
             nn.Dropout(0.2),
         )
@@ -790,15 +839,18 @@ class TENetwork(nn.Module):
     def __init__(self, input_size: int):
         super().__init__()
 
+        # Optimized for Apple Silicon MPS
         self.feature_layers = nn.Sequential(
             nn.Linear(input_size, 80),
+            nn.LayerNorm(80),  # LayerNorm works better than BatchNorm on MPS
             nn.ReLU(),
-            nn.BatchNorm1d(80),
             nn.Dropout(0.2),
             nn.Linear(80, 40),
+            nn.LayerNorm(40),
             nn.ReLU(),
             nn.Dropout(0.15),
             nn.Linear(40, 20),
+            nn.LayerNorm(20),
             nn.ReLU(),
             nn.Dropout(0.1),
         )
