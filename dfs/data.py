@@ -1413,6 +1413,237 @@ def find_player_by_name_and_team(name: str, team_abbr: str, conn: sqlite3.Connec
     result = cursor.fetchone()
     return result[0] if result else None
 
+def get_defensive_matchup_features(
+    team_abbr: str,
+    opponent_abbr: str,
+    season: int,
+    week: int,
+    lookback_weeks: int = 4,
+    db_path: str = "data/nfl_dfs.db"
+) -> Dict[str, float]:
+    """Extract defensive matchup features from play-by-play data."""
+    conn = get_db_connection(db_path)
+    features = {}
+
+    try:
+        # Get defensive performance vs specific opponent types
+        def_vs_qb = conn.execute(
+            """SELECT
+                AVG(CASE WHEN sack = 1 THEN 1.0 ELSE 0.0 END) as sack_rate,
+                AVG(CASE WHEN interception = 1 THEN 1.0 ELSE 0.0 END) as int_rate,
+                AVG(CASE WHEN pass_attempt = 1 AND complete_pass = 0 AND interception = 0 THEN 1.0 ELSE 0.0 END) as pressure_rate
+               FROM play_by_play
+               WHERE defteam = ? AND season = ? AND week < ?
+               AND pass_attempt = 1
+               GROUP BY defteam""",
+            (team_abbr, season, week)
+        ).fetchone()
+
+        if def_vs_qb:
+            features.update({
+                'def_sack_rate': def_vs_qb[0] or 0,
+                'def_int_rate': def_vs_qb[1] or 0,
+                'def_pressure_rate': def_vs_qb[2] or 0
+            })
+
+        # Run defense efficiency
+        def_vs_run = conn.execute(
+            """SELECT
+                AVG(yards_gained) as avg_yards_allowed,
+                AVG(CASE WHEN yards_gained <= 3 THEN 1.0 ELSE 0.0 END) as stuff_rate,
+                AVG(CASE WHEN touchdown = 1 THEN 1.0 ELSE 0.0 END) as td_rate
+               FROM play_by_play
+               WHERE defteam = ? AND season = ? AND week < ?
+               AND rush_attempt = 1""",
+            (team_abbr, season, week)
+        ).fetchone()
+
+        if def_vs_run:
+            features.update({
+                'def_run_yards_allowed': def_vs_run[0] or 0,
+                'def_stuff_rate': def_vs_run[1] or 0,
+                'def_rush_td_rate': def_vs_run[2] or 0
+            })
+
+        # Red zone defense
+        red_zone_def = conn.execute(
+            """SELECT
+                AVG(CASE WHEN touchdown = 1 THEN 1.0 ELSE 0.0 END) as rz_td_rate,
+                COUNT(*) as rz_plays
+               FROM play_by_play
+               WHERE defteam = ? AND season = ? AND week < ?
+               AND yardline_100 <= 20 AND yardline_100 > 0""",
+            (team_abbr, season, week)
+        ).fetchone()
+
+        if red_zone_def:
+            features.update({
+                'def_rz_td_rate': red_zone_def[0] or 0,
+                'def_rz_plays': red_zone_def[1] or 0
+            })
+
+        # 3rd down defense
+        third_down_def = conn.execute(
+            """SELECT
+                AVG(CASE WHEN yards_gained >= ydstogo THEN 1.0 ELSE 0.0 END) as third_down_conv_rate
+               FROM play_by_play
+               WHERE defteam = ? AND season = ? AND week < ?
+               AND down = 3""",
+            (team_abbr, season, week)
+        ).fetchone()
+
+        if third_down_def:
+            features['def_3rd_down_rate'] = third_down_def[0] or 0
+
+        # Opponent offensive tendencies vs this defense
+        opp_vs_def = conn.execute(
+            """SELECT
+                AVG(CASE WHEN pass_attempt = 1 THEN 1.0 ELSE 0.0 END) as pass_rate,
+                AVG(CASE WHEN rush_attempt = 1 THEN 1.0 ELSE 0.0 END) as rush_rate,
+                AVG(yards_gained) as avg_yards_gained
+               FROM play_by_play
+               WHERE posteam = ? AND defteam = ? AND season = ?
+               AND (pass_attempt = 1 OR rush_attempt = 1)""",
+            (opponent_abbr, team_abbr, season)
+        ).fetchone()
+
+        if opp_vs_def:
+            features.update({
+                'opp_pass_rate_vs_def': opp_vs_def[0] or 0.5,
+                'opp_rush_rate_vs_def': opp_vs_def[1] or 0.5,
+                'opp_avg_yards_vs_def': opp_vs_def[2] or 0
+            })
+
+    except Exception as e:
+        logger.error(f"Error extracting defensive matchup features: {e}")
+    finally:
+        conn.close()
+
+    return features
+
+def get_player_vs_defense_features(
+    player_id: int,
+    team_abbr: str,
+    opponent_abbr: str,
+    season: int,
+    week: int,
+    position: str,
+    lookback_weeks: int = 4,
+    db_path: str = "data/nfl_dfs.db"
+) -> Dict[str, float]:
+    """Extract player-specific PbP features vs this defense."""
+    conn = get_db_connection(db_path)
+    features = {}
+
+    try:
+        # Get player name for PbP matching (if available in description)
+        player_name = conn.execute(
+            "SELECT display_name FROM players WHERE id = ?",
+            (player_id,)
+        ).fetchone()
+
+        if not player_name:
+            return features
+
+        player_name = player_name[0]
+
+        if position == 'QB':
+            # QB pressure/sack rate vs this specific defense
+            qb_vs_def = conn.execute(
+                """SELECT
+                    AVG(CASE WHEN sack = 1 THEN 1.0 ELSE 0.0 END) as sack_rate_vs_def,
+                    AVG(CASE WHEN interception = 1 THEN 1.0 ELSE 0.0 END) as int_rate_vs_def,
+                    AVG(yards_gained) as avg_yards_vs_def,
+                    COUNT(*) as plays_vs_def
+                   FROM play_by_play
+                   WHERE posteam = ? AND defteam = ? AND season >= ?
+                   AND pass_attempt = 1
+                   AND (description LIKE ? OR description LIKE ?)""",
+                (team_abbr, opponent_abbr, season - 2, f"%{player_name}%", f"%{player_name.split()[0]}%")
+            ).fetchone()
+
+            if qb_vs_def and qb_vs_def[3] > 0:  # Has plays vs this defense
+                features.update({
+                    'qb_sack_rate_vs_def': qb_vs_def[0] or 0,
+                    'qb_int_rate_vs_def': qb_vs_def[1] or 0,
+                    'qb_avg_yards_vs_def': qb_vs_def[2] or 0,
+                    'qb_experience_vs_def': min(qb_vs_def[3] / 10.0, 1.0)  # Normalize experience
+                })
+
+        elif position == 'RB':
+            # RB performance vs this specific defense
+            rb_vs_def = conn.execute(
+                """SELECT
+                    AVG(yards_gained) as avg_rush_yards_vs_def,
+                    AVG(CASE WHEN touchdown = 1 THEN 1.0 ELSE 0.0 END) as td_rate_vs_def,
+                    AVG(CASE WHEN yards_gained <= 2 THEN 1.0 ELSE 0.0 END) as stuff_rate_vs_def,
+                    COUNT(*) as carries_vs_def
+                   FROM play_by_play
+                   WHERE posteam = ? AND defteam = ? AND season >= ?
+                   AND rush_attempt = 1
+                   AND (description LIKE ? OR description LIKE ?)""",
+                (team_abbr, opponent_abbr, season - 2, f"%{player_name}%", f"%{player_name.split()[0]}%")
+            ).fetchone()
+
+            if rb_vs_def and rb_vs_def[3] > 0:
+                features.update({
+                    'rb_avg_yards_vs_def': rb_vs_def[0] or 0,
+                    'rb_td_rate_vs_def': rb_vs_def[1] or 0,
+                    'rb_stuff_rate_vs_def': rb_vs_def[2] or 0,
+                    'rb_carries_vs_def': min(rb_vs_def[3] / 20.0, 1.0)
+                })
+
+        elif position in ['WR', 'TE']:
+            # Receiver performance vs this defense
+            rec_vs_def = conn.execute(
+                """SELECT
+                    COUNT(CASE WHEN complete_pass = 1 THEN 1 END) as catches_vs_def,
+                    COUNT(CASE WHEN pass_attempt = 1 THEN 1 END) as targets_vs_def,
+                    AVG(yards_gained) as avg_rec_yards_vs_def,
+                    AVG(CASE WHEN touchdown = 1 THEN 1.0 ELSE 0.0 END) as rec_td_rate_vs_def
+                   FROM play_by_play
+                   WHERE posteam = ? AND defteam = ? AND season >= ?
+                   AND pass_attempt = 1
+                   AND (description LIKE ? OR description LIKE ?)""",
+                (team_abbr, opponent_abbr, season - 2, f"%{player_name}%", f"%{player_name.split()[0]}%")
+            ).fetchone()
+
+            if rec_vs_def and rec_vs_def[1] > 0:  # Has targets vs this defense
+                catch_rate = rec_vs_def[0] / rec_vs_def[1] if rec_vs_def[1] > 0 else 0
+                features.update({
+                    'rec_catch_rate_vs_def': catch_rate,
+                    'rec_avg_yards_vs_def': rec_vs_def[2] or 0,
+                    'rec_td_rate_vs_def': rec_vs_def[3] or 0,
+                    'rec_targets_vs_def': min(rec_vs_def[1] / 15.0, 1.0)
+                })
+
+        # Get defensive rank vs this position type
+        def_rank_vs_pos = conn.execute(
+            """SELECT
+                RANK() OVER (ORDER BY AVG(yards_gained) ASC) as def_rank_yards,
+                RANK() OVER (ORDER BY AVG(CASE WHEN touchdown = 1 THEN 1.0 ELSE 0.0 END) ASC) as def_rank_tds
+               FROM play_by_play
+               WHERE season = ? AND week < ?
+               AND ((? = 'QB' AND pass_attempt = 1) OR
+                    (? = 'RB' AND rush_attempt = 1) OR
+                    (? IN ('WR', 'TE') AND pass_attempt = 1 AND complete_pass = 1))
+               GROUP BY defteam""",
+            (season, week, position, position, position)
+        ).fetchone()
+
+        if def_rank_vs_pos:
+            features.update({
+                f'def_rank_vs_{position.lower()}_yards': def_rank_vs_pos[0] or 16,
+                f'def_rank_vs_{position.lower()}_tds': def_rank_vs_pos[1] or 16
+            })
+
+    except Exception as e:
+        logger.error(f"Error extracting player vs defense features: {e}")
+    finally:
+        conn.close()
+
+    return features
+
 def get_player_features(
     player_id: int,
     game_id: int,
@@ -1438,16 +1669,25 @@ def get_player_features(
 
         position, team_id, team_abbr = player_info
 
-        # Get game info
+        # Get game info and opponent
         game_info = conn.execute(
-            "SELECT game_date, season, week FROM games WHERE id = ?",
+            """SELECT g.game_date, g.season, g.week, g.home_team_id, g.away_team_id,
+                      ht.team_abbr as home_abbr, at.team_abbr as away_abbr
+               FROM games g
+               JOIN teams ht ON g.home_team_id = ht.id
+               JOIN teams at ON g.away_team_id = at.id
+               WHERE g.id = ?""",
             (game_id,)
         ).fetchone()
 
         if not game_info:
             return features
 
-        game_date, season, week = game_info
+        game_date, season, week, home_team_id, away_team_id, home_abbr, away_abbr = game_info
+
+        # Determine opponent
+        is_home = team_id == home_team_id
+        opponent_abbr = away_abbr if is_home else home_abbr
 
         # Parse game date
         game_date = datetime.strptime(game_date, '%Y-%m-%d').date()
@@ -1521,8 +1761,20 @@ def get_player_features(
                 features['avg_receptions'] = rec_stats[0] or 0
                 features['avg_rec_tds'] = rec_stats[1] or 0
 
+        # Add defensive matchup features from PbP data
+        defensive_features = get_defensive_matchup_features(
+            opponent_abbr, team_abbr, season, week, lookback_weeks, db_path
+        )
+        features.update(defensive_features)
+
+        # Add situational PbP features for the player vs this defense
+        pbp_matchup = get_player_vs_defense_features(
+            player_id, team_abbr, opponent_abbr, season, week, position, lookback_weeks, db_path
+        )
+        features.update(pbp_matchup)
+
         # Add team and opponent features
-        features['home_game'] = 1 if is_home_game(team_id, game_id, conn) else 0
+        features['home_game'] = 1 if is_home else 0
         features['week'] = week
         features['season'] = season
 
@@ -1680,6 +1932,20 @@ def get_training_data(
 
         for player_id, game_id, fantasy_points in rows:
             features = get_player_features(player_id, game_id, db_path=db_path)
+
+            # Add correlation features from PbP data if available
+            try:
+                # Import here to avoid circular imports
+                import importlib
+                models_module = importlib.import_module('models')
+                correlation_extractor = models_module.CorrelationFeatureExtractor(db_path)
+                correlation_features = correlation_extractor.extract_correlation_features(
+                    player_id, game_id, position
+                )
+                features.update(correlation_features)
+            except (ImportError, ModuleNotFoundError):
+                # If models module not available, continue without correlation features
+                pass
 
             if features and fantasy_points is not None:
                 if feature_names is None:

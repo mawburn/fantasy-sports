@@ -50,25 +50,25 @@ simple_dfs/
 
 ### Neural Networks (models.py)
 
--   Position-specific PyTorch models (QB, RB, WR, TE, DEF)
--   Complex correlation feature extraction
--   Multi-position correlated model for advanced stacking
--   CPU-optimized training with early stopping
+- Position-specific PyTorch models (QB, RB, WR, TE, DEF)
+- Complex correlation feature extraction
+- Multi-position correlated model for advanced stacking
+- CPU-optimized training with early stopping
 
 ### Optimization (optimize.py)
 
--   Linear programming with PuLP (guaranteed optimal)
--   QB-WR/TE stacking logic
--   RB-DEF game script correlations
--   Multiple strategies: cash, tournament, contrarian
--   Constraint handling and validation
+- Linear programming with PuLP (guaranteed optimal)
+- QB-WR/TE stacking logic
+- RB-DEF game script correlations
+- Multiple strategies: cash, tournament, contrarian
+- Constraint handling and validation
 
 ### Data Pipeline (data.py)
 
--   Direct SQLite operations (no ORM overhead)
--   nfl_data_py integration for historical data
--   DraftKings CSV parsing
--   Feature engineering with correlation extraction
+- Direct SQLite operations (no ORM overhead)
+- nfl_data_py integration for historical data
+- DraftKings CSV parsing
+- Feature engineering with correlation extraction
 
 ## Usage Examples
 
@@ -97,31 +97,31 @@ The system offers different optimization strategies for different contest types:
 
 #### **Balanced** (Default)
 
--   Uses raw projected points for optimization
--   Good for general purpose lineups
--   No specific adjustments for ceiling/floor or ownership
--   Best for: Mixed contests, testing, general use
+- Uses raw projected points for optimization
+- Good for general purpose lineups
+- No specific adjustments for ceiling/floor or ownership
+- Best for: Mixed contests, testing, general use
 
 #### **Tournament** (GPP/Large Field)
 
--   Emphasizes high ceiling players over consistent scorers
--   Automatically enables QB-WR stacking for correlation
--   Targets players with 25+ point upside potential
--   Best for: Large tournaments where you need to differentiate
+- Emphasizes high ceiling players over consistent scorers
+- Automatically enables QB-WR stacking for correlation
+- Targets players with 25+ point upside potential
+- Best for: Large tournaments where you need to differentiate
 
 #### **Cash** (Head-to-Head/50-50s)
 
--   Prioritizes floor and consistency over ceiling
--   Uses conservative 80% of projection for safety
--   Avoids boom/bust players
--   Best for: Cash games where you need to beat ~50% of field
+- Prioritizes floor and consistency over ceiling
+- Uses conservative 80% of projection for safety
+- Avoids boom/bust players
+- Best for: Cash games where you need to beat ~50% of field
 
 #### **Contrarian**
 
--   Penalizes high-ownership players to find unique lineups
--   Good for tournaments when you want to be different
--   Reduces player values based on projected ownership
--   Best for: Large tournaments with ownership data
+- Penalizes high-ownership players to find unique lineups
+- Good for tournaments when you want to be different
+- Reduces player values based on projected ownership
+- Best for: Large tournaments with ownership data
 
 ### Weather Data Collection
 
@@ -131,7 +131,7 @@ Weather data can enhance predictions for outdoor stadium games. The weather comm
 # Optimized batch collection (default - MUCH more efficient)
 uv run python run.py weather --limit 25
 
-# Conservative daily collection (stays well within API limits)  
+# Conservative daily collection (stays well within API limits)
 uv run python run.py weather --limit 50 --rate-limit 2.0
 
 # Disable batch processing (less efficient, one call per game)
@@ -142,20 +142,23 @@ uv run python run.py weather --rate-limit 1.5
 ```
 
 **Batch Processing Benefits:**
+
 - **10x more efficient**: Groups games by stadium and date ranges
-- **Fewer API calls**: 1 call can fetch weather for 30 games at same stadium  
+- **Fewer API calls**: 1 call can fetch weather for 30 games at same stadium
 - **Smart batching**: Processes 30-day chunks per stadium location
 - **Incremental**: Only collects missing weather data, resumes where left off
 
 **API Limits (Visual Crossing Free Tier):**
+
 - **1000 requests/day** - resets daily
 - **No standard rate limit headers** returned
 - **Batch vs individual requests**: Same API cost (1 query per call)
 
 **System Features:**
+
 - Automatically detects rate limits and daily quota exceeded
 - Only processes outdoor stadiums (skips domes: ATL, DAL, HOU, etc.)
-- Resumes where it left off if interrupted  
+- Resumes where it left off if interrupted
 - Logs progress every 20 successful weather records
 
 ### Advanced Usage
@@ -184,48 +187,24 @@ uv run python run.py optimize \
   --save-predictions predictions.csv
 ```
 
-## What Was Removed
-
-This simplified version removes all the architectural complexity:
-
--   ❌ FastAPI web interface
--   ❌ SQLAlchemy ORM abstractions
--   ❌ Complex CLI framework (Click)
--   ❌ Pydantic validation layers
--   ❌ Multiple database abstractions
--   ❌ Over-engineered configuration system
--   ❌ Abstract base classes and factories
--   ❌ Complex test infrastructure
-
-## What Was Kept
-
-The core value components remain intact:
-
--   ✅ PyTorch neural networks with domain expertise
--   ✅ Complex correlation modeling between players
--   ✅ Linear programming optimization with PuLP
--   ✅ Stacking algorithms and constraint logic
--   ✅ Position-specific architectures and scoring
--   ✅ All fantasy football domain knowledge
-
 ## Performance
 
 The simplified system:
 
--   **Faster startup**: No ORM initialization overhead
--   **Direct operations**: SQLite queries without abstraction layers
--   **Smaller memory footprint**: Fewer dependencies and objects
--   **Easier debugging**: Simple call stacks and clear data flow
--   **Faster iteration**: No complex build/test infrastructure
+- **Faster startup**: No ORM initialization overhead
+- **Direct operations**: SQLite queries without abstraction layers
+- **Smaller memory footprint**: Fewer dependencies and objects
+- **Easier debugging**: Simple call stacks and clear data flow
+- **Faster iteration**: No complex build/test infrastructure
 
 ## Dependencies
 
 Only 5 essential packages:
 
--   `numpy` + `pandas` for data manipulation
--   `torch` for neural networks
--   `pulp` for optimization
--   `nfl-data-py` for data collection
+- `numpy` + `pandas` for data manipulation
+- `torch` for neural networks
+- `pulp` for optimization
+- `nfl-data-py` for data collection
 
 Total simplified from 20+ complex dependencies to 5 focused ones.
 

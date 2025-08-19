@@ -250,6 +250,149 @@ class CorrelationFeatureExtractor:
 
         return features
 
+    def extract_wr_te_correlation_features(
+        self,
+        player_id: int,
+        game_id: int,
+        lookback_weeks: int = 4
+    ) -> Dict[str, float]:
+        """Extract WR/TE-specific correlation features including defensive matchups."""
+        features = {}
+
+        with self._get_connection() as conn:
+            # Get game and team info
+            game_query = """
+                SELECT g.game_date, g.season, g.week, g.home_team_id, g.away_team_id,
+                       ht.team_abbr as home_abbr, at.team_abbr as away_abbr
+                FROM games g
+                JOIN teams ht ON g.home_team_id = ht.id
+                JOIN teams at ON g.away_team_id = at.id
+                WHERE g.id = ?
+            """
+            game_result = conn.execute(game_query, (game_id,)).fetchone()
+            if not game_result:
+                return features
+
+            game_date, season, week, home_team_id, away_team_id, home_abbr, away_abbr = game_result
+
+            # Get player team
+            team_query = "SELECT team_id FROM players WHERE id = ?"
+            team_result = conn.execute(team_query, (player_id,)).fetchone()
+            if not team_result:
+                return features
+            team_id = team_result[0]
+
+            # Determine opponent
+            is_home = team_id == home_team_id
+            opponent_abbr = away_abbr if is_home else home_abbr
+            team_abbr = home_abbr if is_home else away_abbr
+
+            if isinstance(game_date, str):
+                try:
+                    game_date = datetime.strptime(game_date[:10], '%Y-%m-%d').date()
+                except ValueError:
+                    return {}
+
+            start_date = game_date - timedelta(weeks=lookback_weeks)
+
+            # Target competition analysis
+            target_comp_query = """
+                SELECT
+                    COUNT(DISTINCT ps.player_id) as num_receivers,
+                    AVG(ps.targets) as avg_team_targets,
+                    MAX(ps.targets) as max_individual_targets,
+                    AVG(CASE WHEN p.position = 'WR' THEN ps.targets ELSE 0 END) as wr_targets,
+                    AVG(CASE WHEN p.position = 'TE' THEN ps.targets ELSE 0 END) as te_targets
+                FROM player_stats ps
+                JOIN players p ON ps.player_id = p.id
+                JOIN games g ON ps.game_id = g.id
+                WHERE p.team_id = ? AND p.position IN ('WR', 'TE')
+                AND g.game_date >= ? AND g.game_date < ?
+                AND ps.targets > 0
+            """
+            target_comp_result = conn.execute(target_comp_query, (team_id, start_date, game_date)).fetchone()
+
+            if target_comp_result:
+                features.update({
+                    'receiver_competition': target_comp_result[0] or 0,
+                    'target_concentration': (target_comp_result[2] or 0) / max(target_comp_result[1] or 1, 1),
+                    'wr_target_dominance': (target_comp_result[3] or 0) / max(target_comp_result[1] or 1, 1),
+                    'te_target_share': (target_comp_result[4] or 0) / max(target_comp_result[1] or 1, 1),
+                })
+
+            # Defense vs receiver type using PbP data
+            def_vs_receivers = conn.execute(
+                """SELECT
+                    AVG(CASE WHEN complete_pass = 1 THEN yards_gained ELSE 0 END) as avg_completion_yards,
+                    AVG(CASE WHEN complete_pass = 1 THEN 1.0 ELSE 0.0 END) as completion_rate,
+                    AVG(CASE WHEN touchdown = 1 THEN 1.0 ELSE 0.0 END) as td_rate,
+                    COUNT(*) as targets_allowed
+                   FROM play_by_play
+                   WHERE defteam = ? AND season = ? AND week < ?
+                   AND pass_attempt = 1""",
+                (opponent_abbr, season, week)
+            ).fetchone()
+
+            if def_vs_receivers:
+                features.update({
+                    'def_completion_yards_allowed': def_vs_receivers[0] or 0,
+                    'def_completion_rate_allowed': def_vs_receivers[1] or 0,
+                    'def_pass_td_rate_allowed': def_vs_receivers[2] or 0,
+                })
+
+        return features
+
+    def extract_def_correlation_features(
+        self,
+        team_abbr: str,
+        opponent_abbr: str,
+        season: int,
+        week: int,
+        lookback_weeks: int = 4
+    ) -> Dict[str, float]:
+        """Extract defense-specific correlation features from PbP data."""
+        features = {}
+
+        with self._get_connection() as conn:
+            # Opponent offensive tendencies
+            opp_tendencies = conn.execute(
+                """SELECT
+                    AVG(CASE WHEN pass_attempt = 1 THEN 1.0 ELSE 0.0 END) as pass_rate,
+                    AVG(CASE WHEN yardline_100 <= 20 THEN 1.0 ELSE 0.0 END) as rz_play_rate,
+                    AVG(CASE WHEN down = 3 THEN 1.0 ELSE 0.0 END) as third_down_rate,
+                    AVG(yards_gained) as avg_play_yards
+                   FROM play_by_play
+                   WHERE posteam = ? AND season = ? AND week < ?
+                   AND (pass_attempt = 1 OR rush_attempt = 1)""",
+                (opponent_abbr, season, week)
+            ).fetchone()
+
+            if opp_tendencies:
+                features.update({
+                    'opp_pass_tendency': opp_tendencies[0] or 0.5,
+                    'opp_rz_frequency': opp_tendencies[1] or 0,
+                    'opp_third_down_freq': opp_tendencies[2] or 0,
+                    'opp_avg_play_efficiency': opp_tendencies[3] or 0,
+                })
+
+            # Defense game script correlation
+            game_script = conn.execute(
+                """SELECT
+                    AVG(CASE WHEN quarter_seconds_remaining < 900 THEN 1.0 ELSE 0.0 END) as late_game_rate,
+                    AVG(CASE WHEN down >= 3 THEN 1.0 ELSE 0.0 END) as pressure_down_rate
+                   FROM play_by_play
+                   WHERE defteam = ? AND season = ? AND week < ?""",
+                (team_abbr, season, week)
+            ).fetchone()
+
+            if game_script:
+                features.update({
+                    'def_late_game_exposure': game_script[0] or 0,
+                    'def_pressure_situations': game_script[1] or 0,
+                })
+
+        return features
+
     def extract_correlation_features(
         self,
         player_id: int,
@@ -261,8 +404,10 @@ class CorrelationFeatureExtractor:
             return self.extract_qb_correlation_features(player_id, game_id)
         elif position == 'RB':
             return self.extract_rb_correlation_features(player_id, game_id)
+        elif position in ['WR', 'TE']:
+            return self.extract_wr_te_correlation_features(player_id, game_id)
         else:
-            # For WR/TE/DEF, return basic features
+            # For DEF, return basic features
             return {}
 
 
