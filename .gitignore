@@ -3,140 +3,42 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
-*.egg
 *.egg-info/
 dist/
 build/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-pip-wheel-metadata/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
 
 # Virtual Environment
 .venv/
 venv/
-ENV/
 env/
-.Python
-
-# UV package manager
-uv.lock
-.uv/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.DS_Store
-
-# Jupyter Notebook
-.ipynb_checkpoints
-*.ipynb_checkpoints/
 
 # Environment variables
 .env
 .env.local
-.env.*.local
+
+# IDE & OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
 
 # Logs
 *.log
-/logs/  # Only ignore top-level logs directory
-# data/logs/  # Commented out to track logs directory structure
 
 # Cache
 .cache/
-# data/cache/  # Commented out to track cache data in repo
-__pycache__/
 .pytest_cache/
-.ruff_cache/
 .mypy_cache/
 
-# Models
-models/registry/
-models/production/
-# *.pkl  # Commented out to allow tracking trained model files
-*.joblib
-*.h5
-*.pt
-*.onnx
-
-# ML
-mlruns/
-data/mlflow/
-*.tfevents.*
-
-# Coverage
-htmlcov/
-.coverage
-.coverage.*
-coverage.xml
-*.cover
-.hypothesis/
-coverage_html_report/
-
-# Testing
-.tox/
-.nox/
-.pytest_cache/
-
-# Documentation
-docs/_build/
-site/
-
-# Backups
-backups/
-*.backup
-*.bak
-
-# Data files - keeping data in repo, only ignore large binary formats
-# Comment out these lines to track data files in the repo
-# data/nfl_raw/
-# data/draftkings/
-# data/tensors/
-# *.csv
-# *.parquet
-# *.arrow
-# *.feather
+# Generated lineups (keep directory structure)
+dfs/lineups/*.csv
 
 # Temporary files
 tmp/
 temp/
 *.tmp
 
-# OS files
-Thumbs.db
-.DS_Store
-.AppleDouble
-.LSOverride
-
 # Security
 *.pem
 *.key
-*.cert
-*.crt
-
-# Package files
-*.tar.gz
-*.zip
-
-# Profiling
-*.prof
-*.lprof
-
-# Miscellaneous
-.python-version
-.env.production
-ruff_errors.json
-!.pth

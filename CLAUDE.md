@@ -2,141 +2,118 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Development Commands
+## Project Overview
 
-### Package Management (UV)
+This is a simplified NFL Daily Fantasy Sports (DFS) optimization system for DraftKings contests. The project was recently streamlined from a complex multi-module architecture into a focused `dfs/` directory containing the core functionality.
 
-The project uses UV, a fast Rust-based Python package manager:
+## Architecture
 
-- `uv venv --python 3.11` - Create virtual environment
-- `uv pip install -r requirements-dev.txt` - Install all dependencies including dev tools
-- `uv pip sync requirements.txt` - Install production dependencies only
-- `uv run <command>` - Run commands in the virtual environment
+The system has four main components consolidated into single-file modules:
 
-### Essential Commands
+- **`dfs/data.py`**: Data collection, SQLite database operations, feature engineering
+- **`dfs/models.py`**: PyTorch neural networks for player predictions (QB, RB, WR, TE, DST)
+- **`dfs/optimize.py`**: Lineup optimization using linear programming (PuLP)
+- **`dfs/run.py`**: CLI interface with commands: collect, train, predict, optimize
 
-- `make setup` - Complete development setup (installs deps, hooks, creates .env)
-- `make run` - Start development server (FastAPI on localhost:8000)
-- `make format` - Format code with Ruff, Black, isort, mdformat
-- `make lint` - Run all linters (Ruff, mypy, bandit, etc.)
-- `make test` - Run pytest test suite
-- `make test-cov` - Run tests with coverage reports
-- `make clean` - Remove build artifacts and cache
+## Common Development Commands
 
-### Database Commands
+### Setup and Installation
 
-- `make db-init` - Initialize SQLite database
-- `make db-migrate` - Run Alembic migrations
-- `uv run python scripts/init_database.py` - Manual database initialization
+```bash
+cd dfs/
+pip install -r requirements.txt
+```
 
-### CLI Tools
+### Core Workflow Commands
 
-The project includes CLI commands for data collection and ML training. See README.md for complete command documentation.
+```bash
+# 1. Collect NFL data and DraftKings salaries
+python run.py collect --seasons 2022 2023 --csv data/DKSalaries.csv
 
-### Code Quality
+# 2. Train position-specific neural network models
+python run.py train
 
-- **Ruff**: Primary linter and formatter (fastest, Rust-based)
-- **Black**: Secondary Python formatter
-- **mypy**: Type checking with strict configuration
-- **pytest**: Testing with coverage reports (80% minimum)
-- **pre-commit**: Removed - no longer using automated hooks
+# 3. Generate player predictions for current contest
+python run.py predict --contest-id <contest_id> --output predictions.csv
 
-Run `make help` to see all available commands.
+# 4. Build optimal lineups
+python run.py optimize --strategy balanced --count 5 --output-dir lineups/
+```
 
-## Architecture Overview
+### Development and Testing
 
-This is an NFL Daily Fantasy Sports (DFS) prediction and optimization system built for personal use with DraftKings contests.
+```bash
+# Run the CLI help
+python run.py --help
 
-### Core Components
+# Test optimization functions
+python optimize.py
 
-**Data Layer (`src/data/`)**:
+# Check data quality after collection
+python -c "from data import validate_data_quality; print(validate_data_quality('data/nfl_dfs.db'))"
+```
 
-- `collection/` - NFL data collection (nfl_data_py) and DraftKings CSV parsing
-- `processing/` - Feature engineering and data transformation
-- `validation/` - Data quality checks and validation
+## Key Technical Details
 
-**Machine Learning (`src/ml/`)**:
+### Database Structure
 
-- `models/` - Position-specific neural network models (QB, RB, WR, TE, DEF)
-- `training/` - Neural network training pipelines with cross-validation
-- `registry.py` - Model versioning and deployment system
+- SQLite database at `dfs/data/nfl_dfs.db`
+- Core tables: `games`, `teams`, `players`, `player_stats`, `draftkings_contests`
+- Schema defined in `data.py` `DB_SCHEMA` dictionary
 
-**Optimization (`src/optimization/`)**:
+### Machine Learning Pipeline
 
-- `lineup_builder.py` - Linear programming-based lineup optimization using PuLP
-- Contest-specific strategies (GPP vs Cash games)
-- Stacking logic and exposure controls
+- Position-specific PyTorch neural networks (QBNetwork, RBNetwork, WRNetwork, TENetwork, DEFNetwork)
+- Features include recent performance, opponent strength, correlation data
+- Models saved as `.pth` files in `dfs/models/` directory
+- Training uses 80/20 train/validation split with early stopping
 
-**API (`src/api/`)**:
+### Optimization Strategy
 
-- FastAPI-based REST API with automatic OpenAPI docs
-- `routers/data.py` - Data access endpoints and DraftKings CSV upload
-- `routers/predictions.py` - ML prediction endpoints
-- DraftKings salary updates: `POST /api/data/upload/draftkings` (web upload)
+- Linear programming with PuLP for guaranteed optimal solutions
+- Supports multiple strategies: cash games (floor-focused), tournaments (ceiling-focused), contrarian (low-ownership)
+- Stacking logic for QB-WR correlations and RB-DEF game script correlations
+- Constraint handling: salary cap ($50K), positions (1QB, 2RB, 3WR, 1TE, 1FLEX, 1DST)
 
-**Database (`src/database/`)**:
+### Configuration
 
-- SQLite with SQLAlchemy ORM
-- Comprehensive data models for NFL stats, DFS contests, and ML metadata
+- Environment variables in `.env` file (copy from `.env.example`)
+- Model hyperparameters defined in respective model classes
+- DraftKings scoring rules documented in `DK-NFLClassic-Rules.md`
 
-### Key Design Patterns
+## Important File Paths
 
-**Position-Specific Modeling**: Each NFL position (QB, RB, WR, TE, DEF) has dedicated models due to different statistical patterns and scoring characteristics.
+- **Models**: `dfs/models/*.pth` - Trained PyTorch models
+- **Data**: `dfs/data/nfl_dfs.db` - SQLite database
+- **Salaries**: `dfs/data/DKSalaries.csv` - DraftKings player salaries
+- **Lineups**: `dfs/lineups/` - Generated optimal lineups
+- **Config**: `dfs/.env` - Environment configuration
 
-**Self-Learning System**: Models continuously improve by learning from prediction errors and automatically retraining on new data.
+## Development Workflow
 
-**Local-First Architecture**: All processing and storage is local (no cloud dependencies) for privacy and cost-free operation.
+1. **Data Collection**: Use `collect` command to gather NFL stats and DK salaries
+2. **Model Training**: Train position-specific models with `train` command
+3. **Prediction**: Generate player projections with `predict` command
+4. **Optimization**: Build lineups with various strategies using `optimize` command
+5. **Validation**: Always validate lineups meet DraftKings constraints before submission
 
-**Entertainment Over Profit**: System optimizes for fun/engaging contests rather than pure expected value maximization.
+## Dependencies
 
-### Data Flow
+Core requirements (see `dfs/requirements.txt`):
 
-1. **Collection**: NFL data via nfl_data_py, DraftKings salaries via CSV upload
-1. **Processing**: Feature engineering pipeline creates position-specific features
-1. **Training**: Models train on historical data with time-based cross-validation
-1. **Prediction**: API serves real-time player projections
-1. **Optimization**: Linear programming generates optimal lineups with constraints
-1. **Evaluation**: Continuous learning from actual vs predicted performance
+- `torch>=2.0.0` - Neural network models
+- `pandas>=1.5.0` - Data manipulation
+- `numpy>=1.24.0` - Numerical operations
+- `pulp>=2.7.0` - Linear programming optimization
+- `nfl-data-py>=0.3.0` - NFL statistics collection
 
-### Technology Stack
+## Testing and Validation
 
-- **Python 3.11+** with UV package management
-- **FastAPI** for API layer with Uvicorn server
-- **SQLite + SQLAlchemy** for data persistence
-- **PyTorch** for deep learning neural networks
-- **PuLP** for linear programming optimization
-- **Pandas + NumPy** for data processing
-- **pytest** for comprehensive testing
+The system includes built-in validation:
 
-### File Structure Highlights
+- Lineup constraint checking (salary cap, position requirements)
+- Data quality validation after collection
+- Model training metrics (MAE, R², RMSE)
+- Feature engineering validation
 
-- `src/config/settings.py` - Centralized configuration with environment variables
-- `src/database/models.py` - SQLAlchemy models for all entities
-- `src/ml/models/neural_models.py` - PyTorch neural network implementations
-- `docs/architecture/` - Comprehensive system documentation
-- `Makefile` - Development workflow automation
-- `pyproject.toml` - Project configuration with Ruff/Black/mypy settings
-
-### Development Workflow
-
-1. Use `make setup` for initial environment setup
-1. Run `make lint` and `make test` before committing
-1. API development: Start with `make run` and use localhost:8000/docs
-1. ML development: Use CLI tools for training and evaluation
-1. Database changes: Update models and run migrations
-
-### Important Notes
-
-- The system uses UV instead of pip/poetry for significantly faster dependency management
-- All models are CPU-optimized (GPU support planned but not required)
-- Code formatting and quality checks can be run manually with `make format` and `make lint`
-- Comprehensive test coverage with pytest and coverage reporting
-- API documentation auto-generated at `/docs` endpoint when running
-
-### Testing
-
-- Unit tests in `tests/unit/`
-- Integration tests in `tests/integration/`
-- Model validation with backtesting framework
-- Minimum 80% test coverage enforced
-- Use `pytest -v` for verbose test output or `pytest tests/specific_test.py` for specific tests
+Always run data quality checks after collection and verify lineup validity before contest submission.
