@@ -68,7 +68,7 @@ DB_SCHEMA = {
         CREATE TABLE IF NOT EXISTS player_stats (
             id INTEGER PRIMARY KEY,
             player_id INTEGER,
-            game_id INTEGER,
+            game_id TEXT,
             passing_yards REAL DEFAULT 0,
             passing_tds INTEGER DEFAULT 0,
             passing_interceptions INTEGER DEFAULT 0,
@@ -82,7 +82,8 @@ DB_SCHEMA = {
             fumbles_lost INTEGER DEFAULT 0,
             fantasy_points REAL DEFAULT 0,
             FOREIGN KEY (player_id) REFERENCES players (id),
-            FOREIGN KEY (game_id) REFERENCES games (id)
+            FOREIGN KEY (game_id) REFERENCES games (id),
+            UNIQUE(player_id, game_id)
         )
     ''',
     'draftkings_salaries': '''
@@ -96,6 +97,26 @@ DB_SCHEMA = {
             team_abbr TEXT,
             opponent TEXT,
             FOREIGN KEY (player_id) REFERENCES players (id)
+        )
+    ''',
+    'dst_stats': '''
+        CREATE TABLE IF NOT EXISTS dst_stats (
+            id INTEGER PRIMARY KEY,
+            game_id TEXT,
+            team_abbr TEXT,
+            season INTEGER,
+            week INTEGER,
+            points_allowed INTEGER DEFAULT 0,
+            sacks INTEGER DEFAULT 0,
+            interceptions INTEGER DEFAULT 0,
+            fumbles_recovered INTEGER DEFAULT 0,
+            fumbles_forced INTEGER DEFAULT 0,
+            safeties INTEGER DEFAULT 0,
+            defensive_tds INTEGER DEFAULT 0,
+            return_tds INTEGER DEFAULT 0,
+            special_teams_tds INTEGER DEFAULT 0,
+            fantasy_points REAL DEFAULT 0.0,
+            UNIQUE(team_abbr, game_id)
         )
     '''
 }
@@ -304,6 +325,13 @@ def collect_nfl_data(seasons: List[int], db_path: str = "data/nfl_dfs.db") -> No
                         logger.warning(f"Error processing player stats: {e}")
                         continue
 
+            # Collect DST data from play-by-play
+            try:
+                logger.info(f"Collecting DST data for {season} season...")
+                collect_dst_data(season, conn)
+            except Exception as e:
+                logger.warning(f"Could not collect DST data for {season}: {e}")
+
             conn.commit()
             logger.info(f"Completed {season} season")
 
@@ -390,6 +418,136 @@ def calculate_dk_fantasy_points(player_data: pd.Series) -> float:
     points += (player_data.get('fumbles_lost', 0) or 0) * -1
 
     return round(points, 2)
+
+def calculate_dst_fantasy_points(stats: Dict[str, int]) -> float:
+    """Calculate DraftKings DST fantasy points."""
+    points = 0.0
+
+    # Points allowed (tiered system)
+    points_allowed = stats.get('points_allowed', 0)
+    if points_allowed == 0:
+        points += 10
+    elif points_allowed <= 6:
+        points += 7
+    elif points_allowed <= 13:
+        points += 4
+    elif points_allowed <= 20:
+        points += 1
+    elif points_allowed <= 27:
+        points += 0
+    elif points_allowed <= 34:
+        points += -1
+    else:
+        points += -4
+
+    # Sacks (1 pt each)
+    points += stats.get('sacks', 0) * 1
+
+    # Interceptions (2 pts each)
+    points += stats.get('interceptions', 0) * 2
+
+    # Fumbles recovered (2 pts each)
+    points += stats.get('fumbles_recovered', 0) * 2
+
+    # Safeties (2 pts each)
+    points += stats.get('safeties', 0) * 2
+
+    # Defensive TDs (6 pts each)
+    points += stats.get('defensive_tds', 0) * 6
+
+    # Return TDs (6 pts each)
+    points += stats.get('return_tds', 0) * 6
+
+    # Special teams TDs (6 pts each)
+    points += stats.get('special_teams_tds', 0) * 6
+
+    return round(points, 2)
+
+def collect_dst_data(season: int, conn: sqlite3.Connection) -> None:
+    """Collect DST data from play-by-play data."""
+    if nfl is None:
+        logger.warning("nfl_data_py not available for DST data")
+        return
+
+    try:
+        # Get play-by-play data
+        logger.info(f"Loading PBP data for DST stats (season {season})...")
+        pbp_data = nfl.import_pbp_data([season])
+    except (NameError, Exception) as e:
+        # Handle nfl_data_py bugs like "name 'Error' is not defined" and HTTP 404s
+        if "Error" in str(e) and "not defined" in str(e):
+            logger.warning(f"nfl_data_py library bug for season {season}: {e}")
+        elif "404" in str(e) or "Not Found" in str(e):
+            logger.warning(f"No play-by-play data available for season {season}")
+        else:
+            logger.warning(f"Could not load PBP data for season {season}: {e}")
+        return
+
+    try:
+
+        # Get schedule for points allowed calculation
+        schedule = nfl.import_schedules([season])
+
+        # Process each game for DST stats
+        for _, game in schedule.iterrows():
+            game_id = str(game.get('game_id', ''))
+            home_team = game.get('home_team', '')
+            away_team = game.get('away_team', '')
+            home_score = int(game.get('home_score', 0)) if pd.notna(game.get('home_score')) else 0
+            away_score = int(game.get('away_score', 0)) if pd.notna(game.get('away_score')) else 0
+            week = int(game.get('week', 0)) if pd.notna(game.get('week')) else 0
+
+            # Skip games without scores (not played yet)
+            if home_score == 0 and away_score == 0:
+                continue
+
+            # Get plays for this game
+            game_plays = pbp_data[pbp_data['game_id'] == game_id]
+
+            if len(game_plays) == 0:
+                continue
+
+            # Calculate stats for each team
+            for team, opponent, points_allowed in [(home_team, away_team, away_score), (away_team, home_team, home_score)]:
+                if not team:
+                    continue
+
+                # Aggregate defensive stats when this team was defending
+                team_defense_plays = game_plays[game_plays['defteam'] == team]
+
+                dst_stats = {
+                    'points_allowed': points_allowed,
+                    'sacks': int(team_defense_plays['sack'].sum() or 0),
+                    'interceptions': int(team_defense_plays['interception'].sum() or 0),
+                    'fumbles_recovered': int(team_defense_plays['fumble_lost'].sum() or 0),  # fumble_lost by offense = recovered by defense
+                    'fumbles_forced': int(team_defense_plays['fumble_lost'].sum() or 0),  # Same as recovered for now
+                    'safeties': int(team_defense_plays['safety'].sum() or 0),
+                    'defensive_tds': 0,  # Would need more complex logic to identify defensive TDs
+                    'return_tds': 0,     # Would need return TD logic
+                    'special_teams_tds': 0  # Would need special teams logic
+                }
+
+                # Calculate fantasy points
+                fantasy_points = calculate_dst_fantasy_points(dst_stats)
+
+                # Insert into database
+                conn.execute(
+                    """INSERT OR REPLACE INTO dst_stats
+                       (game_id, team_abbr, season, week, points_allowed, sacks, interceptions,
+                        fumbles_recovered, fumbles_forced, safeties, defensive_tds, return_tds,
+                        special_teams_tds, fantasy_points)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (game_id, team, season, week, dst_stats['points_allowed'], dst_stats['sacks'],
+                     dst_stats['interceptions'], dst_stats['fumbles_recovered'], dst_stats['fumbles_forced'],
+                     dst_stats['safeties'], dst_stats['defensive_tds'], dst_stats['return_tds'],
+                     dst_stats['special_teams_tds'], fantasy_points)
+                )
+
+        logger.info(f"Completed DST data collection for {season} season")
+
+    except Exception as e:
+        logger.error(f"Error collecting DST data for {season}: {e}")
+        raise
 
 def load_draftkings_csv(csv_path: str, contest_id: str = None, db_path: str = "data/nfl_dfs.db") -> None:
     """Load DraftKings salary CSV file."""
@@ -639,12 +797,117 @@ def is_home_game(team_id: int, game_id: int, conn: sqlite3.Connection) -> bool:
     ).fetchone()
     return result and result[0] == team_id
 
+def get_dst_training_data(
+    seasons: List[int],
+    db_path: str = "data/nfl_dfs.db"
+) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+    """Get DST training data from historical team defense stats."""
+    conn = get_db_connection(db_path)
+
+    try:
+        # Get DST stats for specified seasons
+        data_query = """
+            SELECT
+                d.team_abbr,
+                d.season,
+                d.week,
+                d.points_allowed,
+                d.sacks,
+                d.interceptions,
+                d.fumbles_recovered,
+                d.safeties,
+                d.defensive_tds,
+                d.fantasy_points,
+                -- Add recent performance features
+                AVG(d2.fantasy_points) OVER (
+                    PARTITION BY d.team_abbr
+                    ORDER BY d.season, d.week
+                    ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
+                ) as avg_recent_points,
+                AVG(d2.points_allowed) OVER (
+                    PARTITION BY d.team_abbr
+                    ORDER BY d.season, d.week
+                    ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
+                ) as avg_recent_points_allowed,
+                AVG(d2.sacks) OVER (
+                    PARTITION BY d.team_abbr
+                    ORDER BY d.season, d.week
+                    ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
+                ) as avg_recent_sacks
+            FROM dst_stats d
+            LEFT JOIN dst_stats d2 ON d.team_abbr = d2.team_abbr
+            WHERE d.season IN ({})
+            AND d.week >= 4  -- Only include games where we have historical data
+            ORDER BY d.season, d.week, d.team_abbr
+        """.format(','.join('?' * len(seasons)))
+
+        cursor = conn.execute(data_query, seasons)
+        rows = cursor.fetchall()
+
+        if not rows:
+            logger.warning("No DST training data found")
+            return np.array([]), np.array([]), []
+
+        # Extract features and targets
+        X_list = []
+        y_list = []
+
+        feature_names = [
+            'points_allowed', 'sacks', 'interceptions', 'fumbles_recovered',
+            'safeties', 'defensive_tds', 'avg_recent_points', 'avg_recent_points_allowed',
+            'avg_recent_sacks', 'week', 'season'
+        ]
+
+        for row in rows:
+            # Skip rows where we don't have recent averages (early in season)
+            if row[10] is None:  # avg_recent_points
+                continue
+
+            features = [
+                row[3],   # points_allowed
+                row[4],   # sacks
+                row[5],   # interceptions
+                row[6],   # fumbles_recovered
+                row[7],   # safeties
+                row[8],   # defensive_tds
+                row[10],  # avg_recent_points
+                row[11],  # avg_recent_points_allowed
+                row[12],  # avg_recent_sacks
+                row[2],   # week
+                row[1]    # season
+            ]
+
+            target = row[9]  # fantasy_points
+
+            X_list.append(features)
+            y_list.append(target)
+
+        if not X_list:
+            logger.warning("No valid DST features extracted")
+            return np.array([]), np.array([]), []
+
+        X = np.array(X_list, dtype=np.float32)
+        y = np.array(y_list, dtype=np.float32)
+
+        logger.info(f"Extracted {len(X)} DST training samples")
+        return X, y, feature_names
+
+    except Exception as e:
+        logger.error(f"Error getting DST training data: {e}")
+        return np.array([]), np.array([]), []
+    finally:
+        conn.close()
+
 def get_training_data(
     position: str,
     seasons: List[int],
     db_path: str = "data/nfl_dfs.db"
 ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     """Get training data for a specific position."""
+    # Handle DST position specially
+    if position in ['DST', 'DEF']:
+        return get_dst_training_data(seasons, db_path)
+
     conn = get_db_connection(db_path)
 
     try:

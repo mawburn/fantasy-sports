@@ -15,6 +15,8 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
+import numpy as np
+
 # Import our simplified modules
 from data import (
     init_database, load_teams, collect_nfl_data, load_draftkings_csv,
@@ -184,46 +186,115 @@ def predict_players(contest_id: str = None, output_file: str = None):
             except Exception as e:
                 logger.warning(f"Failed to load {position} model: {e}")
 
-    # Generate predictions
+    # Cache feature names for each position to avoid repeated training data extraction
+    position_feature_names = {}
+    for position in models.keys():
+        if position not in position_feature_names:
+            _, _, feature_names = get_training_data(position, [2023, 2024], DEFAULT_DB_PATH)
+            position_feature_names[position] = feature_names
+            logger.info(f"Cached {len(feature_names)} feature names for {position}")
+
+    # Generate predictions using trained models
     predictions = []
-    correlation_extractor = CorrelationFeatureExtractor(DEFAULT_DB_PATH)
 
     for player_data in players_data:
         position = player_data['position']
-
-        if position not in models and position not in ['DST', 'DEF', 'FB']:
-            logger.warning(f"No model for position {position}")
-            continue
+        player_id = player_data['player_id']
 
         try:
-            # For DST/Defense, use position averages since we don't have historical stats
-            if position in ['DST', 'DEF']:
-                # Defense scoring is different - use conservative estimates
-                projected_points = 8.0 + (player_data['salary'] - 2500) / 200  # Scale with salary
-                floor_points = projected_points * 0.6
-                ceiling_points = projected_points * 2.0
-            elif position in models:
-                # For player positions with models, try to make actual predictions
-                import numpy as np
+            # Use trained model if available
+            if position in models:
+                # Get the most recent game for this player to use for feature extraction
+                from data import get_db_connection
+                conn = get_db_connection(DEFAULT_DB_PATH)
+                
+                recent_game = conn.execute(
+                    """SELECT g.id FROM games g 
+                       JOIN player_stats ps ON g.id = ps.game_id 
+                       WHERE ps.player_id = ? 
+                       ORDER BY g.game_date DESC LIMIT 1""",
+                    (player_id,)
+                ).fetchone()
+                conn.close()
 
-                # Use basic features for now - in a full system you'd extract real game features
-                pos_averages = {'QB': 18.0, 'RB': 12.0, 'WR': 11.0, 'TE': 9.0}
-                base_projection = pos_averages.get(position, 10.0)
+                if recent_game:
+                    # Extract features using the player's most recent game context
+                    from data import get_player_features
+                    features_dict = get_player_features(player_id, recent_game[0])
+                    
+                    if features_dict:
+                        # Get feature names from model training
+                        _, _, feature_names = get_training_data(position, [2023, 2024], DEFAULT_DB_PATH)
+                        if len(feature_names) > 0:
+                            # Create feature vector in the same order as training
+                            feature_vector = [features_dict.get(name, 0) for name in feature_names]
+                            X_pred = np.array([feature_vector], dtype=np.float32)
+                            
+                            # Get model prediction
+                            model = models[position]
+                            prediction_result = model.predict(X_pred)
+                            
+                            projected_points = float(prediction_result.point_estimate[0])
+                            floor_points = float(prediction_result.floor[0])
+                            ceiling_points = float(prediction_result.ceiling[0])
+                            
+                            logger.debug(f"Model prediction for {player_data['name']}: {projected_points:.1f}")
+                        else:
+                            # Fallback if no training features available
+                            projected_points = 10.0
+                            floor_points = 7.0
+                            ceiling_points = 15.0
+                    else:
+                        # Fallback if no features available
+                        projected_points = 10.0
+                        floor_points = 7.0
+                        ceiling_points = 15.0
+                else:
+                    # New player with no game history - use salary-based estimate
+                    pos_averages = {'QB': 18.0, 'RB': 12.0, 'WR': 11.0, 'TE': 9.0}
+                    base_projection = pos_averages.get(position, 10.0)
+                    salary_factor = player_data['salary'] / 6000
+                    projected_points = base_projection * salary_factor
+                    floor_points = projected_points * 0.7
+                    ceiling_points = projected_points * 1.5
 
-                # Adjust based on salary (higher salary players should score more)
-                salary_factor = player_data['salary'] / 6000  # Normalize around $6k
-                projected_points = base_projection * salary_factor
-
-                # Add some randomness based on "model prediction"
-                import hashlib
-                name_hash = int(hashlib.md5(player_data['name'].encode()).hexdigest()[:8], 16)
-                variance = (name_hash % 200 - 100) / 100 * 2  # -2 to +2 points variance
-                projected_points += variance
-
-                floor_points = projected_points * 0.7
-                ceiling_points = projected_points * 1.5
+            elif position in ['DST', 'DEF']:
+                # For DST, use trained model if available, otherwise salary-based
+                if 'DST' in models:
+                    # Try to get DST features (simplified for now)
+                    # Use basic DST features - in a full system would extract real defensive stats
+                    
+                    # Simple feature vector for DST (points_allowed, sacks, etc.)
+                    # This is simplified - ideally would get recent team defensive stats
+                    dst_features = [
+                        20,   # avg points_allowed (league average)
+                        2.5,  # avg sacks
+                        1.0,  # avg interceptions
+                        0.8,  # avg fumbles_recovered
+                        0.1,  # avg safeties
+                        0.1,  # avg defensive_tds
+                        8.0,  # avg_recent_points
+                        22,   # avg_recent_points_allowed
+                        2.3,  # avg_recent_sacks
+                        10,   # week (mid-season)
+                        2024  # season
+                    ]
+                    
+                    X_dst = np.array([dst_features], dtype=np.float32)
+                    model = models['DST']
+                    prediction_result = model.predict(X_dst)
+                    
+                    projected_points = float(prediction_result.point_estimate[0])
+                    floor_points = float(prediction_result.floor[0])
+                    ceiling_points = float(prediction_result.ceiling[0])
+                else:
+                    # Salary-based fallback for DST
+                    projected_points = 8.0 + (player_data['salary'] - 2500) / 200
+                    floor_points = projected_points * 0.6
+                    ceiling_points = projected_points * 2.0
             else:
                 # Fallback for positions without models
+                logger.warning(f"No model available for position {position}")
                 projected_points = 10.0
                 floor_points = 7.0
                 ceiling_points = 15.0
@@ -357,7 +428,7 @@ def main():
     # Train command
     train_parser = subparsers.add_parser('train', help='Train models')
     train_parser.add_argument('--positions', nargs='+',
-                             choices=['QB', 'RB', 'WR', 'TE', 'DEF'],
+                             choices=['QB', 'RB', 'WR', 'TE', 'DEF', 'DST'],
                              help='Positions to train')
     train_parser.add_argument('--seasons', nargs='+', type=int,
                              help='Seasons for training data')
