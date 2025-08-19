@@ -70,7 +70,6 @@ models/production/
 *.joblib
 *.h5
 *.pt
-*.pth
 *.onnx
 
 # ML
@@ -140,3 +139,4 @@ Thumbs.db
 .python-version
 .env.production
 ruff_errors.json
+!.pth

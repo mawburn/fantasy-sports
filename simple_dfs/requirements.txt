@@ -1,0 +1,17 @@
+# Core dependencies for simplified DFS system
+# Only essential packages - no bloat
+
+# Data manipulation
+numpy>=1.24.0
+pandas>=1.5.0
+
+# Machine learning
+torch>=2.0.0
+
+# Optimization
+pulp>=2.7.0
+
+# NFL data collection
+nfl-data-py>=0.3.0
+
+# That's it - no FastAPI, SQLAlchemy, Click, Pydantic, or other complexity
