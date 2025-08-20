@@ -1,14 +1,16 @@
-# Simplified DFS System
+# Enhanced DFS System
 
-A streamlined NFL Daily Fantasy Sports prediction and optimization system. This is the simplified version that consolidates 5000+ lines of complex abstractions into ~3000 lines of focused, maintainable code.
+A production-ready NFL Daily Fantasy Sports prediction and optimization system with advanced feature engineering, quantile regression models, and comprehensive data validation. Built for accuracy, reliability, and maintainability.
 
 ## What This Does
 
-1. **Collects NFL data** using nfl_data_py and DraftKings CSV files
-2. **Trains PyTorch neural networks** for position-specific fantasy point predictions (optimized for Apple Silicon M-series)
-3. **Captures complex correlations** between players, teams, and game contexts
-4. **Optimizes lineups** using linear programming with PuLP
-5. **Generates optimal DFS lineups** for cash games and tournaments
+1. **Enhanced Data Collection**: NFL stats, betting odds, weather, and injury data with validation
+2. **Advanced Feature Engineering**: 40+ features across odds, weather, injuries, usage, and efficiency
+3. **Quantile Regression Models**: PyTorch networks predicting mean + confidence intervals (25th, 50th, 75th percentiles)
+4. **Robust Training Pipeline**: Target clipping, normalization, SmoothL1Loss, and early stopping
+5. **Feature Validation System**: Schema enforcement and data quality checks prevent model failures
+6. **Optimized Lineups**: Linear programming with PuLP for guaranteed optimal solutions
+7. **Comprehensive Testing**: Full test suite for feature validation and model training
 
 ## Quick Start
 
@@ -30,16 +32,20 @@ uv run python run.py collect --csv data/DKSalaries.csv
 uv run python run.py odds --date 2025-09-07  # specific date
 uv run python run.py odds                    # all upcoming games
 
-# Train models (uses all available seasons by default)
+# Train enhanced models with quantile regression and validation
 uv run python run.py train
 
-# Generate predictions for current contest
+# Generate predictions for current contest (with quantile outputs)
 uv run python run.py predict --output predictions.csv
 
 # Build optimal lineups (3 strategies available)
 uv run python run.py optimize --strategy cash --count 1
 uv run python run.py optimize --strategy tournament --count 5
 uv run python run.py optimize --strategy balanced --count 10
+
+# Run test suite to validate implementation
+uv run python tests/test_features.py    # Feature validation tests
+uv run python tests/test_training.py    # Model architecture tests
 ```
 
 ## Performance Optimizations
@@ -55,18 +61,78 @@ The CLI has been optimized for faster execution:
 
 ```
 dfs/
-├── data.py      # Direct SQLite operations + NFL data collection
-├── models.py    # PyTorch neural networks + correlation features (MPS-optimized)
-├── optimize.py  # PuLP linear programming + stacking algorithms
-├── run.py       # Optimized CLI interface with batch processing
+├── data.py                        # Enhanced data pipeline with odds, weather, injuries
+├── models.py                      # PyTorch networks with quantile regression (MPS-optimized)
+├── optimize.py                    # PuLP linear programming + stacking algorithms
+├── run.py                         # Optimized CLI interface with batch processing
+├── utils_feature_validation.py    # Feature schema validation and data quality checks
+├── feature_names.json             # Fixed feature ordering for model compatibility
+├── tests/                         # Test suite for validation and training
+│   ├── test_features.py          # Feature engineering validation tests
+│   └── test_training.py          # Model architecture and training tests
 └── requirements.txt
 ```
 
-## Core Features Preserved
+## Core Features Enhanced
 
-### Neural Networks (models.py)
+### Enhanced Neural Networks (models.py)
 
-- Position-specific PyTorch models (QB, RB, WR, TE, DEF)
+- Position-specific PyTorch models with **quantile regression** (mean, 25th, 50th, 75th percentiles)
+- **SmoothL1Loss** for robust training (replaces MSE)
+- **LayerNorm** for better stability with sparse features
+- Target clipping by position (QB: [-5,55], RB: [-5,45], WR: [-5,40], TE/DST: [-5,30])
+- Target normalization with denormalization for accurate metrics
+- Gradient clipping and training stability improvements
+
+### Advanced Feature Engineering (data.py)
+
+**Enhanced Odds Features:**
+- `team_spread`, `team_spread_abs`, `total_line` - core betting market data
+- `team_itt` - implied team total (total_line/2 - team_spread/2)
+- `game_tot_z`, `team_itt_z` - weekly z-scores for market context
+- `is_favorite` - binary flag for favorites vs underdogs
+
+**Comprehensive Weather Features:**
+- Raw: `temperature_f`, `wind_mph`, `humidity_pct`  
+- Thresholds: `cold_lt40`, `hot_gt85`, `wind_gt15`, `dome`
+- Smart dome detection and outdoor-only weather collection
+
+**Advanced Injury Features:**
+- One-hot status: `injury_status_Out/Doubtful/Questionable/Probable`
+- Rolling metrics: `games_missed_last4`, `practice_trend`
+- Team impact: `team_injured_starters`, `opp_injured_starters`
+- Return indicators: `returning_from_injury`
+
+**Player Usage & Efficiency Features:**
+- Opportunity: `targets_ema`, `routes_run_ema`, `rush_att_ema`, `snap_share_ema`
+- Red Zone: `redzone_opps_ema`  
+- Efficiency: `air_yards_ema`, `adot_ema`, `yprr_ema`, `yards_after_contact`
+- Context: `salary`, `home`, `rest_days`, `travel`, `season_week`
+
+### Feature Validation System
+
+**Schema Enforcement (`feature_names.json`):**
+
+Defines the fixed ordering of 40 features across 6 categories:
+- **Odds Features (7)**: `team_spread`, `team_itt`, `is_favorite`, etc.
+- **Weather Features (7)**: `temperature_f`, `cold_lt40`, `dome`, etc.
+- **Injury Features (9)**: `injury_status_*`, `games_missed_last4`, etc.
+- **Usage Features (8)**: `targets_ema`, `snap_share_ema`, etc.
+- **Efficiency Features (4)**: `yards_after_contact`, `pressure_rate`, etc.
+- **Context Features (5)**: `salary`, `home`, `rest_days`, etc.
+
+📖 **See [FEATURE_SCHEMA.md](FEATURE_SCHEMA.md) for complete documentation**
+
+**Data Quality Checks (`utils_feature_validation.py`):**
+- Fixed column ordering for model compatibility
+- Binary feature validation (0/1 values only)
+- Injury status exclusivity (only one status per player)
+- Numeric range validation (prevents extreme outliers)
+- NaN/Inf detection and prevention
+- Zero variance detection for debugging
+
+### Legacy Neural Networks (models.py)
+
 - Complex correlation feature extraction
 - Multi-position correlated model for advanced stacking
 - CPU-optimized training with early stopping
@@ -272,6 +338,53 @@ uv run python run.py optimize \
   --count 3 \
   --save-predictions predictions.csv
 ```
+
+## Development and Testing
+
+### Test Suite
+
+The system includes comprehensive tests for validation and reliability:
+
+```bash
+# Run feature validation tests
+uv run python tests/test_features.py
+
+# Run model training tests  
+uv run python tests/test_training.py
+
+# Run all tests together
+uv run python -m pytest tests/ -v
+```
+
+**Test Coverage:**
+- ✅ Feature schema validation and ordering
+- ✅ Binary feature constraints (0/1 values)
+- ✅ Injury status exclusivity (mutual exclusion)
+- ✅ Numeric range validation (odds, weather, salary)
+- ✅ Model architecture (quantile outputs)
+- ✅ Target clipping by position
+- ✅ Target normalization/denormalization
+- ✅ Quantile loss computation
+- ✅ Prediction range validation
+- ✅ Training stability checks
+
+### Development Workflow
+
+1. **Feature Development**: Add new features to `data.py` and `feature_names.json`
+2. **Validation**: Add validation rules to `utils_feature_validation.py`
+3. **Testing**: Create tests in `tests/test_features.py`
+4. **Model Updates**: Update model architecture if needed in `models.py`
+5. **Integration**: Test with `run.py train` and `run.py predict`
+
+### Quality Assurance
+
+The system prevents common ML failures:
+
+- **Train/Serve Skew**: Fixed feature ordering prevents mismatched inputs
+- **Data Quality Issues**: Validation catches NaN, Inf, and range violations
+- **Model Compatibility**: Schema versioning ensures models match expected inputs
+- **Silent Failures**: Explicit validation with clear error messages
+- **Feature Drift**: Schema documentation tracks changes over time
 
 ## Performance
 

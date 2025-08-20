@@ -62,21 +62,34 @@ def get_available_seasons(db_path: str = DEFAULT_DB_PATH) -> List[int]:
         conn.close()
 
 
+def get_position_specific_seasons(position: str, available_seasons: List[int]) -> List[int]:
+    """Get optimal training seasons for each position based on recent NFL evolution."""
+    current_year = max(available_seasons) if available_seasons else 2025
+
+    if position == 'DST':
+        # DST: Use 2019, 2021-2024+ (skip 2020 COVID year)
+        target_seasons = [2019] + list(range(2021, current_year + 1))
+    else:
+        # QB, RB, WR, TE: Use 2018-2024+ (balanced approach - enough data, not too old)
+        target_seasons = list(range(2018, current_year + 1))
+
+    # Filter to only seasons we actually have data for
+    valid_seasons = [s for s in target_seasons if s in available_seasons]
+    logger.info(f"Using {len(valid_seasons)} seasons for {position}: {valid_seasons}")
+    return valid_seasons
+
 def train_models(seasons: List[int] = None, positions: List[str] = None):
-    """Train prediction models for specified positions.
+    """Train prediction models for specified positions using position-specific seasons.
 
     Args:
-        seasons: List of seasons to use for training
+        seasons: List of seasons to use for training (if None, uses position-specific optimal ranges)
         positions: Specific positions to train (default: all)
     """
-    if seasons is None:
-        seasons = get_available_seasons()
+    available_seasons = get_available_seasons()
 
-    if not seasons:
+    if not available_seasons:
         logger.error("No data available for training. Run 'collect' first.")
         return
-
-    logger.info(f"Training models using seasons: {seasons}")
 
     if positions is None:
         positions = ['QB', 'RB', 'WR', 'TE', 'DST']
@@ -90,8 +103,15 @@ def train_models(seasons: List[int] = None, positions: List[str] = None):
         logger.info(f"Training {position} model...")
 
         try:
+            # Get position-specific seasons or use provided seasons
+            if seasons is None:
+                position_seasons = get_position_specific_seasons(position, available_seasons)
+            else:
+                position_seasons = seasons
+                logger.info(f"Using provided seasons for {position}: {position_seasons}")
+
             # Get training data
-            X, y, feature_names = get_training_data(position, seasons, DEFAULT_DB_PATH)
+            X, y, feature_names = get_training_data(position, position_seasons, DEFAULT_DB_PATH)
 
             if len(X) == 0:
                 logger.warning(f"No training data available for {position}")

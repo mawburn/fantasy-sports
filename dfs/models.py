@@ -28,6 +28,8 @@ from torch.utils.data import DataLoader, TensorDataset
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
+from data import ProgressDisplay
+
 logger = logging.getLogger(__name__)
 
 # Position-specific fantasy point ranges (DraftKings scoring)
@@ -450,11 +452,13 @@ class BaseNeuralModel(ABC):
         self.network: nn.Module = None
         self.optimizer: optim.Optimizer = None
         self.scheduler: optim.lr_scheduler._LRScheduler = None
-        self.criterion = nn.MSELoss()
+        self.criterion = nn.HuberLoss(delta=1.0)  # Even more robust to outliers
+        self.quantile_criterion = self._quantile_loss  # Custom quantile loss function
+        self.mse_criterion = nn.MSELoss()  # For fallback if Huber fails
 
         # Training parameters
         self.batch_size = 32
-        self.learning_rate = 0.001
+        self.learning_rate = 0.0001
         self.epochs = 100
         self.patience = 15
 
@@ -463,6 +467,55 @@ class BaseNeuralModel(ABC):
         self.val_losses: List[float] = []
         self.is_trained = False
         self.training_history = []
+
+        # Target normalization parameters
+        self.y_mean = 0.0
+        self.y_std = 1.0
+
+    def _clip_targets_by_position(self, y: np.ndarray) -> np.ndarray:
+        """Clip/winsorize targets by position before training."""
+        position = self.config.position.upper()
+
+        # Position-specific clipping ranges
+        clip_ranges = {
+            'QB': (-5, 55),
+            'RB': (-5, 45),
+            'WR': (-5, 40),
+            'TE': (-5, 30),
+            'DST': (-5, 30),
+            'DEF': (-5, 30)
+        }
+
+        if position in clip_ranges:
+            low, high = clip_ranges[position]
+            y_clipped = np.clip(y, low, high)
+            logger.info(f"Clipped {position} targets to [{low}, {high}]. "
+                       f"Original range: [{y.min():.1f}, {y.max():.1f}], "
+                       f"Clipped range: [{y_clipped.min():.1f}, {y_clipped.max():.1f}]")
+            return y_clipped
+
+        return y
+
+    def _normalize_targets(self, y: np.ndarray) -> np.ndarray:
+        """Normalize targets to zero mean, unit variance."""
+        self.y_mean = np.mean(y)
+        self.y_std = np.std(y)
+
+        if self.y_std == 0:
+            raise ValueError(f"Target standard deviation is zero for {self.config.position}")
+
+        y_normalized = (y - self.y_mean) / self.y_std
+        logger.info(f"Normalized {self.config.position} targets: mean={self.y_mean:.2f}, std={self.y_std:.2f}")
+        return y_normalized
+
+    def _denormalize_predictions(self, pred: np.ndarray) -> np.ndarray:
+        """Denormalize predictions back to original scale."""
+        return pred * self.y_std + self.y_mean
+
+    def _quantile_loss(self, predictions: torch.Tensor, targets: torch.Tensor, quantile: float) -> torch.Tensor:
+        """Quantile loss (pinball loss) function."""
+        errors = targets - predictions
+        return torch.mean(torch.max(quantile * errors, (quantile - 1) * errors))
 
     @abstractmethod
     def build_network(self, input_size: int) -> nn.Module:
@@ -519,45 +572,41 @@ class BaseNeuralModel(ABC):
         num_batches = 0
 
         for batch_X, batch_y in train_loader:
-            # Check for NaN in input data
-            if torch.isnan(batch_X).any() or torch.isnan(batch_y).any():
-                logger.warning("NaN detected in batch input, skipping...")
-                continue
-
             self.optimizer.zero_grad()
             predictions = self.network(batch_X)
 
-            if predictions.dim() > 1 and predictions.size(1) == 1:
+            # Handle QB model's dictionary output
+            if isinstance(predictions, dict):
+                predictions = predictions['mean']  # Use mean prediction for training
+            elif predictions.dim() > 1 and predictions.size(1) == 1:
                 predictions = predictions.squeeze(1)
-
-            # Check for NaN in predictions
-            if torch.isnan(predictions).any():
-                logger.warning("NaN detected in predictions, skipping batch...")
-                continue
 
             loss = self.criterion(predictions, batch_y)
 
-            # Check for NaN loss
-            if torch.isnan(loss):
-                logger.warning("NaN loss detected, skipping batch...")
+            # Check if loss is valid before backward pass
+            if torch.isnan(loss) or torch.isinf(loss):
                 continue
 
             loss.backward()
-            # More aggressive gradient clipping
-            torch.nn.utils.clip_grad_norm_(self.network.parameters(), max_norm=0.5)
 
-            # Check for NaN gradients
+            # Moderate gradient clipping to prevent exploding gradients while allowing learning
+            torch.nn.utils.clip_grad_norm_(self.network.parameters(), max_norm=1.0)
+
+            # Check for NaN gradients after clipping
             has_nan_grad = False
             for param in self.network.parameters():
-                if param.grad is not None and torch.isnan(param.grad).any():
+                if param.grad is not None and (torch.isnan(param.grad).any() or torch.isinf(param.grad).any()):
                     has_nan_grad = True
                     break
 
             if has_nan_grad:
-                logger.warning("NaN gradients detected, skipping update...")
+                # Clear gradients and skip update
+                self.optimizer.zero_grad()
                 continue
 
             self.optimizer.step()
+
+            # ReduceLROnPlateau doesn't step per batch
 
             total_loss += loss.item()
             num_batches += 1
@@ -574,7 +623,10 @@ class BaseNeuralModel(ABC):
             for batch_X, batch_y in val_loader:
                 predictions = self.network(batch_X)
 
-                if predictions.dim() > 1 and predictions.size(1) == 1:
+                # Handle QB model's dictionary output
+                if isinstance(predictions, dict):
+                    predictions = predictions['mean']  # Use mean prediction for validation
+                elif predictions.dim() > 1 and predictions.size(1) == 1:
                     predictions = predictions.squeeze(1)
 
                 loss = self.criterion(predictions, batch_y)
@@ -582,6 +634,39 @@ class BaseNeuralModel(ABC):
                 num_batches += 1
 
         return total_loss / num_batches if num_batches > 0 else 0.0
+
+    def _compute_validation_r2(self, val_loader: DataLoader, y_val: np.ndarray) -> float:
+        """Compute R² score on validation data."""
+        self.network.eval()
+        predictions = []
+
+        with torch.no_grad():
+            for batch_X, _ in val_loader:
+                pred = self.network(batch_X)
+
+                # Handle QB model's dictionary output
+                if isinstance(pred, dict):
+                    pred = pred['mean']
+                elif pred.dim() > 1 and pred.size(1) == 1:
+                    pred = pred.squeeze(1)
+
+                predictions.extend(pred.cpu().numpy())
+
+        predictions = np.array(predictions)
+
+        # Handle NaN predictions
+        if np.isnan(predictions).any():
+            return -float("inf")
+
+        # Compute R²
+        ss_tot = np.sum((y_val - np.mean(y_val)) ** 2)
+        ss_res = np.sum((y_val - predictions) ** 2)
+
+        if ss_tot == 0:
+            return 0.0
+
+        r2 = 1 - (ss_res / ss_tot)
+        return r2
 
     def train(
         self, X_train: np.ndarray, y_train: np.ndarray, X_val: np.ndarray, y_val: np.ndarray
@@ -594,6 +679,8 @@ class BaseNeuralModel(ABC):
 
         # Additional data cleaning before training
         logger.info("Performing final data cleaning before model training...")
+
+        # Initial cleanup
         X_train = np.nan_to_num(X_train, nan=0.0, posinf=0.0, neginf=0.0)
         y_train = np.nan_to_num(y_train, nan=0.0, posinf=0.0, neginf=0.0)
         X_val = np.nan_to_num(X_val, nan=0.0, posinf=0.0, neginf=0.0)
@@ -605,11 +692,24 @@ class BaseNeuralModel(ABC):
         X_val = np.clip(X_val, -1000, 1000)
         y_val = np.clip(y_val, -10, 50)
 
-        # Feature scaling for stability
+        # Robust feature scaling with zero-variance handling
         X_mean = np.mean(X_train, axis=0)
-        X_std = np.std(X_train, axis=0) + 1e-8  # Add epsilon to prevent division by zero
+        X_std = np.std(X_train, axis=0)
+
+        # Handle zero-variance features (set std to 1, mean to 0 for these features)
+        zero_var_mask = X_std < 1e-10
+        X_std[zero_var_mask] = 1.0
+        X_mean[zero_var_mask] = 0.0
+
+        # Apply scaling
         X_train = (X_train - X_mean) / X_std
         X_val = (X_val - X_mean) / X_std
+
+        # Final cleanup after scaling to catch any numerical issues
+        X_train = np.nan_to_num(X_train, nan=0.0, posinf=0.0, neginf=0.0)
+        X_val = np.nan_to_num(X_val, nan=0.0, posinf=0.0, neginf=0.0)
+        y_train = np.nan_to_num(y_train, nan=0.0, posinf=0.0, neginf=0.0)
+        y_val = np.nan_to_num(y_val, nan=0.0, posinf=0.0, neginf=0.0)
 
         if self.network is None:
             input_size = X_train.shape[1]
@@ -617,43 +717,77 @@ class BaseNeuralModel(ABC):
             self.network = self.build_network(input_size)
             self.network.to(self.device)
 
-        self.optimizer = optim.Adam(
-            self.network.parameters(), lr=self.learning_rate, weight_decay=1e-4
-        )
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode="min", factor=0.5, patience=10
+        # Use AdamW with improved weight decay for better generalization
+        self.optimizer = optim.AdamW(
+            self.network.parameters(), lr=self.learning_rate, weight_decay=0.001,
+            betas=(0.9, 0.999), eps=1e-8
         )
 
         train_loader, val_loader = self._create_data_loaders(X_train, y_train, X_val, y_val)
 
+        # More stable learning rate schedule
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer,
+            mode='min',
+            factor=0.7,
+            patience=15,
+            min_lr=1e-6
+        )
+
         best_val_loss = float("inf")
+        best_val_r2 = -float("inf")  # Track best R² score
         patience_counter = 0
         best_epoch = 0
 
         logger.info(f"Starting neural network training for {self.config.position}")
 
+        progress = ProgressDisplay(f"Training {self.config.position}")
+
         for epoch in range(self.epochs):
             train_loss = self._train_epoch(train_loader)
             val_loss = self._validate_epoch(val_loader)
-            self.scheduler.step(val_loss)
+            self.scheduler.step(val_loss)  # ReduceLROnPlateau takes loss as input
+
+            # Compute validation R² every 10 epochs for monitoring
+            val_r2 = -float("inf")
+            if epoch % 10 == 0:
+                val_r2 = self._compute_validation_r2(val_loader, y_val)
 
             self.train_losses.append(train_loss)
             self.val_losses.append(val_loss)
 
-            if val_loss < best_val_loss:
+            # Use R² for best model selection (prioritize predictive power)
+            improved = False
+            if epoch % 10 == 0 and val_r2 > best_val_r2:
+                best_val_r2 = val_r2
+                best_epoch = epoch
+                patience_counter = 0
+                self.best_state_dict = self.network.state_dict().copy()
+                improved = True
+            elif epoch % 10 != 0 and val_loss < best_val_loss:
+                # Fallback to loss-based improvement for non-R² epochs
                 best_val_loss = val_loss
                 best_epoch = epoch
                 patience_counter = 0
                 self.best_state_dict = self.network.state_dict().copy()
-            else:
+                improved = True
+
+            if not improved:
                 patience_counter += 1
 
+            # Enhanced progress reporting
             if epoch % 10 == 0:
-                logger.info(f"Epoch {epoch:3d}: Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+                progress_msg = f"Epoch {epoch}: Loss={val_loss:.3f}, R²={val_r2:.3f}"
+                logger.info(progress_msg)
+
+            progress.update(epoch, self.epochs)
 
             if patience_counter >= self.patience:
-                logger.info(f"Early stopping at epoch {epoch}")
+                progress.finish(f"Early stopping at epoch {epoch} (Best R²: {best_val_r2:.3f})")
                 break
+        else:
+            # Training completed without early stopping
+            progress.finish(f"Training completed ({self.epochs} epochs)")
 
         if hasattr(self, "best_state_dict"):
             self.network.load_state_dict(self.best_state_dict)
@@ -667,9 +801,15 @@ class BaseNeuralModel(ABC):
             train_pred_tensor = self.network(X_train_tensor)
             val_pred_tensor = self.network(X_val_tensor)
 
-            if train_pred_tensor.dim() > 1 and train_pred_tensor.size(1) == 1:
+            # Handle QB model's dictionary output
+            if isinstance(train_pred_tensor, dict):
+                train_pred_tensor = train_pred_tensor['mean']
+            elif train_pred_tensor.dim() > 1 and train_pred_tensor.size(1) == 1:
                 train_pred_tensor = train_pred_tensor.squeeze(1)
-            if val_pred_tensor.dim() > 1 and val_pred_tensor.size(1) == 1:
+
+            if isinstance(val_pred_tensor, dict):
+                val_pred_tensor = val_pred_tensor['mean']
+            elif val_pred_tensor.dim() > 1 and val_pred_tensor.size(1) == 1:
                 val_pred_tensor = val_pred_tensor.squeeze(1)
 
             train_pred = train_pred_tensor.cpu().numpy()
@@ -810,54 +950,123 @@ class BaseNeuralModel(ABC):
 
 
 class QBNetwork(nn.Module):
-    """Neural network architecture for quarterback predictions, optimized for Apple Silicon."""
+    """Enhanced neural network architecture for quarterback predictions with residual connections and improved activations."""
 
     def __init__(self, input_size: int):
         super().__init__()
 
-        # Use BatchNorm instead of LayerNorm for better stability with sparse features
-        # Set eps higher to prevent division by zero
-        self.feature_layers = nn.Sequential(
-            nn.Linear(input_size, 128),
-            nn.BatchNorm1d(128, eps=1e-3),  # Higher eps for stability
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(128, 64),
-            nn.BatchNorm1d(64, eps=1e-3),
-            nn.ReLU(),
-            nn.Dropout(0.15),
-        )
+        # Moderately increased capacity for better representation learning
+        self.input_projection = nn.Linear(input_size, 192)
+        self.input_norm = nn.BatchNorm1d(192)
 
+        # Enhanced feature layers with residual connections
+        self.feature_layers = nn.ModuleList([
+            self._residual_block(192, 160),
+            self._residual_block(160, 128),
+            self._residual_block(128, 96),
+            self._residual_block(96, 64)
+        ])
+
+        # Attention mechanism for feature importance
+        self.attention = nn.MultiheadAttention(64, num_heads=4, dropout=0.1, batch_first=True)
+        self.attention_norm = nn.LayerNorm(64)
+
+        # Enhanced branches with residual connections
         self.passing_branch = nn.Sequential(
-            nn.Linear(64, 32),
-            nn.ReLU(),
+            nn.Linear(64, 48),
+            nn.BatchNorm1d(48),
+            nn.GELU(),
+            nn.Dropout(0.15),
+            nn.Linear(48, 32),
+            nn.BatchNorm1d(32),
+            nn.GELU(),
             nn.Dropout(0.1)
         )
+
         self.rushing_branch = nn.Sequential(
-            nn.Linear(64, 16),
-            nn.ReLU(),
+            nn.Linear(64, 24),
+            nn.BatchNorm1d(24),
+            nn.GELU(),
+            nn.Dropout(0.15),
+            nn.Linear(24, 16),
+            nn.BatchNorm1d(16),
+            nn.GELU(),
             nn.Dropout(0.1)
         )
 
-        self.output = nn.Sequential(
-            nn.Linear(32 + 16, 16),
-            nn.ReLU(),
-            nn.Linear(16, 1)
+        # Enhanced output heads
+        combined_size = 32 + 16
+        self.mean_head = nn.Sequential(
+            nn.Linear(combined_size, 24),
+            nn.BatchNorm1d(24),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(24, 12),
+            nn.GELU(),
+            nn.Linear(12, 1)
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Quantile heads with shared layers for efficiency
+        self.quantile_shared = nn.Sequential(
+            nn.Linear(combined_size, 24),
+            nn.BatchNorm1d(24),
+            nn.GELU(),
+            nn.Dropout(0.1)
+        )
+
+        self.q25_head = nn.Linear(24, 1)
+        self.q50_head = nn.Linear(24, 1)
+        self.q75_head = nn.Linear(24, 1)
+
+    def _residual_block(self, input_dim: int, output_dim: int):
+        """Create a residual block with batch norm and GELU activation."""
+        block = nn.Sequential(
+            nn.Linear(input_dim, output_dim),
+            nn.BatchNorm1d(output_dim),
+            nn.GELU(),
+            nn.Dropout(0.15),
+            nn.Linear(output_dim, output_dim),
+            nn.BatchNorm1d(output_dim)
+        )
+
+        # Skip connection (project if dimensions don't match)
+        self.skip_connection = nn.Linear(input_dim, output_dim) if input_dim != output_dim else nn.Identity()
+
+        return block
+
+    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         # Add small epsilon to prevent issues with sparse features
         x = x + 1e-8
 
-        shared_features = self.feature_layers(x)
+        # Input projection
+        x = F.gelu(self.input_norm(self.input_projection(x)))
 
-        passing_features = self.passing_branch(shared_features)
-        rushing_features = self.rushing_branch(shared_features)
+        # Apply residual blocks (skip connections handled inside blocks)
+        for i, block in enumerate(self.feature_layers):
+            x = block(x)
+            x = F.gelu(x)
+
+        # Apply attention mechanism
+        x_attended, _ = self.attention(x.unsqueeze(1), x.unsqueeze(1), x.unsqueeze(1))
+        x = self.attention_norm(x + x_attended.squeeze(1))
+
+        # Branch processing
+        passing_features = self.passing_branch(x)
+        rushing_features = self.rushing_branch(x)
         combined = torch.cat([passing_features, rushing_features], dim=1)
 
-        output = self.output(combined)
-        # Use direct linear output - let the network learn the proper scaling
-        return output.squeeze(-1)
+        # Output predictions
+        mean_output = self.mean_head(combined).squeeze(-1)
+
+        # Quantile outputs through shared layer
+        quantile_features = self.quantile_shared(combined)
+
+        return {
+            'mean': mean_output,
+            'q25': self.q25_head(quantile_features).squeeze(-1),
+            'q50': self.q50_head(quantile_features).squeeze(-1),
+            'q75': self.q75_head(quantile_features).squeeze(-1)
+        }
 
 
 class RBNetwork(nn.Module):
@@ -1014,9 +1223,11 @@ class QBNeuralModel(BaseNeuralModel):
 
     def __init__(self, config: ModelConfig):
         super().__init__(config)
-        self.learning_rate = 0.00015
-        self.batch_size = 50
-        self.epochs = 200
+        # Conservative optimizations for R² improvement
+        self.learning_rate = 0.00003  # Lower learning rate for stability
+        self.batch_size = 128         # Keep reasonable batch size
+        self.epochs = 800            # More epochs but not excessive
+        self.patience = 50           # Reasonable patience for exploration
 
     def build_network(self, input_size: int) -> nn.Module:
         return QBNetwork(input_size)

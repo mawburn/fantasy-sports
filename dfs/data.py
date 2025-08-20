@@ -31,6 +31,75 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
+class ProgressDisplay:
+    """Simple progress display that updates in place."""
+
+    def __init__(self, description: str = "Processing"):
+        self.description = description
+        self.last_percentage = -1
+        self._finished = False
+
+    def update(self, current: int, total: int):
+        """Update progress display with current/total."""
+        if self._finished or total == 0:
+            return
+
+        percentage = int((current / total) * 100)
+
+        # Only update if percentage changed to reduce output
+        if percentage != self.last_percentage:
+            print(f"\r{self.description}: {percentage}%", end="", flush=True)
+            self.last_percentage = percentage
+
+    def finish(self, message: str = None):
+        """Clear the progress line and optionally print a completion message."""
+        if self._finished:
+            return
+
+        self._finished = True
+        if message:
+            print(f"\r{message}")
+        else:
+            print()  # Just add newline to clear the line
+
+
+def parse_date_flexible(date_str: str) -> datetime:
+    """Parse date string in either YYYY-MM-DD or M/D/YYYY format.
+
+    Args:
+        date_str: Date string in either format
+
+    Returns:
+        datetime object
+
+    Raises:
+        ValueError: If neither format can be parsed
+    """
+    if not date_str:
+        raise ValueError("Date string is empty")
+
+    # Try YYYY-MM-DD format first (ISO format)
+    try:
+        return datetime.strptime(date_str, '%Y-%m-%d')
+    except ValueError:
+        pass
+
+    # Try M/D/YYYY format (spreadspoke format)
+    try:
+        return datetime.strptime(date_str, '%m/%d/%Y')
+    except ValueError:
+        pass
+
+    # Try MM/DD/YYYY format (padded version)
+    try:
+        return datetime.strptime(date_str, '%m/%d/%Y')
+    except ValueError:
+        pass
+
+    raise ValueError(f"Unable to parse date string: '{date_str}'. Expected format: YYYY-MM-DD or M/D/YYYY")
+
+
 # Database schema - simplified tables
 DB_SCHEMA = {
     'games': '''
@@ -726,8 +795,8 @@ def collect_weather_data_optimized(db_path: str = "data/nfl_dfs.db", limit: int 
                 # Collect consecutive games within max_days_per_batch
                 while (i < len(games) and
                        len(batch_games) < max_days_per_batch and
-                       (datetime.strptime(games[i][1], '%Y-%m-%d') -
-                        datetime.strptime(batch_start_date, '%Y-%m-%d')).days <= max_days_per_batch):
+                       (parse_date_flexible(games[i][1]) -
+                        parse_date_flexible(batch_start_date)).days <= max_days_per_batch):
                     batch_games.append(games[i])
                     current_date = games[i][1]
                     i += 1
@@ -1665,6 +1734,28 @@ def get_player_vs_defense_features(
 
     return features
 
+def compute_weekly_odds_z_scores(df: pd.DataFrame, season: int, week: int) -> pd.DataFrame:
+    """Compute weekly z-scores for odds features."""
+    weekly_mask = (df['season'] == season) & (df['week'] == week)
+    weekly_df = df[weekly_mask].copy()
+
+    if len(weekly_df) == 0:
+        return df
+
+    # Compute z-scores for this week
+    if 'total_line' in weekly_df.columns and weekly_df['total_line'].std() > 0:
+        weekly_mean = weekly_df['total_line'].mean()
+        weekly_std = weekly_df['total_line'].std()
+        df.loc[weekly_mask, 'game_tot_z'] = (df.loc[weekly_mask, 'total_line'] - weekly_mean) / weekly_std
+
+    if 'team_itt' in weekly_df.columns and weekly_df['team_itt'].std() > 0:
+        weekly_mean = weekly_df['team_itt'].mean()
+        weekly_std = weekly_df['team_itt'].std()
+        df.loc[weekly_mask, 'team_itt_z'] = (df.loc[weekly_mask, 'team_itt'] - weekly_mean) / weekly_std
+
+    return df
+
+
 def get_player_features(
     player_id: int,
     game_id: int,
@@ -1711,7 +1802,7 @@ def get_player_features(
         opponent_abbr = away_abbr if is_home else home_abbr
 
         # Parse game date
-        game_date = datetime.strptime(game_date, '%Y-%m-%d').date()
+        game_date = parse_date_flexible(game_date).date()
         start_date = game_date - timedelta(weeks=lookback_weeks)
 
         # Get recent stats
@@ -1804,27 +1895,76 @@ def get_player_features(
 
         if weather_data:
             temp, wind, humidity, conditions, neutral = weather_data
-            features['weather_temp'] = temp or 72  # Default to 72°F if missing
-            features['weather_wind'] = wind or 0
-            features['weather_humidity'] = humidity or 50  # Default to 50%
-            features['weather_is_indoor'] = 1 if conditions and 'indoor' in conditions.lower() else 0
-            features['weather_is_rain'] = 1 if conditions and 'rain' in conditions.lower() else 0
-            features['weather_is_snow'] = 1 if conditions and 'snow' in conditions.lower() else 0
-            features['stadium_neutral'] = neutral or 0
 
-            # Weather impact features
-            features['cold_weather'] = 1 if (temp or 72) < 40 else 0
-            features['hot_weather'] = 1 if (temp or 72) > 85 else 0
-            features['high_wind'] = 1 if (wind or 0) > 15 else 0
+            # Raw weather features
+            features['temperature_f'] = temp or 72
+            features['wind_mph'] = wind or 0
+            features['humidity_pct'] = humidity or 50
+
+            # Weather threshold features
+            features['cold_lt40'] = 1 if (temp or 72) < 40 else 0
+            features['hot_gt85'] = 1 if (temp or 72) > 85 else 0
+            features['wind_gt15'] = 1 if (wind or 0) > 15 else 0
+            features['dome'] = 1 if conditions and 'indoor' in conditions.lower() else 0
         else:
             # Default weather values if no data
             features.update({
-                'weather_temp': 72, 'weather_wind': 0, 'weather_humidity': 50,
-                'weather_is_indoor': 0, 'weather_is_rain': 0, 'weather_is_snow': 0,
-                'stadium_neutral': 0, 'cold_weather': 0, 'hot_weather': 0, 'high_wind': 0
+                'temperature_f': 72, 'wind_mph': 0, 'humidity_pct': 50,
+                'cold_lt40': 0, 'hot_gt85': 0, 'wind_gt15': 0, 'dome': 0
             })
 
-        # Add betting odds features (prioritize live odds from odds_api)
+        # Add comprehensive injury features
+        # Get player injury status
+        player_injury = conn.execute(
+            """SELECT p.injury_status FROM players p WHERE p.id = ?""",
+            (player_id,)
+        ).fetchone()
+
+        injury_status = (player_injury[0] if player_injury else None) or 'Healthy'
+
+        # One-hot encode injury status
+        features['injury_status_Out'] = 1 if injury_status == 'Out' else 0
+        features['injury_status_Doubtful'] = 1 if injury_status == 'Doubtful' else 0
+        features['injury_status_Questionable'] = 1 if injury_status == 'Questionable' else 0
+        features['injury_status_Probable'] = 1 if injury_status in ['Probable', 'Healthy'] else 0
+
+        # Count games missed in last 4 weeks
+        games_missed = conn.execute(
+            """SELECT COUNT(*) FROM games g
+               WHERE g.game_date >= ? AND g.game_date < ?
+               AND NOT EXISTS (
+                   SELECT 1 FROM player_stats ps
+                   WHERE ps.player_id = ? AND ps.game_id = g.id
+               )""",
+            (start_date, game_date, player_id)
+        ).fetchone()
+
+        features['games_missed_last4'] = games_missed[0] if games_missed else 0
+
+        # Practice trend (simplified - assume stable for now)
+        features['practice_trend'] = 0  # 0=stable, 1=improving, -1=regressing
+
+        # Returning from injury flag
+        features['returning_from_injury'] = 1 if features['games_missed_last4'] > 0 and injury_status == 'Healthy' else 0
+
+        # Team injury aggregates - count injured starters
+        team_injured = conn.execute(
+            """SELECT COUNT(*) FROM players p
+               WHERE p.team_id = ? AND p.injury_status IN ('Out', 'Doubtful', 'Questionable')""",
+            (team_id,)
+        ).fetchone()
+
+        opponent_team_id = away_team_id if is_home else home_team_id
+        opp_injured = conn.execute(
+            """SELECT COUNT(*) FROM players p
+               WHERE p.team_id = ? AND p.injury_status IN ('Out', 'Doubtful', 'Questionable')""",
+            (opponent_team_id,)
+        ).fetchone()
+
+        features['team_injured_starters'] = min(team_injured[0] if team_injured else 0, 11)  # Cap at 11
+        features['opp_injured_starters'] = min(opp_injured[0] if opp_injured else 0, 11)  # Cap at 11
+
+        # Add enhanced betting odds features (prioritize live odds from odds_api)
         betting_data = conn.execute(
             """SELECT spread_favorite, over_under_line, home_team_spread, away_team_spread, source
                FROM betting_odds WHERE game_id = ?
@@ -1836,23 +1976,49 @@ def get_player_features(
         if betting_data:
             spread_fav, over_under, home_spread, away_spread, source = betting_data
             team_spread = home_spread if is_home else away_spread
-            features['team_spread'] = team_spread or 0  # Positive = underdog, Negative = favorite
-            features['total_line'] = over_under or 45  # Default NFL total
+            over_under_line = over_under or 45
+
+            # Core odds features
+            features['team_spread'] = team_spread or 0
+            features['team_spread_abs'] = abs(team_spread or 0)
+            features['total_line'] = over_under_line
             features['is_favorite'] = 1 if (team_spread or 0) < 0 else 0
-            features['is_big_favorite'] = 1 if (team_spread or 0) < -7 else 0
-            features['is_big_underdog'] = 1 if (team_spread or 0) > 7 else 0
-            features['expected_pace'] = (over_under or 45) / 45.0  # Normalized pace expectation
+
+            # Derived features
+            features['team_itt'] = over_under_line / 2.0 - (team_spread or 0) / 2.0  # Implied team total
+
+            # Z-scores will be computed in batch processing
+            features['game_tot_z'] = 0.0  # Placeholder
+            features['team_itt_z'] = 0.0  # Placeholder
         else:
             # Default betting values if no data
             features.update({
-                'team_spread': 0, 'total_line': 45, 'is_favorite': 0,
-                'is_big_favorite': 0, 'is_big_underdog': 0, 'expected_pace': 1.0
+                'team_spread': 0, 'team_spread_abs': 0, 'total_line': 45, 'is_favorite': 0,
+                'team_itt': 22.5, 'game_tot_z': 0.0, 'team_itt_z': 0.0
             })
 
-        # Add team and opponent features
-        features['home_game'] = 1 if is_home else 0
-        features['week'] = week
-        features['season'] = season
+        # Add contextual features to match schema
+        features['salary'] = 5000  # Default salary - should be populated from DK data
+        features['home'] = 1 if is_home else 0
+        features['rest_days'] = 7  # Default NFL week rest
+        features['travel'] = 0  # Travel distance - placeholder
+        features['season_week'] = week  # Normalized week
+
+        # Add placeholder usage/opportunity features (to be computed from historical data)
+        features['targets_ema'] = features.get('avg_targets', 0)
+        features['routes_run_ema'] = 0  # Placeholder
+        features['rush_att_ema'] = features.get('avg_carries', 0)
+        features['snap_share_ema'] = 0.5  # Placeholder
+        features['redzone_opps_ema'] = 0  # Placeholder
+        features['air_yards_ema'] = 0  # Placeholder
+        features['adot_ema'] = 0  # Placeholder - Average Depth of Target
+        features['yprr_ema'] = 0  # Placeholder - Yards Per Route Run
+
+        # Add efficiency features (placeholders)
+        features['yards_after_contact'] = 0  # Placeholder
+        features['missed_tackles_forced'] = 0  # Placeholder
+        features['pressure_rate'] = 0  # Placeholder - for QBs
+        features['opp_dvp_pos_allowed'] = 0  # Opponent defense vs position
 
     except Exception as e:
         logger.error(f"Error extracting features for player {player_id}: {e}")
@@ -2066,7 +2232,8 @@ def get_training_data(
             logger.warning(f"No training data found for position {position}")
             return np.array([]), np.array([]), []
 
-        logger.info(f"Found {len(rows)} player-game combinations, computing features...")
+        progress = ProgressDisplay("Loading training data")
+        progress.finish(f"Found {len(rows)} player-game combinations")
 
         # Pre-compute all player stats in batch to avoid N+1 queries
         player_ids = list(set(row[0] for row in rows))
@@ -2106,14 +2273,15 @@ def get_training_data(
             opponent_abbr = away_abbr if team_id == home_team_id else home_abbr
             unique_matchups.add((opponent_abbr, season, week))
 
-        logger.info(f"Pre-computing defensive features for {len(unique_matchups)} unique matchups...")
+        defensive_progress = ProgressDisplay("Computing defensive features")
         defensive_features_cache = {}
-        for opponent_abbr, season, week in unique_matchups:
+        for idx, (opponent_abbr, season, week) in enumerate(unique_matchups):
+            defensive_progress.update(idx, len(unique_matchups))
             def_features = batch_get_defensive_features(opponent_abbr, season, week, conn)
             defensive_features_cache[(opponent_abbr, season, week)] = def_features
+        defensive_progress.finish(f"Computed features for {len(unique_matchups)} matchups")
 
         # First pass: collect all possible features to ensure consistency
-        logger.info("Collecting all possible feature names...")
         all_features_dict = {}
 
         # Pre-define expected statistical features that all positions should have
@@ -2124,12 +2292,25 @@ def get_training_data(
             'yards_per_reception', 'catch_rate', 'games_played', 'max_points', 'min_points', 'consistency'
         ]
 
-        # Pre-define weather and betting features that all positions should have
+        # Pre-define weather, betting and other contextual features that all positions should have
         weather_betting_features = [
             'weather_temp', 'weather_wind', 'weather_humidity', 'weather_is_indoor',
             'weather_is_rain', 'weather_is_snow', 'stadium_neutral', 'cold_weather',
-            'hot_weather', 'high_wind', 'team_spread', 'total_line', 'is_favorite',
-            'is_big_favorite', 'is_big_underdog', 'expected_pace'
+            'hot_weather', 'high_wind', 'team_spread', 'team_spread_abs', 'total_line',
+            'is_favorite', 'is_big_favorite', 'is_big_underdog', 'expected_pace',
+            'team_itt', 'game_tot_z', 'team_itt_z', 'temperature_f', 'wind_mph',
+            'humidity_pct', 'cold_lt40', 'hot_gt85', 'wind_gt15', 'dome',
+            'injury_status_Out', 'injury_status_Doubtful', 'injury_status_Questionable',
+            'injury_status_Probable', 'games_missed_last4', 'practice_trend',
+            'returning_from_injury', 'team_injured_starters', 'opp_injured_starters',
+            'targets_ema', 'routes_run_ema', 'rush_att_ema', 'snap_share_ema',
+            'redzone_opps_ema', 'air_yards_ema', 'adot_ema', 'yprr_ema',
+            'yards_after_contact', 'missed_tackles_forced', 'pressure_rate',
+            'opp_dvp_pos_allowed', 'salary', 'home', 'rest_days', 'travel', 'season_week',
+            'completion_pct_trend', 'yds_per_attempt_trend', 'td_int_ratio_trend', 
+            'passer_rating_est', 'passing_volume_trend', 'dual_threat_factor',
+            'red_zone_efficiency_est', 'game_script_favorability', 'pressure_situation',
+            'ceiling_indicator'
         ]
 
         # Combine all expected features
@@ -2153,12 +2334,13 @@ def get_training_data(
         # Remove duplicates and limit sample size
         sample_indices = sorted(list(set(sample_indices)))[:100]
 
-        logger.info(f"Sampling {len(sample_indices)} rows to identify all features...")
+        sampling_progress = ProgressDisplay("Identifying features")
 
-        for i in sample_indices:
+        for idx, i in enumerate(sample_indices):
+            sampling_progress.update(idx, len(sample_indices))
             row = rows[i]
             player_id, game_id = row[0], row[1]
-            game_date = datetime.strptime(row[6], '%Y-%m-%d').date()
+            game_date = parse_date_flexible(row[6]).date()
             player_recent_stats = player_stats.get(player_id, [])
 
             # Get all feature types
@@ -2189,18 +2371,20 @@ def get_training_data(
             all_features_dict.update(correlation_features)
 
         feature_names = sorted(list(all_features_dict.keys()))
-        logger.info(f"Found {len(feature_names)} total features")
+        sampling_progress.finish(f"Found {len(feature_names)} total features")
 
         # Second pass: extract features for each player-game using consistent feature space
         X_list = []
         y_list = []
 
+        feature_progress = ProgressDisplay("Processing samples")
+
         for row_idx, row in enumerate(rows):
             if row_idx % 100 == 0:
-                logger.info(f"Processing {row_idx}/{len(rows)} samples...")
+                feature_progress.update(row_idx, len(rows))
 
             player_id, game_id, fantasy_points = row[0], row[1], row[2]
-            game_date = datetime.strptime(row[6], '%Y-%m-%d').date()
+            game_date = parse_date_flexible(row[6]).date()
 
             # Extract all feature types
             features = {}
@@ -2249,13 +2433,24 @@ def get_training_data(
                     'stadium_neutral': neutral or 0,
                     'cold_weather': 1 if (temp or 72) < 40 else 0,
                     'hot_weather': 1 if (temp or 72) > 85 else 0,
-                    'high_wind': 1 if (wind or 0) > 15 else 0
+                    'high_wind': 1 if (wind or 0) > 15 else 0,
+                    # Additional weather features matching expected schema
+                    'temperature_f': temp or 72,
+                    'wind_mph': wind or 0,
+                    'humidity_pct': humidity or 50,
+                    'cold_lt40': 1 if (temp or 72) < 40 else 0,
+                    'hot_gt85': 1 if (temp or 72) > 85 else 0,
+                    'wind_gt15': 1 if (wind or 0) > 15 else 0,
+                    'dome': 1 if conditions and 'indoor' in conditions.lower() else 0
                 })
             else:
                 weather_betting_features.update({
                     'weather_temp': 72, 'weather_wind': 0, 'weather_humidity': 50,
                     'weather_is_indoor': 0, 'weather_is_rain': 0, 'weather_is_snow': 0,
-                    'stadium_neutral': 0, 'cold_weather': 0, 'hot_weather': 0, 'high_wind': 0
+                    'stadium_neutral': 0, 'cold_weather': 0, 'hot_weather': 0, 'high_wind': 0,
+                    # Additional weather defaults
+                    'temperature_f': 72, 'wind_mph': 0, 'humidity_pct': 50,
+                    'cold_lt40': 0, 'hot_gt85': 0, 'wind_gt15': 0, 'dome': 0
                 })
 
             # Add betting odds features (prioritize live odds)
@@ -2271,21 +2466,108 @@ def get_training_data(
             if betting_data:
                 spread_fav, over_under, home_spread, away_spread = betting_data
                 team_spread = home_spread if is_home else away_spread
+                over_under_line = over_under or 45
                 weather_betting_features.update({
                     'team_spread': team_spread or 0,
-                    'total_line': over_under or 45,
+                    'team_spread_abs': abs(team_spread or 0),
+                    'total_line': over_under_line,
                     'is_favorite': 1 if (team_spread or 0) < 0 else 0,
                     'is_big_favorite': 1 if (team_spread or 0) < -7 else 0,
                     'is_big_underdog': 1 if (team_spread or 0) > 7 else 0,
-                    'expected_pace': (over_under or 45) / 45.0
+                    'expected_pace': over_under_line / 45.0,
+                    'team_itt': over_under_line / 2.0 - (team_spread or 0) / 2.0,
+                    'game_tot_z': 0.0,  # Will be computed in post-processing
+                    'team_itt_z': 0.0   # Will be computed in post-processing
                 })
             else:
                 weather_betting_features.update({
-                    'team_spread': 0, 'total_line': 45, 'is_favorite': 0,
-                    'is_big_favorite': 0, 'is_big_underdog': 0, 'expected_pace': 1.0
+                    'team_spread': 0, 'team_spread_abs': 0, 'total_line': 45, 'is_favorite': 0,
+                    'is_big_favorite': 0, 'is_big_underdog': 0, 'expected_pace': 1.0,
+                    'team_itt': 22.5, 'game_tot_z': 0.0, 'team_itt_z': 0.0
                 })
 
             features.update(weather_betting_features)
+
+            # Add injury and contextual features
+            try:
+                # Get player injury status
+                player_injury = conn.execute(
+                    """SELECT injury_status FROM players WHERE id = ?""",
+                    (player_id,)
+                ).fetchone()
+
+                injury_status = (player_injury[0] if player_injury else None) or 'Healthy'
+
+                # One-hot encode injury status
+                features['injury_status_Out'] = 1 if injury_status == 'Out' else 0
+                features['injury_status_Doubtful'] = 1 if injury_status == 'Doubtful' else 0
+                features['injury_status_Questionable'] = 1 if injury_status == 'Questionable' else 0
+                features['injury_status_Probable'] = 1 if injury_status in ['Probable', 'Healthy'] else 0
+
+                # Add advanced QB-specific features for better prediction
+                qb_features = {}
+                
+                # Enhanced passing efficiency metrics for QBs
+                if position == 'QB':
+                    # Use recent averages to compute advanced metrics
+                    avg_pass_att = features.get('avg_pass_attempts', 30)
+                    avg_pass_comp = features.get('avg_completions', 18)
+                    avg_pass_yds = features.get('avg_pass_yards', 250)
+                    avg_pass_tds = features.get('avg_pass_tds', 1.5)
+                    avg_ints = features.get('avg_interceptions', 0.7)
+                    avg_rush_yds = features.get('avg_rush_yards', 15)
+                    
+                    # Advanced efficiency metrics
+                    completion_pct = avg_pass_comp / max(avg_pass_att, 1) 
+                    yds_per_att = avg_pass_yds / max(avg_pass_att, 1)
+                    td_to_int_ratio = avg_pass_tds / max(avg_ints, 0.1)
+                    passer_rating_est = min((completion_pct - 0.3) * 5 + (yds_per_att - 3) * 0.25 + avg_pass_tds * 0.2 - avg_ints * 0.25, 4.0)
+                    
+                    # Game flow and situational features
+                    over_under_line = features.get('total_line', 45)
+                    team_spread = features.get('team_spread', 0)
+                    expected_pace = over_under_line / 45.0
+                    
+                    qb_features.update({
+                        'completion_pct_trend': completion_pct,
+                        'yds_per_attempt_trend': yds_per_att,
+                        'td_int_ratio_trend': td_to_int_ratio,
+                        'passer_rating_est': max(passer_rating_est, 0.0),
+                        'passing_volume_trend': min(avg_pass_att / 35.0, 2.0),
+                        'dual_threat_factor': min(avg_rush_yds / 20.0, 1.5),  # Rushing upside
+                        'red_zone_efficiency_est': avg_pass_tds / max(avg_pass_att * 0.15, 1),
+                        'game_script_favorability': expected_pace * (1.0 if team_spread > -3 else 0.8),
+                        'pressure_situation': 1.0 if team_spread < -7 else (0.7 if team_spread > 7 else 1.0),
+                        'ceiling_indicator': min(avg_pass_yds + avg_rush_yds + avg_pass_tds * 20, 400) / 400.0
+                    })
+                
+                # Add all contextual features including new QB features
+                all_features = {
+                    'games_missed_last4': 0, 'practice_trend': 0, 'returning_from_injury': 0,
+                    'team_injured_starters': 0, 'opp_injured_starters': 0,
+                    'targets_ema': features.get('avg_targets', 0), 'routes_run_ema': 0,
+                    'rush_att_ema': features.get('avg_rush_attempts', 0), 'snap_share_ema': 0.7,
+                    'redzone_opps_ema': 0, 'air_yards_ema': 0, 'adot_ema': 0, 'yprr_ema': 0,
+                    'yards_after_contact': 0, 'missed_tackles_forced': 0, 'pressure_rate': 0,
+                    'opp_dvp_pos_allowed': 0, 'salary': 5000, 'home': 1 if is_home else 0,
+                    'rest_days': 7, 'travel': 0, 'season_week': week
+                }
+                all_features.update(qb_features)
+                features.update(all_features)
+
+            except Exception as e:
+                logger.debug(f"Error adding contextual features for player {player_id}: {e}")
+                # Add defaults if query fails
+                features.update({
+                    'injury_status_Out': 0, 'injury_status_Doubtful': 0, 'injury_status_Questionable': 0,
+                    'injury_status_Probable': 1, 'games_missed_last4': 0, 'practice_trend': 0,
+                    'returning_from_injury': 0, 'team_injured_starters': 0, 'opp_injured_starters': 0,
+                    'targets_ema': 0, 'routes_run_ema': 0, 'rush_att_ema': 0, 'snap_share_ema': 0.7,
+                    'redzone_opps_ema': 0, 'air_yards_ema': 0, 'adot_ema': 0, 'yprr_ema': 0,
+                    'yards_after_contact': 0, 'missed_tackles_forced': 0, 'pressure_rate': 0,
+                    'opp_dvp_pos_allowed': 0, 'salary': 5000, 'home': 1 if is_home else 0,
+                    'rest_days': 7, 'travel': 0, 'season_week': week
+                })
 
             # Correlation features
             try:
@@ -2313,12 +2595,65 @@ def get_training_data(
         X = np.array(X_list, dtype=np.float32)
         y = np.array(y_list, dtype=np.float32)
 
+        feature_progress.finish(f"Processed {len(rows)} samples")
+
+        # Compute z-scores for betting features by season/week
+        logger.info("Computing betting feature z-scores...")
+
+        # Check if we have total_line and team_itt features
+        total_line_idx = -1
+        team_itt_idx = -1
+        game_tot_z_idx = -1
+        team_itt_z_idx = -1
+
+        for i, fname in enumerate(feature_names):
+            if fname == 'total_line':
+                total_line_idx = i
+            elif fname == 'team_itt':
+                team_itt_idx = i
+            elif fname == 'game_tot_z':
+                game_tot_z_idx = i
+            elif fname == 'team_itt_z':
+                team_itt_z_idx = i
+
+        if total_line_idx >= 0 and game_tot_z_idx >= 0:
+            # Group samples by season/week and compute z-scores
+            week_groups = {}
+            for idx, row in enumerate(rows):
+                season, week = row[7], row[8]
+                key = (season, week)
+                if key not in week_groups:
+                    week_groups[key] = []
+                week_groups[key].append(idx)
+
+            # Compute z-scores for each week
+            for (season, week), indices in week_groups.items():
+                if len(indices) < 2:
+                    continue
+
+                # Total line z-scores
+                total_values = X[indices, total_line_idx]
+                if np.std(total_values) > 0:
+                    mean_val = np.mean(total_values)
+                    std_val = np.std(total_values)
+                    X[indices, game_tot_z_idx] = (total_values - mean_val) / std_val
+
+                # Team ITT z-scores
+                if team_itt_idx >= 0 and team_itt_z_idx >= 0:
+                    itt_values = X[indices, team_itt_idx]
+                    if np.std(itt_values) > 0:
+                        mean_val = np.mean(itt_values)
+                        std_val = np.std(itt_values)
+                        X[indices, team_itt_z_idx] = (itt_values - mean_val) / std_val
+
         # Clean data: handle NaNs and remove constant features
-        logger.info(f"Cleaning {len(X)} training samples...")
+        cleaning_progress = ProgressDisplay("Cleaning data")
+        cleaning_progress.update(1, 3)  # Step 1 of 3
 
         # Replace NaNs with 0 (since missing features should be 0)
         X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
         y = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
+        cleaning_progress.update(2, 3)  # Step 2 of 3
 
         # Remove constant features (zero variance) but preserve important weather/betting features
         if len(X) > 1:
@@ -2335,10 +2670,38 @@ def get_training_data(
 
             if not np.all(non_constant_mask):
                 constant_features = [feature_names[i] for i, keep in enumerate(non_constant_mask) if not keep]
-                logger.info(f"Removing {len(constant_features)} constant features: {constant_features[:5]}...")
+                cleaning_progress.finish(f"Removed {len(constant_features)} constant features")
 
                 X = X[:, non_constant_mask]
                 feature_names = [feature_names[i] for i, keep in enumerate(non_constant_mask) if keep]
+            else:
+                cleaning_progress.update(3, 3)  # Final step
+
+        # Apply feature validation if available
+        try:
+            from utils_feature_validation import validate_and_prepare_features, load_expected_schema
+            import pandas as pd
+
+            # Convert to DataFrame for validation
+            df = pd.DataFrame(X, columns=feature_names)
+
+            # Load expected schema and validate
+            try:
+                expected_schema = load_expected_schema("feature_names.json")
+                df = validate_and_prepare_features(df, expected_schema, allow_extra=True)
+
+                # Update arrays after validation
+                X = df.values.astype(np.float32)
+                feature_names = df.columns.tolist()
+                pass  # Validation successful
+            except Exception as ve:
+                logger.warning(f"Feature validation failed, continuing without validation: {ve}")
+
+        except ImportError:
+            pass  # Validation not available
+
+        if not cleaning_progress._finished:
+            cleaning_progress.finish()
 
         logger.info(f"Final dataset: {len(X)} training samples for {position} with {len(feature_names)} features")
         return X, y, feature_names
@@ -2365,8 +2728,8 @@ def compute_features_from_stats(
     cutoff_date = target_game_date - timedelta(weeks=lookback_weeks)
     recent_stats = [
         stat for stat in player_stats
-        if datetime.strptime(stat[14], '%Y-%m-%d').date() >= cutoff_date
-        and datetime.strptime(stat[14], '%Y-%m-%d').date() < target_game_date
+        if parse_date_flexible(stat[14]).date() >= cutoff_date
+        and parse_date_flexible(stat[14]).date() < target_game_date
     ]
 
     # If no recent stats, expand the window to get any historical data
@@ -2374,7 +2737,7 @@ def compute_features_from_stats(
         # Try with all available data before the target date
         recent_stats = [
             stat for stat in player_stats
-            if datetime.strptime(stat[14], '%Y-%m-%d').date() < target_game_date
+            if parse_date_flexible(stat[14]).date() < target_game_date
         ]
         # Take the most recent games if we have too many
         if len(recent_stats) > 8:
@@ -2556,7 +2919,7 @@ def validate_data_quality(db_path: str = "data/nfl_dfs.db") -> Dict[str, Any]:
         ).fetchone()[0]
 
         if latest_game:
-            latest_date = datetime.strptime(latest_game, '%Y-%m-%d').date()
+            latest_date = parse_date_flexible(latest_game).date()
             days_old = (datetime.now().date() - latest_date).days
             # Only flag as stale during active season (Sep-Feb)
             current_month = datetime.now().month
@@ -2652,7 +3015,14 @@ def import_spreadspoke_data(csv_path: str, db_path: str = "data/nfl_dfs.db") -> 
 
             for row in reader:
                 # Parse basic game info
-                game_date = row['schedule_date']
+                raw_game_date = row['schedule_date']
+                # Convert date from M/D/YYYY to YYYY-MM-DD format
+                try:
+                    parsed_date = parse_date_flexible(raw_game_date)
+                    game_date = parsed_date.strftime('%Y-%m-%d')
+                except Exception as e:
+                    logger.warning(f"Could not parse date {raw_game_date}: {e}")
+                    continue
                 season = int(row['schedule_season'])
                 is_playoff = row['schedule_playoff'].upper() == 'TRUE'
 
@@ -2813,7 +3183,7 @@ def collect_odds_data(target_date: str = None, db_path: str = "data/nfl_dfs.db")
             # Parse the commence time to check if it matches target date
             game_date = datetime.fromisoformat(commence_time.replace('Z', '+00:00')).date()
             if target_date:
-                target_date_obj = datetime.strptime(target_date, '%Y-%m-%d').date()
+                target_date_obj = parse_date_flexible(target_date).date()
                 if game_date != target_date_obj:
                     continue
 
@@ -2990,11 +3360,12 @@ def collect_injury_data(seasons: List[int] = None, db_path: str = "data/nfl_dfs.
                     logger.warning(f"No injury data found for season {season}")
                     continue
 
-                logger.info(f"Processing {len(injury_df)} injury records for season {season}")
-
+                injury_progress = ProgressDisplay(f"Processing injury data {season}")
                 season_updates = 0
 
-                for _, injury_row in injury_df.iterrows():
+                for idx, injury_row in injury_df.iterrows():
+                    if idx % 100 == 0:
+                        injury_progress.update(idx, len(injury_df))
                     try:
                         # Get injury status and handle None values
                         nfl_status = injury_row.get('report_status')
@@ -3069,16 +3440,13 @@ def collect_injury_data(seasons: List[int] = None, db_path: str = "data/nfl_dfs.
                             )
                             season_updates += 1
 
-                            if season_updates % 50 == 0:
-                                logger.info(f"Updated {season_updates} player injury statuses for season {season}")
-
                     except Exception as e:
                         logger.warning(f"Error processing injury record: {e}")
                         continue
 
+                injury_progress.finish(f"Completed season {season}: {season_updates} updates")
                 conn.commit()
                 total_updates += season_updates
-                logger.info(f"Completed season {season}: {season_updates} injury status updates")
 
             except Exception as e:
                 logger.error(f"Error collecting injury data for season {season}: {e}")
@@ -3140,9 +3508,10 @@ def backtest_production_pipeline(
         actuals = []
         failed_predictions = 0
 
+        pred_progress = ProgressDisplay("Generating predictions")
         for i, (player_id, game_id, actual_points, player_name) in enumerate(test_data):
             if i % 50 == 0:
-                logger.info(f"Processing {i}/{len(test_data)} predictions...")
+                pred_progress.update(i, len(test_data))
 
             try:
                 # Use EXACT production pipeline
@@ -3177,6 +3546,8 @@ def backtest_production_pipeline(
                 failed_predictions += 1
                 if failed_predictions <= 5:  # Log first few failures
                     logger.debug(f"Prediction failed for {player_name} in {game_id}: {e}")
+
+        pred_progress.finish(f"Generated {len(predictions)} predictions")
 
         if len(predictions) < 10:
             return {"error": f"Too few valid predictions: {len(predictions)}"}

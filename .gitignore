@@ -30,6 +30,8 @@ env/
 .cache/
 .pytest_cache/
 .mypy_cache/
+.db-shm
+.db-wal
 
 # Generated lineups (keep directory structure)
 dfs/lineups/*.csv
