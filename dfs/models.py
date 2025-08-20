@@ -613,6 +613,7 @@ class BaseNeuralModel(ABC):
 
         if self.network is None:
             input_size = X_train.shape[1]
+            self.input_size = input_size  # Store input size for later use
             self.network = self.build_network(input_size)
             self.network.to(self.device)
 
@@ -775,7 +776,7 @@ class BaseNeuralModel(ABC):
     def load_model(self, path: str, input_size: int = None):
         """Load trained model from disk."""
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
-        
+
         # Handle both old (state_dict only) and new (checkpoint with metadata) formats
         if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
             # New format with metadata
@@ -796,11 +797,11 @@ class BaseNeuralModel(ABC):
                     input_size = state_dict[first_layer_key].shape[1]
                 else:
                     raise ValueError("Cannot determine input size from old model format")
-        
+
         if self.network is None:
             self.network = self.build_network(input_size)
             self.input_size = input_size
-        
+
         self.network.load_state_dict(state_dict)
         self.network.to(self.device)  # Ensure model is on the correct device
         self.network.eval()

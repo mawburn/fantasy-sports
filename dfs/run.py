@@ -19,7 +19,9 @@ from data import (
     get_current_week_players,
     get_training_data,
     get_db_connection,
-    get_player_features
+    get_player_features,
+    import_spreadspoke_data,
+    collect_odds_data
 )
 from models import (
     create_model,
@@ -660,6 +662,20 @@ def main():
         help="Path to DraftKings CSV file for salary integration"
     )
 
+    # Import command
+    import_parser = subparsers.add_parser("import", help="Import external data sources")
+    import_parser.add_argument(
+        "--spreadspoke",
+        help="Path to spreadspoke CSV file with weather and betting data"
+    )
+
+    # Odds command
+    odds_parser = subparsers.add_parser("odds", help="Collect betting odds from The Odds API")
+    odds_parser.add_argument(
+        "--date",
+        help="Target date for odds collection (YYYY-MM-DD format). If not provided, collects all upcoming games."
+    )
+
     # Train command
     train_parser = subparsers.add_parser("train", help="Train prediction models")
     train_parser.add_argument(
@@ -746,6 +762,31 @@ def main():
         if args.csv:
             logger.info(f"Integrating DraftKings salaries from {args.csv}")
             load_draftkings_csv(args.csv, None, DEFAULT_DB_PATH)
+
+    elif args.command == "import":
+        if args.spreadspoke:
+            logger.info(f"Importing spreadspoke data from {args.spreadspoke}")
+            import_spreadspoke_data(args.spreadspoke, DEFAULT_DB_PATH)
+            logger.info("Spreadspoke data import completed")
+        else:
+            logger.error("Please specify a data source to import (--spreadspoke)")
+
+    elif args.command == "odds":
+        try:
+            target_date = args.date
+            if target_date:
+                logger.info(f"Collecting odds for date: {target_date}")
+            else:
+                logger.info("Collecting odds for all upcoming games")
+            collect_odds_data(target_date, DEFAULT_DB_PATH)
+            logger.info("Odds collection completed successfully")
+        except ValueError as e:
+            logger.error(f"Configuration error: {e}")
+            logger.error("Make sure to set ODDS_API_KEY in your .env file")
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"Error collecting odds: {e}")
+            sys.exit(1)
 
     elif args.command == "train":
         train_models(args.seasons, args.positions)

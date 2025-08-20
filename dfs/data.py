@@ -43,7 +43,13 @@ DB_SCHEMA = {
             away_team_id INTEGER,
             home_score INTEGER,
             away_score INTEGER,
-            game_finished INTEGER DEFAULT 0
+            game_finished INTEGER DEFAULT 0,
+            stadium TEXT,
+            stadium_neutral INTEGER DEFAULT 0,
+            weather_temperature INTEGER,
+            weather_wind_mph INTEGER,
+            weather_humidity INTEGER,
+            weather_detail TEXT
         )
     ''',
     'teams': '''
@@ -172,6 +178,20 @@ DB_SCHEMA = {
             visibility INTEGER,
             pressure REAL,
             collected_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(game_id),
+            FOREIGN KEY (game_id) REFERENCES games (id)
+        )
+    ''',
+    'betting_odds': '''
+        CREATE TABLE IF NOT EXISTS betting_odds (
+            id INTEGER PRIMARY KEY,
+            game_id TEXT,
+            favorite_team TEXT,
+            spread_favorite REAL,
+            over_under_line REAL,
+            home_team_spread REAL,
+            away_team_spread REAL,
+            source TEXT DEFAULT 'spreadspoke',
             UNIQUE(game_id),
             FOREIGN KEY (game_id) REFERENCES games (id)
         )
@@ -1774,6 +1794,59 @@ def get_player_features(
         )
         features.update(pbp_matchup)
 
+        # Add weather features
+        weather_data = conn.execute(
+            """SELECT weather_temperature, weather_wind_mph, weather_humidity,
+                      weather_detail, stadium_neutral
+               FROM games WHERE id = ?""",
+            (game_id,)
+        ).fetchone()
+
+        if weather_data:
+            temp, wind, humidity, conditions, neutral = weather_data
+            features['weather_temp'] = temp or 72  # Default to 72°F if missing
+            features['weather_wind'] = wind or 0
+            features['weather_humidity'] = humidity or 50  # Default to 50%
+            features['weather_is_indoor'] = 1 if conditions and 'indoor' in conditions.lower() else 0
+            features['weather_is_rain'] = 1 if conditions and 'rain' in conditions.lower() else 0
+            features['weather_is_snow'] = 1 if conditions and 'snow' in conditions.lower() else 0
+            features['stadium_neutral'] = neutral or 0
+
+            # Weather impact features
+            features['cold_weather'] = 1 if (temp or 72) < 40 else 0
+            features['hot_weather'] = 1 if (temp or 72) > 85 else 0
+            features['high_wind'] = 1 if (wind or 0) > 15 else 0
+        else:
+            # Default weather values if no data
+            features.update({
+                'weather_temp': 72, 'weather_wind': 0, 'weather_humidity': 50,
+                'weather_is_indoor': 0, 'weather_is_rain': 0, 'weather_is_snow': 0,
+                'stadium_neutral': 0, 'cold_weather': 0, 'hot_weather': 0, 'high_wind': 0
+            })
+
+        # Add betting odds features (market expectations)
+        betting_data = conn.execute(
+            """SELECT spread_favorite, over_under_line, home_team_spread, away_team_spread
+               FROM betting_odds WHERE game_id = ?""",
+            (game_id,)
+        ).fetchone()
+
+        if betting_data:
+            spread_fav, over_under, home_spread, away_spread = betting_data
+            team_spread = home_spread if is_home else away_spread
+            features['team_spread'] = team_spread or 0  # Positive = underdog, Negative = favorite
+            features['total_line'] = over_under or 45  # Default NFL total
+            features['is_favorite'] = 1 if (team_spread or 0) < 0 else 0
+            features['is_big_favorite'] = 1 if (team_spread or 0) < -7 else 0
+            features['is_big_underdog'] = 1 if (team_spread or 0) > 7 else 0
+            features['expected_pace'] = (over_under or 45) / 45.0  # Normalized pace expectation
+        else:
+            # Default betting values if no data
+            features.update({
+                'team_spread': 0, 'total_line': 45, 'is_favorite': 0,
+                'is_big_favorite': 0, 'is_big_underdog': 0, 'expected_pace': 1.0
+            })
+
         # Add team and opponent features
         features['home_game'] = 1 if is_home else 0
         features['week'] = week
@@ -2049,8 +2122,19 @@ def get_training_data(
             'yards_per_reception', 'catch_rate', 'games_played', 'max_points', 'min_points', 'consistency'
         ]
 
-        # Always include expected statistical features
-        for feat in expected_stat_features:
+        # Pre-define weather and betting features that all positions should have
+        weather_betting_features = [
+            'weather_temp', 'weather_wind', 'weather_humidity', 'weather_is_indoor',
+            'weather_is_rain', 'weather_is_snow', 'stadium_neutral', 'cold_weather',
+            'hot_weather', 'high_wind', 'team_spread', 'total_line', 'is_favorite',
+            'is_big_favorite', 'is_big_underdog', 'expected_pace'
+        ]
+
+        # Combine all expected features
+        expected_features = expected_stat_features + weather_betting_features
+
+        # Always include all expected features
+        for feat in expected_features:
             all_features_dict[feat] = 0.0
 
         # Sample more comprehensively to get all feature types
@@ -2173,10 +2257,18 @@ def get_training_data(
         X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
         y = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # Remove constant features (zero variance)
+        # Remove constant features (zero variance) but preserve important weather/betting features
         if len(X) > 1:
             feature_variance = np.var(X, axis=0)
             non_constant_mask = feature_variance > 1e-8  # Very small threshold
+
+            # Always preserve weather and betting features even if they appear "constant"
+            important_features = ['weather_', 'spread', 'total', 'favorite', 'underdog', 'pace', 
+                                'cold_weather', 'hot_weather', 'high_wind', 'stadium']
+            
+            for i, fname in enumerate(feature_names):
+                if any(keyword in fname for keyword in important_features):
+                    non_constant_mask[i] = True  # Force keep important features
 
             if not np.all(non_constant_mask):
                 constant_features = [feature_names[i] for i, keep in enumerate(non_constant_mask) if not keep]
@@ -2416,3 +2508,375 @@ def validate_data_quality(db_path: str = "data/nfl_dfs.db") -> Dict[str, Any]:
         conn.close()
 
     return issues
+
+def import_spreadspoke_data(csv_path: str, db_path: str = "data/nfl_dfs.db") -> None:
+    """Import weather and betting data from spreadspoke CSV file."""
+    if not Path(csv_path).exists():
+        raise FileNotFoundError(f"CSV file not found: {csv_path}")
+
+    conn = get_db_connection(db_path)
+
+    # Add weather columns to games table if they don't exist
+    try:
+        # Check what columns already exist
+        columns = conn.execute('PRAGMA table_info(games)').fetchall()
+        existing_cols = {col[1] for col in columns}
+
+        weather_columns_to_add = [
+            ('stadium', 'TEXT'),
+            ('stadium_neutral', 'INTEGER DEFAULT 0'),
+            ('weather_temperature', 'INTEGER'),
+            ('weather_wind_mph', 'INTEGER'),
+            ('weather_humidity', 'INTEGER'),
+            ('weather_detail', 'TEXT')
+        ]
+
+        for col_name, col_type in weather_columns_to_add:
+            if col_name not in existing_cols:
+                conn.execute(f'ALTER TABLE games ADD COLUMN {col_name} {col_type}')
+                logger.info(f"Added column {col_name} to games table")
+
+        # Create betting_odds table if it doesn't exist
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS betting_odds (
+                id INTEGER PRIMARY KEY,
+                game_id TEXT,
+                favorite_team TEXT,
+                spread_favorite REAL,
+                over_under_line REAL,
+                home_team_spread REAL,
+                away_team_spread REAL,
+                source TEXT DEFAULT 'spreadspoke',
+                UNIQUE(game_id),
+                FOREIGN KEY (game_id) REFERENCES games (id)
+            )
+        ''')
+
+        conn.commit()
+
+    except Exception as e:
+        logger.error(f"Error updating database schema: {e}")
+        raise
+
+    # Create team abbreviation mapping for different naming conventions
+    team_mapping = {
+        'Arizona Cardinals': 'ARI', 'Atlanta Falcons': 'ATL', 'Baltimore Ravens': 'BAL',
+        'Buffalo Bills': 'BUF', 'Carolina Panthers': 'CAR', 'Chicago Bears': 'CHI',
+        'Cincinnati Bengals': 'CIN', 'Cleveland Browns': 'CLE', 'Dallas Cowboys': 'DAL',
+        'Denver Broncos': 'DEN', 'Detroit Lions': 'DET', 'Green Bay Packers': 'GB',
+        'Houston Texans': 'HOU', 'Indianapolis Colts': 'IND', 'Jacksonville Jaguars': 'JAX',
+        'Kansas City Chiefs': 'KC', 'Las Vegas Raiders': 'LV', 'Los Angeles Chargers': 'LAC',
+        'Los Angeles Rams': 'LAR', 'Miami Dolphins': 'MIA', 'Minnesota Vikings': 'MIN',
+        'New England Patriots': 'NE', 'New Orleans Saints': 'NO', 'New York Giants': 'NYG',
+        'New York Jets': 'NYJ', 'Oakland Raiders': 'LV', 'Philadelphia Eagles': 'PHI',
+        'Pittsburgh Steelers': 'PIT', 'San Francisco 49ers': 'SF', 'Seattle Seahawks': 'SEA',
+        'Tampa Bay Buccaneers': 'TB', 'Tennessee Titans': 'TEN', 'Washington Commanders': 'WAS',
+        'Washington Redskins': 'WAS', 'Washington Football Team': 'WAS'
+    }
+
+    # Get team IDs from database
+    team_ids = {}
+    for row in conn.execute("SELECT id, team_abbr FROM teams").fetchall():
+        team_ids[row[1]] = row[0]
+
+    games_inserted = 0
+    odds_inserted = 0
+    games_updated = 0
+
+    try:
+        with open(csv_path, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+
+            for row in reader:
+                # Parse basic game info
+                game_date = row['schedule_date']
+                season = int(row['schedule_season'])
+                is_playoff = row['schedule_playoff'].upper() == 'TRUE'
+
+                # Handle playoff weeks (Wildcard, Division, Conference, Superbowl)
+                week_str = row['schedule_week']
+                if is_playoff:
+                    week_mapping = {'Wildcard': 18, 'Division': 19, 'Conference': 20, 'Superbowl': 21}
+                    week = week_mapping.get(week_str, 18)  # Default to 18 if unknown
+                else:
+                    week = int(week_str)
+
+                # Map team names to abbreviations
+                home_team = team_mapping.get(row['team_home'], row['team_home'])
+                away_team = team_mapping.get(row['team_away'], row['team_away'])
+
+                if home_team not in team_ids or away_team not in team_ids:
+                    logger.warning(f"Unknown team: {home_team} vs {away_team}")
+                    continue
+
+                home_team_id = team_ids[home_team]
+                away_team_id = team_ids[away_team]
+
+                # Create game ID
+                game_id = f"{season}_{week:02d}_{away_team}_{home_team}"
+                if is_playoff:
+                    game_id = f"{season}_PO_{week:02d}_{away_team}_{home_team}"
+
+                # Parse scores (empty string if not played yet)
+                home_score = int(row['score_home']) if row['score_home'] else None
+                away_score = int(row['score_away']) if row['score_away'] else None
+                game_finished = 1 if home_score is not None and away_score is not None else 0
+
+                # Parse weather data
+                weather_temp = int(row['weather_temperature']) if row['weather_temperature'] else None
+                weather_wind = int(row['weather_wind_mph']) if row['weather_wind_mph'] else None
+                weather_humidity = int(row['weather_humidity']) if row['weather_humidity'] else None
+                weather_detail = row['weather_detail'] if row['weather_detail'] else None
+
+                # Parse betting data
+                favorite_team = team_mapping.get(row['team_favorite_id'], row['team_favorite_id']) if row['team_favorite_id'] else None
+                spread_favorite = float(row['spread_favorite']) if row['spread_favorite'] else None
+                over_under = float(row['over_under_line']) if row['over_under_line'] else None
+
+                # Calculate individual team spreads
+                home_spread = None
+                away_spread = None
+                if spread_favorite and favorite_team:
+                    if favorite_team == home_team:
+                        home_spread = spread_favorite  # negative for favorite
+                        away_spread = -spread_favorite  # positive for underdog
+                    elif favorite_team == away_team:
+                        away_spread = spread_favorite  # negative for favorite
+                        home_spread = -spread_favorite  # positive for underdog
+
+                stadium = row['stadium'] if row['stadium'] else None
+                stadium_neutral = 1 if row['stadium_neutral'].upper() == 'TRUE' else 0
+
+                try:
+                    # Check if game already exists
+                    existing_game = conn.execute('SELECT id FROM games WHERE id = ?', (game_id,)).fetchone()
+
+                    if existing_game:
+                        # Update existing game with weather/stadium data only
+                        conn.execute('''
+                            UPDATE games SET
+                                stadium = ?, stadium_neutral = ?,
+                                weather_temperature = ?, weather_wind_mph = ?,
+                                weather_humidity = ?, weather_detail = ?
+                            WHERE id = ?
+                        ''', (
+                            stadium, stadium_neutral,
+                            weather_temp, weather_wind, weather_humidity, weather_detail,
+                            game_id
+                        ))
+                        games_updated += 1
+                    else:
+                        # Insert new game (if it doesn't exist in your data)
+                        conn.execute('''
+                            INSERT INTO games (
+                                id, game_date, season, week, home_team_id, away_team_id,
+                                home_score, away_score, game_finished, stadium, stadium_neutral,
+                                weather_temperature, weather_wind_mph, weather_humidity, weather_detail
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            game_id, game_date, season, week, home_team_id, away_team_id,
+                            home_score, away_score, game_finished, stadium, stadium_neutral,
+                            weather_temp, weather_wind, weather_humidity, weather_detail
+                        ))
+                        games_inserted += 1
+
+                    # Insert betting odds if available
+                    if spread_favorite or over_under:
+                        conn.execute('''
+                            INSERT OR REPLACE INTO betting_odds (
+                                game_id, favorite_team, spread_favorite, over_under_line,
+                                home_team_spread, away_team_spread, source
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            game_id, favorite_team, spread_favorite, over_under,
+                            home_spread, away_spread, 'spreadspoke'
+                        ))
+                        odds_inserted += 1
+
+                except Exception as e:
+                    logger.error(f"Error inserting game {game_id}: {e}")
+                    continue
+
+        conn.commit()
+        logger.info(f"Spreadspoke import complete: {games_inserted} games inserted, {games_updated} games updated, {odds_inserted} betting records inserted")
+
+    except Exception as e:
+        logger.error(f"Error importing spreadspoke data: {e}")
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def collect_odds_data(target_date: str = None, db_path: str = "data/nfl_dfs.db") -> None:
+    """Collect NFL betting odds from The Odds API for upcoming games.
+    
+    Args:
+        target_date: Date in YYYY-MM-DD format. If None, collects all upcoming games.
+        db_path: Path to the SQLite database
+    """
+    odds_api_key = os.getenv('ODDS_API_KEY')
+    if not odds_api_key or odds_api_key == 'your_key_here':
+        raise ValueError("ODDS_API_KEY environment variable not set. Please set it in your .env file.")
+    
+    conn = get_db_connection(db_path)
+    
+    try:
+        # API endpoint for NFL odds
+        url = "https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds"
+        params = {
+            'apiKey': odds_api_key,
+            'regions': 'us',
+            'markets': 'h2h,spreads,totals',
+            'oddsFormat': 'american',
+            'dateFormat': 'iso'
+        }
+        
+        logger.info("Fetching NFL odds from The Odds API...")
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        
+        odds_data = response.json()
+        logger.info(f"Retrieved {len(odds_data)} games with odds data")
+        
+        odds_inserted = 0
+        
+        for game in odds_data:
+            game_id = game['id']
+            commence_time = game['commence_time']
+            home_team = game['home_team']
+            away_team = game['away_team']
+            
+            # Parse the commence time to check if it matches target date
+            game_date = datetime.fromisoformat(commence_time.replace('Z', '+00:00')).date()
+            if target_date:
+                target_date_obj = datetime.strptime(target_date, '%Y-%m-%d').date()
+                if game_date != target_date_obj:
+                    continue
+            
+            # Find matching game in our database (check both games table and draftkings_salaries)
+            db_game = conn.execute("""
+                SELECT id FROM games 
+                WHERE (home_team_id = (SELECT id FROM teams WHERE team_abbr = ?) 
+                       OR home_team_id = (SELECT id FROM teams WHERE team_name = ?))
+                  AND (away_team_id = (SELECT id FROM teams WHERE team_abbr = ?) 
+                       OR away_team_id = (SELECT id FROM teams WHERE team_name = ?))
+                  AND date(game_date) = date(?)
+            """, (home_team, home_team, away_team, away_team, commence_time[:10])).fetchone()
+            
+            # If not found in games table, check draftkings_salaries table for upcoming games
+            if not db_game:
+                # Convert team names to abbreviations for DraftKings format matching
+                away_abbr = conn.execute("SELECT team_abbr FROM teams WHERE team_name = ? OR team_abbr = ?", (away_team, away_team)).fetchone()
+                home_abbr = conn.execute("SELECT team_abbr FROM teams WHERE team_name = ? OR team_abbr = ?", (home_team, home_team)).fetchone()
+                
+                if away_abbr and home_abbr:
+                    away_abbr = away_abbr[0]
+                    home_abbr = home_abbr[0]
+                    
+                    # Format date to match DraftKings format (MM/DD/YYYY)
+                    dk_date = game_date.strftime("%m/%d/%Y")
+                    
+                    # Check if we have DraftKings data for this matchup - format: "AWAY@HOME MM/DD/YYYY"
+                    dk_game = conn.execute("""
+                        SELECT DISTINCT game_info FROM draftkings_salaries
+                        WHERE game_info LIKE ?
+                    """, (f"{away_abbr}@{home_abbr} {dk_date}%",)).fetchone()
+                    
+                    if dk_game:
+                        # Use a meaningful game_id for upcoming games
+                        db_game_id = f"{game_date}_{away_abbr}@{home_abbr}"
+                        logger.info(f"Found upcoming game in DraftKings data: {away_abbr}@{home_abbr} on {dk_date}")
+                        
+                        # Create minimal game record for foreign key constraint
+                        away_team_id = conn.execute("SELECT id FROM teams WHERE team_abbr = ?", (away_abbr,)).fetchone()
+                        home_team_id = conn.execute("SELECT id FROM teams WHERE team_abbr = ?", (home_abbr,)).fetchone()
+                        
+                        if away_team_id and home_team_id:
+                            away_team_id = away_team_id[0]
+                            home_team_id = home_team_id[0]
+                            
+                            # Insert minimal game record if it doesn't exist
+                            conn.execute("""
+                                INSERT OR IGNORE INTO games (
+                                    id, game_date, season, week, home_team_id, away_team_id, 
+                                    home_score, away_score, game_finished
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (db_game_id, game_date.strftime('%Y-%m-%d'), game_date.year, 1, 
+                                  home_team_id, away_team_id, 0, 0, 0))
+                        else:
+                            logger.warning(f"Could not find team IDs for {away_abbr}/{home_abbr}")
+                            continue
+                    else:
+                        logger.warning(f"No matching DraftKings game found for {away_abbr}@{home_abbr} on {dk_date}")
+                        continue
+                else:
+                    logger.warning(f"Could not find team abbreviations for {away_team} / {home_team}")
+                    continue
+            else:
+                db_game_id = db_game[0]
+            
+            # Extract odds data
+            spread_favorite = None
+            spread_fav_team = None
+            over_under = None
+            home_spread = None
+            away_spread = None
+            
+            # Process bookmaker odds (use consensus or first available)
+            if game.get('bookmakers'):
+                bookmaker = game['bookmakers'][0]  # Use first bookmaker
+                
+                for market in bookmaker.get('markets', []):
+                    if market['key'] == 'spreads':
+                        for outcome in market['outcomes']:
+                            if outcome['name'] == home_team:
+                                home_spread = float(outcome['point'])
+                            elif outcome['name'] == away_team:
+                                away_spread = float(outcome['point'])
+                        
+                        # Determine favorite
+                        if home_spread is not None and away_spread is not None:
+                            if home_spread < away_spread:
+                                spread_favorite = abs(home_spread)
+                                spread_fav_team = home_team
+                            else:
+                                spread_favorite = abs(away_spread)
+                                spread_fav_team = away_team
+                    
+                    elif market['key'] == 'totals':
+                        for outcome in market['outcomes']:
+                            if outcome['name'] == 'Over':
+                                over_under = float(outcome['point'])
+                                break
+            
+            # Insert or update betting odds
+            conn.execute("""
+                INSERT OR REPLACE INTO betting_odds (
+                    game_id, favorite_team, spread_favorite, over_under_line,
+                    home_team_spread, away_team_spread, source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (db_game_id, spread_fav_team, spread_favorite, over_under, 
+                  home_spread, away_spread, 'odds_api'))
+            
+            odds_inserted += 1
+            logger.info(f"Processed odds for {away_team} @ {home_team}: spread={spread_favorite}, o/u={over_under}")
+        
+        conn.commit()
+        logger.info(f"Odds collection complete: {odds_inserted} records processed")
+        
+        # Check remaining API quota
+        remaining_requests = response.headers.get('x-requests-remaining')
+        if remaining_requests:
+            logger.info(f"Remaining API requests: {remaining_requests}")
+        
+    except requests.RequestException as e:
+        logger.error(f"Error fetching odds from API: {e}")
+        conn.rollback()
+        raise
+    except Exception as e:
+        logger.error(f"Error processing odds data: {e}")
+        conn.rollback()
+        raise
+    finally:
+        conn.close()

@@ -26,6 +26,10 @@ uv run python run.py collect --seasons 2023 2024
 # Load DraftKings salary data from CSV
 uv run python run.py collect --csv data/DKSalaries.csv
 
+# Collect betting odds from The Odds API (requires ODDS_API_KEY in .env)
+uv run python run.py odds --date 2025-09-07  # specific date
+uv run python run.py odds                    # all upcoming games
+
 # Train models (uses all available seasons by default)
 uv run python run.py train
 
@@ -170,6 +174,40 @@ The system offers different optimization strategies for different contest types:
 - Good for tournaments when you want to be different
 - Reduces player values based on projected ownership
 - Best for: Large tournaments with ownership data
+
+### Betting Odds Collection
+
+The system can collect live betting odds from The Odds API to enhance predictions with market expectations:
+
+```bash
+# Collect odds for specific date (YYYY-MM-DD format)
+uv run python run.py odds --date 2025-09-07
+
+# Collect odds for all upcoming games
+uv run python run.py odds
+```
+
+**Setup Requirements:**
+
+1. Get a free API key from [The Odds API](https://the-odds-api.com/) (500 requests/month free)
+2. Set `ODDS_API_KEY=your_api_key_here` in your `.env` file
+
+**Features:**
+
+- **Market data**: Point spreads, over/under totals, and moneylines from major US sportsbooks
+- **Automatic matching**: Links odds to games in your DraftKings salary data
+- **Smart handling**: Creates minimal game records for upcoming games to satisfy database constraints
+- **Multiple sportsbooks**: Aggregated from DraftKings, FanDuel, BetMGM, Caesars, and others
+- **Source tracking**: Distinguishes between different data sources (odds_api vs spreadspoke)
+
+**API Usage:**
+
+- **Free tier**: 500 requests per month
+- **Data coverage**: NFL regular season and playoffs
+- **Update frequency**: Real-time odds with live line movements
+- **Historical support**: Limited historical odds data available
+
+The system automatically integrates betting odds into your feature engineering pipeline, providing market consensus that can improve prediction accuracy.
 
 ### Weather Data Collection
 
