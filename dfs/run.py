@@ -343,9 +343,20 @@ def predict_players_optimized(contest_id: str = None, output_file: str = None, i
                         try:
                             features_dict = get_player_features(player_id, recent_games[player_id])
                             if features_dict:
-                                feature_vector = [features_dict.get(name, 0) for name in feature_names]
-                                batch_features.append(feature_vector)
-                                valid_players.append(player_data)
+                                # CRITICAL: Filter out players with 0 FPPG or very few games
+                                avg_fantasy_points = features_dict.get('avg_fantasy_points', 0)
+                                games_played = features_dict.get('games_played', 0)
+                                
+                                if avg_fantasy_points <= 0.1:
+                                    logger.debug(f"Skipping {player_data['name']} - FPPG is {avg_fantasy_points:.1f}")
+                                    fallback_players.append(player_data)
+                                elif games_played < 3:
+                                    logger.debug(f"Skipping {player_data['name']} - only {games_played} games played")
+                                    fallback_players.append(player_data)
+                                else:
+                                    feature_vector = [features_dict.get(name, 0) for name in feature_names]
+                                    batch_features.append(feature_vector)
+                                    valid_players.append(player_data)
                             else:
                                 fallback_players.append(player_data)
                         except Exception as e:
@@ -475,7 +486,9 @@ def generate_fallback_prediction(player_data, injury_status=None):
     # Use DK position if available, otherwise fall back to database position
     position = player_data.get('dk_position', player_data['position'])
 
-    # Position-based average points
+    # CRITICAL: For players with no track record, use very conservative projections
+    # These are likely practice squad or rarely-used players
+    # Position-based MINIMUM points for established players
     pos_averages = {
         'QB': 18.0,
         'RB': 12.0,
@@ -485,9 +498,16 @@ def generate_fallback_prediction(player_data, injury_status=None):
         'DEF': 8.0
     }
 
-    base_projection = pos_averages.get(position, 10.0)
-    salary_factor = player_data['salary'] / 6000
-    projected_points = base_projection * salary_factor
+    # Check if this is a minimum salary player (likely no track record)
+    if player_data['salary'] <= 3000:
+        # Very conservative for minimum salary players
+        base_projection = pos_averages.get(position, 10.0) * 0.2  # Only 20% of normal
+    else:
+        base_projection = pos_averages.get(position, 10.0)
+        salary_factor = player_data['salary'] / 6000
+        base_projection = base_projection * salary_factor * 0.5  # Conservative 50% for fallbacks
+    
+    projected_points = base_projection
 
     # Apply injury multipliers
     proj_mult, floor_mult, ceil_mult = get_injury_multiplier(injury_status)
