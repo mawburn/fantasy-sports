@@ -731,7 +731,7 @@ class BaseNeuralModel(ABC):
             raise ValueError("Model must be trained before making predictions")
 
         self.network.eval()
-        X_tensor = torch.tensor(X, dtype=torch.float32, device=self.device)
+        X_tensor = torch.tensor(X, dtype=torch.float32).to(self.device)
 
         with torch.no_grad():
             predictions = self.network(X_tensor)
@@ -764,17 +764,48 @@ class BaseNeuralModel(ABC):
         """Save trained model to disk."""
         if self.network is None:
             raise ValueError("No model to save")
-        torch.save(self.network.state_dict(), path)
-        logger.info(f"Model saved to {path}")
+        # Save both state dict and input size
+        checkpoint = {
+            'model_state_dict': self.network.state_dict(),
+            'input_size': self.input_size
+        }
+        torch.save(checkpoint, path)
+        logger.info(f"Model saved to {path} with input_size={self.input_size}")
 
-    def load_model(self, path: str, input_size: int):
+    def load_model(self, path: str, input_size: int = None):
         """Load trained model from disk."""
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+        
+        # Handle both old (state_dict only) and new (checkpoint with metadata) formats
+        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            # New format with metadata
+            state_dict = checkpoint['model_state_dict']
+            saved_input_size = checkpoint.get('input_size', input_size)
+            if input_size is None:
+                input_size = saved_input_size
+            elif input_size != saved_input_size:
+                logger.warning(f"Input size mismatch: provided {input_size}, saved {saved_input_size}. Using saved size.")
+                input_size = saved_input_size
+        else:
+            # Old format - just state dict
+            state_dict = checkpoint
+            if input_size is None:
+                # Try to infer from first layer
+                first_layer_key = next(iter(state_dict.keys()))
+                if 'weight' in first_layer_key:
+                    input_size = state_dict[first_layer_key].shape[1]
+                else:
+                    raise ValueError("Cannot determine input size from old model format")
+        
         if self.network is None:
             self.network = self.build_network(input_size)
-        self.network.load_state_dict(torch.load(path, map_location=self.device))
+            self.input_size = input_size
+        
+        self.network.load_state_dict(state_dict)
+        self.network.to(self.device)  # Ensure model is on the correct device
         self.network.eval()
         self.is_trained = True
-        logger.info(f"Model loaded from {path}")
+        logger.info(f"Model loaded from {path} with input_size={input_size} to device: {self.device}")
 
 
 class QBNetwork(nn.Module):

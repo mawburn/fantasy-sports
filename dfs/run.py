@@ -1,52 +1,54 @@
-"""Simple CLI runner for DFS system.
-
-This module provides a simple command-line interface for the core DFS operations:
-1. collect - Collect NFL data from nfl_data_py and DraftKings CSV
-2. weather - Collect weather data for outdoor stadium games (with rate limiting)
-3. train - Train PyTorch models for all positions
-4. predict - Generate player predictions for current week
-5. optimize - Build optimal lineups
-
-No complex CLI framework - just direct function calls with basic argument parsing.
+#!/usr/bin/env python3
+"""
+Optimized CLI for DFS optimization system with faster predictions.
 """
 
 import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import List, Optional
-
+from typing import List, Optional, Dict, Tuple
 import numpy as np
 
-# Import our simplified modules
+# Add parent directory to path
+sys.path.append(str(Path(__file__).parent.parent))
+
 from data import (
-    init_database, load_teams, collect_nfl_data, load_draftkings_csv,
-    collect_weather_data, get_training_data, get_current_week_players,
-    cleanup_database, validate_data_quality
+    collect_nfl_data,
+    load_draftkings_csv,
+    get_current_week_players,
+    get_training_data,
+    get_db_connection,
+    get_player_features
 )
 from models import (
-    create_model, ModelConfig, CorrelationFeatureExtractor
+    create_model,
+    ModelConfig
 )
 from optimize import (
-    Player, LineupConstraints, optimize_cash_game_lineup,
-    optimize_tournament_lineup, generate_multiple_lineups,
-    export_lineup_to_csv, format_lineup_display
+    Player,
+    optimize_cash_game_lineup,
+    optimize_tournament_lineup,
+    generate_multiple_lineups,
+    export_lineup_to_csv,
+    LineupConstraints
 )
 
-# Set up logging
+# Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
+# Default paths
 DEFAULT_DB_PATH = "data/nfl_dfs.db"
 DEFAULT_MODELS_DIR = "models"
+DEFAULT_OUTPUT_DIR = "lineups"
 
 
 def get_available_seasons(db_path: str = DEFAULT_DB_PATH) -> List[int]:
     """Get all seasons available in the database."""
-    from data import get_db_connection
     conn = get_db_connection(db_path)
     try:
         seasons = conn.execute(
@@ -57,108 +59,30 @@ def get_available_seasons(db_path: str = DEFAULT_DB_PATH) -> List[int]:
         conn.close()
 
 
-def collect_data(seasons: List[int] = None, csv_path: str = None, contest_id: str = None):
-    """Collect NFL data and optionally DraftKings salaries.
+def train_models(seasons: List[int] = None, positions: List[str] = None):
+    """Train prediction models for specified positions.
 
     Args:
-        seasons: List of NFL seasons to collect (default: current year)
-        csv_path: Path to DraftKings CSV file
-        contest_id: Contest ID for DraftKings data
+        seasons: List of seasons to use for training
+        positions: Specific positions to train (default: all)
     """
-    logger.info("Starting data collection...")
-
-    # Initialize database
-    init_database(DEFAULT_DB_PATH)
-    load_teams(DEFAULT_DB_PATH)
-
-    # Collect NFL data
-    if seasons is None:
-        from datetime import datetime
-        current_year = datetime.now().year
-        # Use the most recent 2 years that are likely to have data
-        # NFL data usually lags behind the calendar year
-        seasons = [current_year - 2, current_year - 1]
-
-    logger.info(f"Collecting NFL data for seasons: {seasons}")
-    try:
-        collect_nfl_data(seasons, DEFAULT_DB_PATH)
-    except Exception as e:
-        logger.warning(f"NFL data collection failed: {e}")
-        logger.info("Continuing with DraftKings CSV loading...")
-
-    # Load DraftKings data if provided
-    if csv_path:
-        logger.info(f"Loading DraftKings data from {csv_path}")
-        if contest_id:
-            load_draftkings_csv(csv_path, contest_id, DEFAULT_DB_PATH)
-        else:
-            # Auto-generate contest ID from filename
-            load_draftkings_csv(csv_path, None, DEFAULT_DB_PATH)
-            logger.info("Auto-generated contest ID from filename")
-
-
-    # Validate data quality
-    issues = validate_data_quality(DEFAULT_DB_PATH)
-    if issues:
-        logger.warning(f"Data quality issues found: {issues}")
-    else:
-        logger.info("Data collection completed successfully")
-
-
-def collect_weather(limit: Optional[int] = None, rate_limit: float = 1.5, batch_mode: bool = True):
-    """Collect weather data for outdoor stadium games.
-
-    Args:
-        limit: Maximum number of API calls to make (default: no limit)
-        rate_limit: Delay between API calls in seconds (default: 1.5)
-        batch_mode: Use optimized batch processing for date ranges (default: True)
-    """
-    logger.info("Starting weather data collection...")
-    logger.info(f"Rate limit: {rate_limit}s between requests")
-    logger.info(f"Batch mode: {'enabled' if batch_mode else 'disabled'}")
-    if limit:
-        logger.info(f"Limited to {limit} API calls")
-
-    # Initialize database if needed
-    init_database(DEFAULT_DB_PATH)
-
-    # Collect weather data with rate limiting
-    try:
-        if batch_mode:
-            from data import collect_weather_data_optimized
-            collect_weather_data_optimized(DEFAULT_DB_PATH, limit=limit, rate_limit_delay=rate_limit)
-        else:
-            from data import collect_weather_data_with_limits
-            collect_weather_data_with_limits(DEFAULT_DB_PATH, limit=limit, rate_limit_delay=rate_limit)
-        logger.info("Weather data collection completed")
-    except Exception as e:
-        logger.error(f"Weather data collection failed: {e}")
-        return False
-
-    return True
-
-
-def train_models(positions: List[str] = None, seasons: List[int] = None):
-    """Train PyTorch models for specified positions.
-
-    Args:
-        positions: List of positions to train (default: all)
-        seasons: List of seasons for training data (default: last 3 years)
-    """
-    if positions is None:
-        positions = ['QB', 'RB', 'WR', 'TE', 'DST']
-
     if seasons is None:
         seasons = get_available_seasons()
-        logger.info(f"Using all available seasons: {seasons}")
+
+    if not seasons:
+        logger.error("No data available for training. Run 'collect' first.")
+        return
+
+    logger.info(f"Training models using seasons: {seasons}")
+
+    if positions is None:
+        positions = ['QB', 'RB', 'WR', 'TE', 'DST']
 
     # Create models directory
     models_dir = Path(DEFAULT_MODELS_DIR)
     models_dir.mkdir(exist_ok=True)
 
-    logger.info(f"Training models for positions: {positions}")
-    logger.info(f"Using training data from seasons: {seasons}")
-
+    # Train each position model
     for position in positions:
         logger.info(f"Training {position} model...")
 
@@ -167,17 +91,19 @@ def train_models(positions: List[str] = None, seasons: List[int] = None):
             X, y, feature_names = get_training_data(position, seasons, DEFAULT_DB_PATH)
 
             if len(X) == 0:
-                logger.warning(f"No training data found for {position}")
+                logger.warning(f"No training data available for {position}")
                 continue
 
-            # Split data (80/20 train/val)
-            split_idx = int(len(X) * 0.8)
-            X_train, X_val = X[:split_idx], X[split_idx:]
-            y_train, y_val = y[:split_idx], y[split_idx:]
+            logger.info(f"Training {position} with {len(X)} samples, {len(feature_names)} features")
 
             # Create and train model
             config = ModelConfig(position=position, features=feature_names)
             model = create_model(position, config)
+
+            # Split data (80/20)
+            split_idx = int(0.8 * len(X))
+            X_train, X_val = X[:split_idx], X[split_idx:]
+            y_train, y_val = y[:split_idx], y[split_idx:]
 
             # Train model
             result = model.train(X_train, y_train, X_val, y_val)
@@ -186,184 +112,354 @@ def train_models(positions: List[str] = None, seasons: List[int] = None):
             model_path = models_dir / f"{position.lower()}_model.pth"
             model.save_model(str(model_path))
 
-            logger.info(f"{position} model trained successfully:")
-            logger.info(f"  - MAE: {result.val_mae:.3f}")
-            logger.info(f"  - R�: {result.val_r2:.3f}")
-            logger.info(f"  - Training samples: {result.training_samples}")
-            logger.info(f"  - Saved to: {model_path}")
+            logger.info(f"{position} model saved. Val MAE: {result.val_mae:.2f}, Val R²: {result.val_r2:.3f}")
 
         except Exception as e:
             logger.error(f"Failed to train {position} model: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
 
-    logger.info("Model training completed")
+
+def update_injury_statuses(injury_file: str = None, manual_updates: Dict[str, str] = None, db_path: str = DEFAULT_DB_PATH):
+    """Update player injury statuses from CSV file or manual input.
+
+    Args:
+        injury_file: Path to CSV file with columns: player_name, injury_status
+        manual_updates: Dictionary of player_name -> injury_status
+        db_path: Database path
+
+    Injury status codes:
+        Q: Questionable (75% likely to play)
+        D: Doubtful (25% likely to play)
+        OUT: Out (will not play)
+        IR: Injured Reserve (will not play)
+        PUP: Physically Unable to Perform (will not play)
+        PPD: Game Postponed
+    """
+    conn = get_db_connection(db_path)
+    updated_count = 0
+
+    try:
+        # Clear existing injury statuses
+        conn.execute("UPDATE players SET injury_status = NULL")
+
+        # Update from CSV file if provided
+        if injury_file and Path(injury_file).exists():
+            import pandas as pd
+            df = pd.read_csv(injury_file)
+            for _, row in df.iterrows():
+                player_name = row['player_name']
+                injury_status = row['injury_status'].upper()
+
+                cursor = conn.execute(
+                    "UPDATE players SET injury_status = ? WHERE display_name = ? OR player_name = ?",
+                    (injury_status, player_name, player_name)
+                )
+                updated_count += cursor.rowcount
+
+        # Update from manual dictionary if provided
+        if manual_updates:
+            for player_name, injury_status in manual_updates.items():
+                cursor = conn.execute(
+                    "UPDATE players SET injury_status = ? WHERE display_name = ? OR player_name = ?",
+                    (injury_status.upper(), player_name, player_name)
+                )
+                updated_count += cursor.rowcount
+
+        conn.commit()
+        logger.info(f"Updated injury status for {updated_count} players")
+
+    finally:
+        conn.close()
+
+    return updated_count
 
 
-def predict_players(contest_id: str = None, output_file: str = None):
-    """Generate predictions for players in a contest.
+def extract_primary_position(roster_position: str) -> str:
+    """Extract primary position from DraftKings roster position string.
+    
+    Examples:
+        'QB' -> 'QB'
+        'RB/FLEX' -> 'RB'
+        'WR/FLEX' -> 'WR'
+        'TE/FLEX' -> 'TE'
+        'DST' -> 'DST'
+    """
+    if not roster_position:
+        return 'FLEX'
+    
+    # Split by '/' and take the first part
+    primary = roster_position.split('/')[0].strip()
+    
+    # Handle special cases
+    if primary in ['QB', 'RB', 'WR', 'TE', 'DST', 'DEF']:
+        return primary
+    elif primary == 'FLEX':
+        # Pure FLEX should not happen, but handle it
+        return 'FLEX'
+    else:
+        return primary
+
+
+def get_injury_multiplier(injury_status: str) -> Tuple[float, float, float]:
+    """Get projection multipliers based on injury status.
+
+    Returns:
+        Tuple of (projection_multiplier, floor_multiplier, ceiling_multiplier)
+    """
+    if not injury_status:
+        return (1.0, 1.0, 1.0)
+
+    status = injury_status.upper()
+
+    # Injury status multipliers
+    multipliers = {
+        'Q': (0.85, 0.75, 0.90),      # Questionable: reduce projection by 15%, floor by 25%, ceiling by 10%
+        'D': (0.40, 0.20, 0.50),      # Doubtful: reduce projection by 60%, floor by 80%, ceiling by 50%
+        'OUT': (0.0, 0.0, 0.0),        # Out: zero projections
+        'IR': (0.0, 0.0, 0.0),         # Injured Reserve: zero projections
+        'PUP': (0.0, 0.0, 0.0),        # PUP: zero projections
+        'PPD': (0.0, 0.0, 0.0),        # Postponed: zero projections
+    }
+
+    return multipliers.get(status, (1.0, 1.0, 1.0))
+
+
+def predict_players_optimized(contest_id: str = None, output_file: str = None, injury_file: str = None):
+    """Optimized version of predict_players with batch processing and injury status support.
 
     Args:
         contest_id: DraftKings contest ID
         output_file: Output CSV file for predictions
+        injury_file: Optional CSV file with injury statuses
     """
     logger.info(f"Generating predictions for contest: {contest_id}")
+
+    # Update injury statuses if file provided
+    if injury_file:
+        update_injury_statuses(injury_file=injury_file)
 
     # Get players for contest
     players_data = get_current_week_players(contest_id, DEFAULT_DB_PATH)
 
     if not players_data:
         logger.error("No players found for contest")
-        return
+        return []
 
-    # Load trained models
+    # Load trained models and cache feature metadata
     models_dir = Path(DEFAULT_MODELS_DIR)
     models = {}
+    position_feature_names = {}
 
+    # Load feature metadata once from a small sample
+    logger.info("Loading model metadata...")
     for position in ['QB', 'RB', 'WR', 'TE', 'DST']:
         model_path = models_dir / f"{position.lower()}_model.pth"
         if model_path.exists():
             try:
-                # Get feature count from training data using all available seasons
-                available_seasons = get_available_seasons()
-                X, y, feature_names = get_training_data(position, available_seasons, DEFAULT_DB_PATH)
-                if len(X) > 0:
+                # Get feature names from a minimal sample (just for metadata)
+                available_seasons = get_available_seasons()[:1]  # Use only 1 season for metadata
+                X_sample, _, feature_names = get_training_data(position, available_seasons, DEFAULT_DB_PATH)
+                if len(X_sample) > 0:
                     config = ModelConfig(position=position, features=feature_names)
                     model = create_model(position, config)
-                    model.load_model(str(model_path), X.shape[1])
+                    # Let load_model determine the input size from the saved model
+                    model.load_model(str(model_path))
                     models[position] = model
-                    logger.info(f"Loaded {position} model")
+                    position_feature_names[position] = feature_names
+                    logger.info(f"Loaded {position} model with {len(feature_names)} features")
             except Exception as e:
                 logger.warning(f"Failed to load {position} model: {e}")
 
-    # Cache feature names for each position to avoid repeated training data extraction
-    available_seasons = get_available_seasons()
-    position_feature_names = {}
-    for position in models.keys():
-        if position not in position_feature_names:
-            _, _, feature_names = get_training_data(position, available_seasons, DEFAULT_DB_PATH)
-            position_feature_names[position] = feature_names
-            logger.info(f"Cached {len(feature_names)} feature names for {position} using {len(available_seasons)} seasons")
+    # Batch fetch recent games for all players
+    logger.info("Fetching player game data...")
+    conn = get_db_connection(DEFAULT_DB_PATH)
 
-    # Generate predictions using trained models
+    player_ids = [p['player_id'] for p in players_data]
+    placeholders = ','.join('?' * len(player_ids))
+
+    recent_games_query = f"""
+        SELECT ps.player_id, MAX(g.id) as game_id
+        FROM games g
+        JOIN player_stats ps ON g.id = ps.game_id
+        WHERE ps.player_id IN ({placeholders})
+        GROUP BY ps.player_id
+    """
+
+    recent_games = {}
+    for row in conn.execute(recent_games_query, player_ids).fetchall():
+        recent_games[row[0]] = row[1]
+
+    # Fetch injury statuses for all players
+    injury_status_query = f"""
+        SELECT id, injury_status
+        FROM players
+        WHERE id IN ({placeholders})
+    """
+
+    injury_statuses = {}
+    for row in conn.execute(injury_status_query, player_ids).fetchall():
+        if row[1]:  # Only store if injury status is not NULL
+            injury_statuses[row[0]] = row[1]
+
+    if injury_statuses:
+        logger.info(f"Found injury statuses for {len(injury_statuses)} players")
+
+    conn.close()
+
+    # Generate predictions
     predictions = []
+    players_by_position = {}
 
+    # Group players by DraftKings roster position for batch processing
     for player_data in players_data:
-        position = player_data['position']
-        player_id = player_data['player_id']
+        # Use DraftKings roster position instead of database position
+        dk_position = extract_primary_position(player_data.get('roster_position', ''))
+        
+        # Store the DK position for later use
+        player_data['dk_position'] = dk_position
+        
+        # Group by DK position for model selection
+        if dk_position not in players_by_position:
+            players_by_position[dk_position] = []
+        players_by_position[dk_position].append(player_data)
 
-        try:
-            # Use trained model if available
-            if position in models:
-                # Get the most recent game for this player to use for feature extraction
-                from data import get_db_connection
-                conn = get_db_connection(DEFAULT_DB_PATH)
+    # Process each position in batches
+    for position, position_players in players_by_position.items():
+        if position in models and position in position_feature_names:
+            model = models[position]
+            feature_names = position_feature_names[position]
 
-                recent_game = conn.execute(
-                    """SELECT g.id FROM games g
-                       JOIN player_stats ps ON g.id = ps.game_id
-                       WHERE ps.player_id = ?
-                       ORDER BY g.game_date DESC LIMIT 1""",
-                    (player_id,)
-                ).fetchone()
-                conn.close()
+            if len(feature_names) > 0:
+                # Batch extract features for all players in this position
+                batch_features = []
+                valid_players = []
+                fallback_players = []
 
-                if recent_game:
-                    # Extract features using the player's most recent game context
-                    from data import get_player_features
-                    features_dict = get_player_features(player_id, recent_game[0])
+                for player_data in position_players:
+                    player_id = player_data['player_id']
 
-                    if features_dict:
-                        # Use cached feature names
-                        feature_names = position_feature_names.get(position, [])
-                        if len(feature_names) > 0:
-                            # Create feature vector in the same order as training
-                            feature_vector = [features_dict.get(name, 0) for name in feature_names]
-                            X_pred = np.array([feature_vector], dtype=np.float32)
-
-                            # Get model prediction
-                            model = models[position]
-                            prediction_result = model.predict(X_pred)
-
-                            projected_points = float(prediction_result.point_estimate[0])
-                            floor_points = float(prediction_result.floor[0])
-                            ceiling_points = float(prediction_result.ceiling[0])
-
-                            logger.debug(f"Model prediction for {player_data['name']}: {projected_points:.1f}")
-                        else:
-                            # Fallback if no training features available
-                            projected_points = 10.0
-                            floor_points = 7.0
-                            ceiling_points = 15.0
+                    if player_id in recent_games:
+                        try:
+                            features_dict = get_player_features(player_id, recent_games[player_id])
+                            if features_dict:
+                                feature_vector = [features_dict.get(name, 0) for name in feature_names]
+                                batch_features.append(feature_vector)
+                                valid_players.append(player_data)
+                            else:
+                                fallback_players.append(player_data)
+                        except Exception as e:
+                            logger.debug(f"Failed to get features for {player_data['name']}: {e}")
+                            fallback_players.append(player_data)
                     else:
-                        # Fallback if no features available
-                        projected_points = 10.0
-                        floor_points = 7.0
-                        ceiling_points = 15.0
-                else:
-                    # New player with no game history - use salary-based estimate
-                    pos_averages = {'QB': 18.0, 'RB': 12.0, 'WR': 11.0, 'TE': 9.0}
-                    base_projection = pos_averages.get(position, 10.0)
-                    salary_factor = player_data['salary'] / 6000
-                    projected_points = base_projection * salary_factor
-                    floor_points = projected_points * 0.7
-                    ceiling_points = projected_points * 1.5
+                        fallback_players.append(player_data)
 
-            elif position in ['DST', 'DEF']:
-                # For DST, use trained model if available, otherwise salary-based
-                if 'DST' in models:
-                    # Try to get DST features (simplified for now)
-                    # Use basic DST features - in a full system would extract real defensive stats
+                # Batch predict if we have valid features
+                if batch_features:
+                    try:
+                        X_pred = np.array(batch_features, dtype=np.float32)
+                        
+                        # Check if we need to pad features to match model's expected input size
+                        if hasattr(model, 'input_size') and model.input_size and X_pred.shape[1] != model.input_size:
+                            logger.debug(f"Padding features for {position}: {X_pred.shape[1]} -> {model.input_size}")
+                            # Pad with zeros if we have fewer features than expected
+                            if X_pred.shape[1] < model.input_size:
+                                padding = np.zeros((X_pred.shape[0], model.input_size - X_pred.shape[1]), dtype=np.float32)
+                                X_pred = np.concatenate([X_pred, padding], axis=1)
+                            # Truncate if we have more features than expected (shouldn't happen but just in case)
+                            elif X_pred.shape[1] > model.input_size:
+                                X_pred = X_pred[:, :model.input_size]
+                        
+                        prediction_result = model.predict(X_pred)
 
-                    # Simple feature vector for DST (points_allowed, sacks, etc.)
-                    # This is simplified - ideally would get recent team defensive stats
-                    dst_features = [
-                        20,   # avg points_allowed (league average)
-                        2.5,  # avg sacks
-                        1.0,  # avg interceptions
-                        0.8,  # avg fumbles_recovered
-                        0.1,  # avg safeties
-                        0.1,  # avg defensive_tds
-                        8.0,  # avg_recent_points
-                        22,   # avg_recent_points_allowed
-                        2.3,  # avg_recent_sacks
-                        10,   # week (mid-season)
-                        2024  # season
-                    ]
+                        for i, player_data in enumerate(valid_players):
+                            player_id = player_data['player_id']
+                            injury_status = injury_statuses.get(player_id)
 
-                    X_dst = np.array([dst_features], dtype=np.float32)
-                    model = models['DST']
-                    prediction_result = model.predict(X_dst)
+                            # Get injury multipliers
+                            proj_mult, floor_mult, ceil_mult = get_injury_multiplier(injury_status)
 
-                    projected_points = float(prediction_result.point_estimate[0])
-                    floor_points = float(prediction_result.floor[0])
-                    ceiling_points = float(prediction_result.ceiling[0])
-                else:
-                    # Salary-based fallback for DST
-                    projected_points = 8.0 + (player_data['salary'] - 2500) / 200
-                    floor_points = projected_points * 0.6
-                    ceiling_points = projected_points * 2.0
+                            # Apply injury multipliers to predictions
+                            proj_points = float(prediction_result.point_estimate[i]) * proj_mult
+                            floor_points = float(prediction_result.floor[i]) * floor_mult
+                            ceiling_points = float(prediction_result.ceiling[i]) * ceil_mult
+
+                            pred_dict = {
+                                'player_id': player_id,
+                                'name': player_data['name'],
+                                'position': player_data['dk_position'],  # Use DK position
+                                'salary': player_data['salary'],
+                                'projected_points': round(proj_points, 1),
+                                'floor': round(floor_points, 1),
+                                'ceiling': round(ceiling_points, 1),
+                                'team': player_data['team_abbr'],
+                                'roster_position': player_data['roster_position']
+                            }
+
+                            # Add injury status to output if present
+                            if injury_status:
+                                pred_dict['injury_status'] = injury_status
+
+                            predictions.append(pred_dict)
+                            logger.debug(f"Model prediction for {player_data['name']}: {prediction_result.point_estimate[i]:.1f}")
+                    except Exception as e:
+                        logger.warning(f"Batch prediction failed for {position}: {e}")
+                        fallback_players.extend(valid_players)
+
+                # Handle fallback players
+                for player_data in fallback_players:
+                    injury_status = injury_statuses.get(player_data['player_id'])
+                    predictions.append(generate_fallback_prediction(player_data, injury_status))
             else:
-                # Fallback for positions without models
-                logger.warning(f"No model available for position {position}")
-                projected_points = 10.0
-                floor_points = 7.0
-                ceiling_points = 15.0
+                # No features available, use fallback for all
+                for player_data in position_players:
+                    injury_status = injury_statuses.get(player_data['player_id'])
+                    predictions.append(generate_fallback_prediction(player_data, injury_status))
 
-            predictions.append({
-                'player_id': player_data['player_id'],
-                'name': player_data['name'],
-                'position': position,
-                'salary': player_data['salary'],
-                'projected_points': round(projected_points, 1),
-                'floor': round(floor_points, 1),
-                'ceiling': round(ceiling_points, 1),
-                'team': player_data['team_abbr'],
-                'roster_position': player_data['roster_position']
-            })
+        elif position in ['DST', 'DEF']:
+            # Handle DST separately
+            for player_data in position_players:
+                if 'DST' in models:
+                    try:
+                        # Simplified DST features (in production would extract real defensive stats)
+                        dst_features = generate_dst_features(player_data)
+                        X_dst = np.array([dst_features], dtype=np.float32)
+                        model = models['DST']
+                        prediction_result = model.predict(X_dst)
 
-        except Exception as e:
-            logger.warning(f"Failed to predict for {player_data['name']}: {e}")
+                        injury_status = injury_statuses.get(player_data['player_id'])
+                        proj_mult, floor_mult, ceil_mult = get_injury_multiplier(injury_status)
 
-    # Save predictions
+                        pred_dict = {
+                            'player_id': player_data['player_id'],
+                            'name': player_data['name'],
+                            'position': player_data['dk_position'],  # Use DK position
+                            'salary': player_data['salary'],
+                            'projected_points': round(float(prediction_result.point_estimate[0]) * proj_mult, 1),
+                            'floor': round(float(prediction_result.floor[0]) * floor_mult, 1),
+                            'ceiling': round(float(prediction_result.ceiling[0]) * ceil_mult, 1),
+                            'team': player_data['team_abbr'],
+                            'roster_position': player_data['roster_position']
+                        }
+
+                        if injury_status:
+                            pred_dict['injury_status'] = injury_status
+
+                        predictions.append(pred_dict)
+                    except Exception as e:
+                        logger.debug(f"DST prediction failed for {player_data['name']}: {e}")
+                        injury_status = injury_statuses.get(player_data['player_id'])
+                        predictions.append(generate_fallback_prediction(player_data, injury_status))
+                else:
+                    injury_status = injury_statuses.get(player_data['player_id'])
+                    predictions.append(generate_fallback_prediction(player_data, injury_status))
+        else:
+            # Fallback for positions without models
+            for player_data in position_players:
+                injury_status = injury_statuses.get(player_data['player_id'])
+                predictions.append(generate_fallback_prediction(player_data, injury_status))
+
+    # Save predictions if requested
     if output_file:
         import pandas as pd
         df = pd.DataFrame(predictions)
@@ -374,12 +470,74 @@ def predict_players(contest_id: str = None, output_file: str = None):
     return predictions
 
 
+def generate_fallback_prediction(player_data, injury_status=None):
+    """Generate fallback prediction based on salary and position."""
+    # Use DK position if available, otherwise fall back to database position
+    position = player_data.get('dk_position', player_data['position'])
+
+    # Position-based average points
+    pos_averages = {
+        'QB': 18.0,
+        'RB': 12.0,
+        'WR': 11.0,
+        'TE': 9.0,
+        'DST': 8.0,
+        'DEF': 8.0
+    }
+
+    base_projection = pos_averages.get(position, 10.0)
+    salary_factor = player_data['salary'] / 6000
+    projected_points = base_projection * salary_factor
+
+    # Apply injury multipliers
+    proj_mult, floor_mult, ceil_mult = get_injury_multiplier(injury_status)
+    projected_points *= proj_mult
+    floor = projected_points * 0.7 * floor_mult
+    ceiling = projected_points * 1.5 * ceil_mult
+
+    result = {
+        'player_id': player_data['player_id'],
+        'name': player_data['name'],
+        'position': position,  # This is now the DK position
+        'salary': player_data['salary'],
+        'projected_points': round(projected_points, 1),
+        'floor': round(floor, 1),
+        'ceiling': round(ceiling, 1),
+        'team': player_data['team_abbr'],
+        'roster_position': player_data['roster_position']
+    }
+
+    if injury_status:
+        result['injury_status'] = injury_status
+
+    return result
+
+
+def generate_dst_features(player_data):
+    """Generate simplified DST features."""
+    # This is a simplified version - in production would extract real defensive stats
+    return [
+        20,   # avg points_allowed (league average)
+        2.5,  # avg sacks
+        1.0,  # avg interceptions
+        0.8,  # avg fumbles_recovered
+        0.1,  # avg safeties
+        0.1,  # avg defensive_tds
+        8.0,  # avg_recent_points
+        22,   # avg_recent_points_allowed
+        2.3,  # avg_recent_sacks
+        10,   # week (mid-season)
+        2024  # season
+    ]
+
+
 def optimize_lineups(
     contest_id: str = None,
     strategy: str = "balanced",
     num_lineups: int = 1,
     output_dir: str = "lineups",
-    save_predictions: str = None
+    save_predictions: str = None,
+    injury_file: str = None
 ):
     """Build optimal lineups for a contest.
 
@@ -389,23 +547,23 @@ def optimize_lineups(
         num_lineups: Number of lineups to generate
         output_dir: Directory to save lineup files
         save_predictions: Optional file to save player predictions CSV
+        injury_file: Optional CSV file with injury statuses
     """
     logger.info(f"Optimizing lineups for contest: {contest_id}")
     logger.info(f"Strategy: {strategy}, Count: {num_lineups}")
 
-    # Get player predictions (or generate them)
+    # Get player predictions (optimized version)
     try:
-        predictions = predict_players(contest_id)
+        predictions = predict_players_optimized(contest_id, save_predictions, injury_file)
 
-        # Save predictions if requested
-        if save_predictions:
-            import pandas as pd
-            df = pd.DataFrame(predictions)
-            df.to_csv(save_predictions, index=False)
-            logger.info(f"Player predictions saved to {save_predictions}")
+        if not predictions:
+            logger.error("No predictions generated")
+            return
 
     except Exception as e:
         logger.error(f"Failed to generate predictions: {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
         return
 
     # Convert to Player objects
@@ -433,14 +591,12 @@ def optimize_lineups(
         logger.info("Building cash game lineup...")
         result = optimize_cash_game_lineup(player_pool)
         lineups = [result] if result.is_valid else []
-
     elif strategy == "tournament":
         logger.info("Building tournament lineup...")
         result = optimize_tournament_lineup(player_pool)
         lineups = [result] if result.is_valid else []
-
-    else:  # balanced or multiple
-        logger.info(f"Building {num_lineups} diverse lineups...")
+    else:  # balanced
+        logger.info("Building balanced lineups...")
         lineups = generate_multiple_lineups(
             player_pool,
             LineupConstraints(),
@@ -448,93 +604,159 @@ def optimize_lineups(
             strategy=strategy
         )
 
-    # Save lineups
+    # Save valid lineups
+    valid_count = 0
     for i, lineup in enumerate(lineups):
         if lineup.is_valid:
-            filename = output_path / f"lineup_{i+1}_{strategy}.csv"
-            export_lineup_to_csv(lineup, str(filename))
-
-            logger.info(f"Lineup {i+1} saved to: {filename}")
-            logger.info("\n" + format_lineup_display(lineup))
+            filename = f"{strategy}_lineup_{i+1}.csv"
+            filepath = output_path / filename
+            export_lineup_to_csv(lineup, str(filepath))
+            logger.info(f"Saved lineup {i+1} to {filepath}")
+            valid_count += 1
         else:
             logger.warning(f"Lineup {i+1} is invalid: {lineup.constraint_violations}")
 
-    logger.info(f"Generated {len([l for l in lineups if l.is_valid])} valid lineups")
+    logger.info(f"Generated {valid_count} valid lineups")
+
+    if valid_count == 0:
+        logger.error("No valid lineups could be generated. Check player pool and constraints.")
 
 
 def main():
     """Main CLI entry point."""
-    parser = argparse.ArgumentParser(description="Simple DFS CLI")
-    subparsers = parser.add_subparsers(dest='command', help='Commands')
+    parser = argparse.ArgumentParser(description="DFS Optimization System")
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # Collect command
-    collect_parser = subparsers.add_parser('collect', help='Collect NFL data')
-    collect_parser.add_argument('--seasons', nargs='+', type=int,
-                               help='NFL seasons to collect')
-    collect_parser.add_argument('--csv', help='DraftKings CSV file path')
-    collect_parser.add_argument('--contest-id', help='DraftKings contest ID')
-
-    # Weather command
-    weather_parser = subparsers.add_parser('weather', help='Collect weather data for outdoor stadium games')
-    weather_parser.add_argument('--limit', type=int, help='Maximum number of API calls to make')
-    weather_parser.add_argument('--rate-limit', type=float, default=1.5,
-                               help='Delay between API calls in seconds (default: 1.5)')
-    weather_parser.add_argument('--no-batch', action='store_true',
-                               help='Disable batch processing (one API call per game)')
+    collect_parser = subparsers.add_parser("collect", help="Collect NFL data")
+    collect_parser.add_argument(
+        "--seasons",
+        nargs="+",
+        type=int,
+        help="Seasons to collect (e.g., 2022 2023)"
+    )
+    collect_parser.add_argument(
+        "--csv",
+        help="Path to DraftKings CSV file for salary integration"
+    )
 
     # Train command
-    train_parser = subparsers.add_parser('train', help='Train models')
-    train_parser.add_argument('--positions', nargs='+',
-                             choices=['QB', 'RB', 'WR', 'TE', 'DST'],
-                             help='Positions to train')
-    train_parser.add_argument('--seasons', nargs='+', type=int,
-                             help='Seasons for training data')
+    train_parser = subparsers.add_parser("train", help="Train prediction models")
+    train_parser.add_argument(
+        "--seasons",
+        nargs="+",
+        type=int,
+        help="Seasons to use for training"
+    )
+    train_parser.add_argument(
+        "--positions",
+        nargs="+",
+        choices=['QB', 'RB', 'WR', 'TE', 'DST'],
+        help="Positions to train"
+    )
 
     # Predict command
-    predict_parser = subparsers.add_parser('predict', help='Generate predictions')
-    predict_parser.add_argument('--contest-id', help='DraftKings contest ID (optional, uses latest if not provided)')
-    predict_parser.add_argument('--output', help='Output CSV file')
+    predict_parser = subparsers.add_parser("predict", help="Generate player predictions")
+    predict_parser.add_argument(
+        "--contest-id",
+        help="DraftKings contest ID"
+    )
+    predict_parser.add_argument(
+        "--output",
+        help="Output CSV file for predictions"
+    )
+    predict_parser.add_argument(
+        "--injury-file",
+        help="CSV file with injury statuses (columns: player_name, injury_status)"
+    )
+
+    # Injury command
+    injury_parser = subparsers.add_parser("injury", help="Update player injury statuses")
+    injury_parser.add_argument(
+        "--csv",
+        help="CSV file with injury statuses (columns: player_name, injury_status)"
+    )
+    injury_parser.add_argument(
+        "--player",
+        nargs=2,
+        metavar=("NAME", "STATUS"),
+        action="append",
+        help="Update single player injury status (e.g., --player 'Patrick Mahomes' Q)"
+    )
 
     # Optimize command
-    optimize_parser = subparsers.add_parser('optimize', help='Build lineups')
-    optimize_parser.add_argument('--contest-id', help='DraftKings contest ID (optional, uses latest if not provided)')
-    optimize_parser.add_argument('--strategy', choices=['balanced', 'tournament', 'cash'],
-                                default='balanced', help='Optimization strategy')
-    optimize_parser.add_argument('--count', type=int, default=1,
-                                help='Number of lineups to generate')
-    optimize_parser.add_argument('--output-dir', default='lineups',
-                                help='Output directory for lineups')
-    optimize_parser.add_argument('--save-predictions', help='Save player predictions to CSV file')
+    optimize_parser = subparsers.add_parser("optimize", help="Build optimal lineups")
+    optimize_parser.add_argument(
+        "--contest-id",
+        help="DraftKings contest ID"
+    )
+    optimize_parser.add_argument(
+        "--strategy",
+        choices=["cash", "tournament", "balanced"],
+        default="balanced",
+        help="Optimization strategy"
+    )
+    optimize_parser.add_argument(
+        "--count",
+        type=int,
+        default=1,
+        help="Number of lineups to generate"
+    )
+    optimize_parser.add_argument(
+        "--output-dir",
+        default="lineups",
+        help="Directory to save lineups"
+    )
+    optimize_parser.add_argument(
+        "--save-predictions",
+        help="Optional: Save player predictions to CSV"
+    )
+    optimize_parser.add_argument(
+        "--injury-file",
+        help="CSV file with injury statuses (columns: player_name, injury_status)"
+    )
 
     args = parser.parse_args()
 
-    if not args.command:
+    if args.command == "collect":
+        seasons = args.seasons or [2023, 2024]
+        logger.info(f"Collecting data for seasons: {seasons}")
+        collect_nfl_data(seasons, DEFAULT_DB_PATH)
+
+        if args.csv:
+            logger.info(f"Integrating DraftKings salaries from {args.csv}")
+            load_draftkings_csv(args.csv, None, DEFAULT_DB_PATH)
+
+    elif args.command == "train":
+        train_models(args.seasons, args.positions)
+
+    elif args.command == "injury":
+        manual_updates = {}
+        if args.player:
+            for name, status in args.player:
+                manual_updates[name] = status
+
+        count = update_injury_statuses(
+            injury_file=args.csv,
+            manual_updates=manual_updates if manual_updates else None
+        )
+        logger.info(f"Updated injury status for {count} player(s)")
+
+    elif args.command == "predict":
+        predict_players_optimized(args.contest_id, args.output, args.injury_file)
+
+    elif args.command == "optimize":
+        optimize_lineups(
+            args.contest_id,
+            args.strategy,
+            args.count,
+            args.output_dir,
+            args.save_predictions,
+            args.injury_file
+        )
+
+    else:
         parser.print_help()
-        return
-
-    try:
-        if args.command == 'collect':
-            collect_data(args.seasons, args.csv, args.contest_id)
-
-        elif args.command == 'weather':
-            batch_mode = not getattr(args, 'no_batch', False)
-            collect_weather(args.limit, getattr(args, 'rate_limit', 1.5), batch_mode)
-
-        elif args.command == 'train':
-            train_models(args.positions, args.seasons)
-
-        elif args.command == 'predict':
-            predict_players(getattr(args, 'contest_id', None), args.output)
-
-        elif args.command == 'optimize':
-            optimize_lineups(getattr(args, 'contest_id', None), args.strategy, args.count, args.output_dir, args.save_predictions)
-
-    except KeyboardInterrupt:
-        logger.info("Operation cancelled by user")
-        sys.exit(1)
-    except Exception as e:
-        logger.error(f"Command failed: {e}")
-        sys.exit(1)
 
 
 if __name__ == "__main__":

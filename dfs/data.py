@@ -64,6 +64,7 @@ DB_SCHEMA = {
             team_id INTEGER,
             gsis_id TEXT,
             status TEXT DEFAULT 'Active',
+            injury_status TEXT DEFAULT NULL,
             FOREIGN KEY (team_id) REFERENCES teams (id)
         )
     ''',

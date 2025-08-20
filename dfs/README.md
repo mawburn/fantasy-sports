@@ -5,7 +5,7 @@ A streamlined NFL Daily Fantasy Sports prediction and optimization system. This 
 ## What This Does
 
 1. **Collects NFL data** using nfl_data_py and DraftKings CSV files
-2. **Trains PyTorch neural networks** for position-specific fantasy point predictions
+2. **Trains PyTorch neural networks** for position-specific fantasy point predictions (optimized for Apple Silicon M-series)
 3. **Captures complex correlations** between players, teams, and game contexts
 4. **Optimizes lineups** using linear programming with PuLP
 5. **Generates optimal DFS lineups** for cash games and tournaments
@@ -20,29 +20,41 @@ uv pip install -r requirements.txt
 uv venv --python 3.11
 uv pip install -r requirements.txt
 
-# Collect NFL data
+# Collect NFL data (seasons 2023 and 2024)
 uv run python run.py collect --seasons 2023 2024
 
-# Collect weather data for outdoor stadiums (optional, batch-optimized)
-uv run python run.py weather --limit 50 --rate-limit 1.5
+# Load DraftKings salary data from CSV
+uv run python run.py collect --csv data/DKSalaries.csv
 
-# Train models
+# Train models (uses all available seasons by default)
 uv run python run.py train
 
-# Load DraftKings data and optimize lineups
-uv run python run.py collect --csv draftkings.csv
+# Generate predictions for current contest
+uv run python run.py predict --output predictions.csv
+
+# Build optimal lineups (3 strategies available)
+uv run python run.py optimize --strategy cash --count 1
 uv run python run.py optimize --strategy tournament --count 5
+uv run python run.py optimize --strategy balanced --count 10
 ```
+
+## Performance Optimizations
+
+The CLI has been optimized for faster execution:
+
+- **Batch database queries**: Fetches all player data in one query instead of per-player queries
+- **Cached feature metadata**: Loads feature names once from minimal data
+- **Batch predictions**: Processes all players of the same position together
+- **MPS acceleration**: Automatically uses Apple Silicon GPU when available
 
 ## File Structure
 
 ```
-simple_dfs/
+dfs/
 ├── data.py      # Direct SQLite operations + NFL data collection
-├── models.py    # PyTorch neural networks + correlation features
+├── models.py    # PyTorch neural networks + correlation features (MPS-optimized)
 ├── optimize.py  # PuLP linear programming + stacking algorithms
-├── run.py       # Simple CLI interface
-├── utils.py     # Essential utilities
+├── run.py       # Optimized CLI interface with batch processing
 └── requirements.txt
 ```
 
@@ -90,6 +102,42 @@ uv run python run.py optimize --strategy balanced --count 3
 # Or save predictions too
 uv run python run.py optimize --strategy balanced --count 3 --save-predictions predictions.csv
 ```
+
+### Injury Status Management
+
+The system supports manual injury status tracking to adjust player projections:
+
+```bash
+# Update injury statuses from CSV file
+uv run python run.py injury --csv data/injuries.csv
+
+# Update individual players manually
+uv run python run.py injury --player "Patrick Mahomes" Q --player "Justin Jefferson" OUT
+
+# Use injury file when generating predictions
+uv run python run.py predict --contest-id <id> --injury-file data/injuries.csv --output predictions.csv
+
+# Include injuries when optimizing lineups
+uv run python run.py optimize --contest-id <id> --injury-file data/injuries.csv --strategy balanced
+```
+
+**CSV Format** (save as `data/injuries.csv`):
+
+```csv
+player_name,injury_status
+Patrick Mahomes,Q
+Justin Jefferson,OUT
+Christian McCaffrey,D
+```
+
+**Injury Status Codes & Impact**:
+
+- **Q** (Questionable): 85% projection, 75% floor, 90% ceiling
+- **D** (Doubtful): 40% projection, 20% floor, 50% ceiling
+- **OUT**: 0% all projections (excluded from lineups)
+- **IR** (Injured Reserve): 0% all projections
+- **PUP** (Physically Unable to Perform): 0% all projections
+- **PPD** (Game Postponed): 0% all projections
 
 ### Optimization Strategies
 
