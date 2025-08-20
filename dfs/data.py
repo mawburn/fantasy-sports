@@ -1824,15 +1824,17 @@ def get_player_features(
                 'stadium_neutral': 0, 'cold_weather': 0, 'hot_weather': 0, 'high_wind': 0
             })
 
-        # Add betting odds features (market expectations)
+        # Add betting odds features (prioritize live odds from odds_api)
         betting_data = conn.execute(
-            """SELECT spread_favorite, over_under_line, home_team_spread, away_team_spread
-               FROM betting_odds WHERE game_id = ?""",
+            """SELECT spread_favorite, over_under_line, home_team_spread, away_team_spread, source
+               FROM betting_odds WHERE game_id = ?
+               ORDER BY CASE WHEN source = 'odds_api' THEN 1 ELSE 2 END
+               LIMIT 1""",
             (game_id,)
         ).fetchone()
 
         if betting_data:
-            spread_fav, over_under, home_spread, away_spread = betting_data
+            spread_fav, over_under, home_spread, away_spread, source = betting_data
             team_spread = home_spread if is_home else away_spread
             features['team_spread'] = team_spread or 0  # Positive = underdog, Negative = favorite
             features['total_line'] = over_under or 45  # Default NFL total
@@ -2224,6 +2226,67 @@ def get_training_data(
             def_features = defensive_features_cache.get((opponent_abbr, season, week), {})
             features.update(def_features)
 
+            # Weather and betting features (using production pipeline logic)
+            weather_betting_features = {}
+
+            # Add weather features
+            weather_data = conn.execute(
+                """SELECT weather_temperature, weather_wind_mph, weather_humidity,
+                          weather_detail, stadium_neutral
+                   FROM games WHERE id = ?""",
+                (game_id,)
+            ).fetchone()
+
+            if weather_data:
+                temp, wind, humidity, conditions, neutral = weather_data
+                weather_betting_features.update({
+                    'weather_temp': temp or 72,
+                    'weather_wind': wind or 0,
+                    'weather_humidity': humidity or 50,
+                    'weather_is_indoor': 1 if conditions and 'indoor' in conditions.lower() else 0,
+                    'weather_is_rain': 1 if conditions and 'rain' in conditions.lower() else 0,
+                    'weather_is_snow': 1 if conditions and 'snow' in conditions.lower() else 0,
+                    'stadium_neutral': neutral or 0,
+                    'cold_weather': 1 if (temp or 72) < 40 else 0,
+                    'hot_weather': 1 if (temp or 72) > 85 else 0,
+                    'high_wind': 1 if (wind or 0) > 15 else 0
+                })
+            else:
+                weather_betting_features.update({
+                    'weather_temp': 72, 'weather_wind': 0, 'weather_humidity': 50,
+                    'weather_is_indoor': 0, 'weather_is_rain': 0, 'weather_is_snow': 0,
+                    'stadium_neutral': 0, 'cold_weather': 0, 'hot_weather': 0, 'high_wind': 0
+                })
+
+            # Add betting odds features (prioritize live odds)
+            is_home = team_id == home_team_id
+            betting_data = conn.execute(
+                """SELECT spread_favorite, over_under_line, home_team_spread, away_team_spread
+                   FROM betting_odds WHERE game_id = ? ORDER BY
+                   CASE WHEN source = 'odds_api' THEN 1 ELSE 2 END
+                   LIMIT 1""",
+                (game_id,)
+            ).fetchone()
+
+            if betting_data:
+                spread_fav, over_under, home_spread, away_spread = betting_data
+                team_spread = home_spread if is_home else away_spread
+                weather_betting_features.update({
+                    'team_spread': team_spread or 0,
+                    'total_line': over_under or 45,
+                    'is_favorite': 1 if (team_spread or 0) < 0 else 0,
+                    'is_big_favorite': 1 if (team_spread or 0) < -7 else 0,
+                    'is_big_underdog': 1 if (team_spread or 0) > 7 else 0,
+                    'expected_pace': (over_under or 45) / 45.0
+                })
+            else:
+                weather_betting_features.update({
+                    'team_spread': 0, 'total_line': 45, 'is_favorite': 0,
+                    'is_big_favorite': 0, 'is_big_underdog': 0, 'expected_pace': 1.0
+                })
+
+            features.update(weather_betting_features)
+
             # Correlation features
             try:
                 import importlib
@@ -2263,9 +2326,9 @@ def get_training_data(
             non_constant_mask = feature_variance > 1e-8  # Very small threshold
 
             # Always preserve weather and betting features even if they appear "constant"
-            important_features = ['weather_', 'spread', 'total', 'favorite', 'underdog', 'pace', 
+            important_features = ['weather_', 'spread', 'total', 'favorite', 'underdog', 'pace',
                                 'cold_weather', 'hot_weather', 'high_wind', 'stadium']
-            
+
             for i, fname in enumerate(feature_names):
                 if any(keyword in fname for keyword in important_features):
                     non_constant_mask[i] = True  # Force keep important features
@@ -2710,7 +2773,7 @@ def import_spreadspoke_data(csv_path: str, db_path: str = "data/nfl_dfs.db") -> 
 
 def collect_odds_data(target_date: str = None, db_path: str = "data/nfl_dfs.db") -> None:
     """Collect NFL betting odds from The Odds API for upcoming games.
-    
+
     Args:
         target_date: Date in YYYY-MM-DD format. If None, collects all upcoming games.
         db_path: Path to the SQLite database
@@ -2718,9 +2781,9 @@ def collect_odds_data(target_date: str = None, db_path: str = "data/nfl_dfs.db")
     odds_api_key = os.getenv('ODDS_API_KEY')
     if not odds_api_key or odds_api_key == 'your_key_here':
         raise ValueError("ODDS_API_KEY environment variable not set. Please set it in your .env file.")
-    
+
     conn = get_db_connection(db_path)
-    
+
     try:
         # API endpoint for NFL odds
         url = "https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds"
@@ -2731,78 +2794,78 @@ def collect_odds_data(target_date: str = None, db_path: str = "data/nfl_dfs.db")
             'oddsFormat': 'american',
             'dateFormat': 'iso'
         }
-        
+
         logger.info("Fetching NFL odds from The Odds API...")
         response = requests.get(url, params=params)
         response.raise_for_status()
-        
+
         odds_data = response.json()
         logger.info(f"Retrieved {len(odds_data)} games with odds data")
-        
+
         odds_inserted = 0
-        
+
         for game in odds_data:
             game_id = game['id']
             commence_time = game['commence_time']
             home_team = game['home_team']
             away_team = game['away_team']
-            
+
             # Parse the commence time to check if it matches target date
             game_date = datetime.fromisoformat(commence_time.replace('Z', '+00:00')).date()
             if target_date:
                 target_date_obj = datetime.strptime(target_date, '%Y-%m-%d').date()
                 if game_date != target_date_obj:
                     continue
-            
+
             # Find matching game in our database (check both games table and draftkings_salaries)
             db_game = conn.execute("""
-                SELECT id FROM games 
-                WHERE (home_team_id = (SELECT id FROM teams WHERE team_abbr = ?) 
+                SELECT id FROM games
+                WHERE (home_team_id = (SELECT id FROM teams WHERE team_abbr = ?)
                        OR home_team_id = (SELECT id FROM teams WHERE team_name = ?))
-                  AND (away_team_id = (SELECT id FROM teams WHERE team_abbr = ?) 
+                  AND (away_team_id = (SELECT id FROM teams WHERE team_abbr = ?)
                        OR away_team_id = (SELECT id FROM teams WHERE team_name = ?))
                   AND date(game_date) = date(?)
             """, (home_team, home_team, away_team, away_team, commence_time[:10])).fetchone()
-            
+
             # If not found in games table, check draftkings_salaries table for upcoming games
             if not db_game:
                 # Convert team names to abbreviations for DraftKings format matching
                 away_abbr = conn.execute("SELECT team_abbr FROM teams WHERE team_name = ? OR team_abbr = ?", (away_team, away_team)).fetchone()
                 home_abbr = conn.execute("SELECT team_abbr FROM teams WHERE team_name = ? OR team_abbr = ?", (home_team, home_team)).fetchone()
-                
+
                 if away_abbr and home_abbr:
                     away_abbr = away_abbr[0]
                     home_abbr = home_abbr[0]
-                    
+
                     # Format date to match DraftKings format (MM/DD/YYYY)
                     dk_date = game_date.strftime("%m/%d/%Y")
-                    
+
                     # Check if we have DraftKings data for this matchup - format: "AWAY@HOME MM/DD/YYYY"
                     dk_game = conn.execute("""
                         SELECT DISTINCT game_info FROM draftkings_salaries
                         WHERE game_info LIKE ?
                     """, (f"{away_abbr}@{home_abbr} {dk_date}%",)).fetchone()
-                    
+
                     if dk_game:
                         # Use a meaningful game_id for upcoming games
                         db_game_id = f"{game_date}_{away_abbr}@{home_abbr}"
                         logger.info(f"Found upcoming game in DraftKings data: {away_abbr}@{home_abbr} on {dk_date}")
-                        
+
                         # Create minimal game record for foreign key constraint
                         away_team_id = conn.execute("SELECT id FROM teams WHERE team_abbr = ?", (away_abbr,)).fetchone()
                         home_team_id = conn.execute("SELECT id FROM teams WHERE team_abbr = ?", (home_abbr,)).fetchone()
-                        
+
                         if away_team_id and home_team_id:
                             away_team_id = away_team_id[0]
                             home_team_id = home_team_id[0]
-                            
+
                             # Insert minimal game record if it doesn't exist
                             conn.execute("""
                                 INSERT OR IGNORE INTO games (
-                                    id, game_date, season, week, home_team_id, away_team_id, 
+                                    id, game_date, season, week, home_team_id, away_team_id,
                                     home_score, away_score, game_finished
                                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """, (db_game_id, game_date.strftime('%Y-%m-%d'), game_date.year, 1, 
+                            """, (db_game_id, game_date.strftime('%Y-%m-%d'), game_date.year, 1,
                                   home_team_id, away_team_id, 0, 0, 0))
                         else:
                             logger.warning(f"Could not find team IDs for {away_abbr}/{home_abbr}")
@@ -2815,18 +2878,18 @@ def collect_odds_data(target_date: str = None, db_path: str = "data/nfl_dfs.db")
                     continue
             else:
                 db_game_id = db_game[0]
-            
+
             # Extract odds data
             spread_favorite = None
             spread_fav_team = None
             over_under = None
             home_spread = None
             away_spread = None
-            
+
             # Process bookmaker odds (use consensus or first available)
             if game.get('bookmakers'):
                 bookmaker = game['bookmakers'][0]  # Use first bookmaker
-                
+
                 for market in bookmaker.get('markets', []):
                     if market['key'] == 'spreads':
                         for outcome in market['outcomes']:
@@ -2834,7 +2897,7 @@ def collect_odds_data(target_date: str = None, db_path: str = "data/nfl_dfs.db")
                                 home_spread = float(outcome['point'])
                             elif outcome['name'] == away_team:
                                 away_spread = float(outcome['point'])
-                        
+
                         # Determine favorite
                         if home_spread is not None and away_spread is not None:
                             if home_spread < away_spread:
@@ -2843,33 +2906,33 @@ def collect_odds_data(target_date: str = None, db_path: str = "data/nfl_dfs.db")
                             else:
                                 spread_favorite = abs(away_spread)
                                 spread_fav_team = away_team
-                    
+
                     elif market['key'] == 'totals':
                         for outcome in market['outcomes']:
                             if outcome['name'] == 'Over':
                                 over_under = float(outcome['point'])
                                 break
-            
+
             # Insert or update betting odds
             conn.execute("""
                 INSERT OR REPLACE INTO betting_odds (
                     game_id, favorite_team, spread_favorite, over_under_line,
                     home_team_spread, away_team_spread, source
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (db_game_id, spread_fav_team, spread_favorite, over_under, 
+            """, (db_game_id, spread_fav_team, spread_favorite, over_under,
                   home_spread, away_spread, 'odds_api'))
-            
+
             odds_inserted += 1
             logger.info(f"Processed odds for {away_team} @ {home_team}: spread={spread_favorite}, o/u={over_under}")
-        
+
         conn.commit()
         logger.info(f"Odds collection complete: {odds_inserted} records processed")
-        
+
         # Check remaining API quota
         remaining_requests = response.headers.get('x-requests-remaining')
         if remaining_requests:
             logger.info(f"Remaining API requests: {remaining_requests}")
-        
+
     except requests.RequestException as e:
         logger.error(f"Error fetching odds from API: {e}")
         conn.rollback()
@@ -2878,5 +2941,271 @@ def collect_odds_data(target_date: str = None, db_path: str = "data/nfl_dfs.db")
         logger.error(f"Error processing odds data: {e}")
         conn.rollback()
         raise
+    finally:
+        conn.close()
+
+
+def collect_injury_data(seasons: List[int] = None, db_path: str = "data/nfl_dfs.db") -> None:
+    """Collect NFL injury data from nfl_data_py.
+
+    Args:
+        seasons: List of seasons to collect injury data for. If None, collects current season.
+        db_path: Path to the SQLite database
+    """
+    if nfl is None:
+        logger.error("nfl_data_py not available. Cannot collect injury data.")
+        return
+
+    if seasons is None:
+        current_year = datetime.now().year
+        # NFL season spans two calendar years, so check if we're in NFL season
+        if datetime.now().month >= 9:  # September onwards is current NFL season
+            seasons = [current_year]
+        else:  # January-August is previous NFL season
+            seasons = [current_year - 1]
+
+    conn = get_db_connection(db_path)
+
+    try:
+        # Ensure injury_status column exists in players table
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(players)")
+        columns = [col[1] for col in cursor.fetchall()]
+
+        if 'injury_status' not in columns:
+            logger.info("Adding injury_status column to players table...")
+            cursor.execute("ALTER TABLE players ADD COLUMN injury_status TEXT DEFAULT NULL")
+            conn.commit()
+
+        total_updates = 0
+
+        for season in seasons:
+            try:
+                logger.info(f"Fetching injury data for season {season}...")
+
+                # Import injury data from nfl_data_py
+                injury_df = nfl.import_injuries([season])
+
+                if injury_df is None or injury_df.empty:
+                    logger.warning(f"No injury data found for season {season}")
+                    continue
+
+                logger.info(f"Processing {len(injury_df)} injury records for season {season}")
+
+                season_updates = 0
+
+                for _, injury_row in injury_df.iterrows():
+                    try:
+                        # Get injury status and handle None values
+                        nfl_status = injury_row.get('report_status')
+                        if not nfl_status or pd.isna(nfl_status):
+                            continue
+
+                        nfl_status = str(nfl_status).upper()
+
+                        # Map NFL injury statuses to our standardized codes
+                        status_mapping = {
+                            'OUT': 'OUT',
+                            'DOUBTFUL': 'D',
+                            'QUESTIONABLE': 'Q',
+                            'PROBABLE': 'P',
+                            'NOTE': None,  # Skip these
+                            'INJURED_RESERVE': 'IR',
+                            'PHYSICALLY_UNABLE_TO_PERFORM': 'PUP',
+                            'NON_FOOTBALL_INJURY': 'NFI',
+                            'SUSPENSION': 'SUSP',
+                            'RESERVE_COVID_19': 'COV',
+                            'PRACTICE_SQUAD_INJURED': 'PS-INJ'
+                        }
+
+                        injury_status = status_mapping.get(nfl_status)
+                        if injury_status is None:
+                            if nfl_status == 'NOTE':
+                                continue  # Skip notes
+                            # If status not in mapping, use original if it's short enough
+                            injury_status = nfl_status[:10] if len(nfl_status) <= 10 else None
+
+                        if not injury_status:
+                            continue
+
+                        # Get player identifiers
+                        gsis_id = injury_row.get('gsis_id')
+                        player_name = injury_row.get('full_name', '')
+                        team_abbr = injury_row.get('team')
+
+                        if not gsis_id:
+                            continue
+
+                        # Try to find player by GSIS ID first (most reliable)
+                        player_record = conn.execute(
+                            "SELECT id, player_name FROM players WHERE gsis_id = ?",
+                            (gsis_id,)
+                        ).fetchone()
+
+                        # If not found by GSIS ID, try name and team
+                        if not player_record and player_name and team_abbr:
+                            # Get team ID
+                            team_record = conn.execute(
+                                "SELECT id FROM teams WHERE team_abbr = ?",
+                                (team_abbr,)
+                            ).fetchone()
+
+                            if team_record:
+                                team_id = team_record[0]
+                                # Try both player_name and display_name columns
+                                player_record = conn.execute(
+                                    """SELECT id, player_name FROM players
+                                       WHERE (player_name LIKE ? OR display_name LIKE ?) AND team_id = ?""",
+                                    (f"%{player_name}%", f"%{player_name}%", team_id)
+                                ).fetchone()
+
+                        if player_record:
+                            player_id = player_record[0]
+
+                            # Update injury status
+                            conn.execute(
+                                "UPDATE players SET injury_status = ? WHERE id = ?",
+                                (injury_status, player_id)
+                            )
+                            season_updates += 1
+
+                            if season_updates % 50 == 0:
+                                logger.info(f"Updated {season_updates} player injury statuses for season {season}")
+
+                    except Exception as e:
+                        logger.warning(f"Error processing injury record: {e}")
+                        continue
+
+                conn.commit()
+                total_updates += season_updates
+                logger.info(f"Completed season {season}: {season_updates} injury status updates")
+
+            except Exception as e:
+                logger.error(f"Error collecting injury data for season {season}: {e}")
+                continue
+
+        logger.info(f"Injury data collection complete. Total updates: {total_updates}")
+
+    except Exception as e:
+        logger.error(f"Error collecting injury data: {e}")
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def backtest_production_pipeline(
+    position: str,
+    test_season: int = 2023,
+    db_path: str = "data/nfl_dfs.db"
+) -> Dict[str, float]:
+    """Backtest model using exact production pipeline for accurate performance metrics."""
+    from models import create_model
+    import numpy as np
+    from sklearn.metrics import mean_absolute_error, r2_score
+
+    conn = get_db_connection(db_path)
+
+    try:
+        # Get test data (last season's QB performances)
+        test_query = """
+            SELECT ps.player_id, ps.game_id, ps.fantasy_points, p.player_name
+            FROM player_stats ps
+            JOIN players p ON ps.player_id = p.id
+            JOIN games g ON ps.game_id = g.id
+            WHERE p.position = ? AND g.season = ? AND ps.fantasy_points > 0
+            ORDER BY g.game_date
+        """
+
+        test_data = conn.execute(test_query, (position, test_season)).fetchall()
+        logger.info(f"Backtesting {len(test_data)} {position} performances from {test_season}")
+
+        if not test_data:
+            return {"error": "No test data found"}
+
+        # Load trained model
+        model_path = f"models/{position.lower()}_model.pth"
+        if not Path(model_path).exists():
+            return {"error": f"No trained model found: {model_path}"}
+
+        model = create_model(position)
+
+        # Get expected feature count from training data
+        X_train, _, feature_names = get_training_data(position, [2022, 2023], db_path)
+        expected_features = len(feature_names)
+
+        model.load_model(model_path, expected_features)
+
+        predictions = []
+        actuals = []
+        failed_predictions = 0
+
+        for i, (player_id, game_id, actual_points, player_name) in enumerate(test_data):
+            if i % 50 == 0:
+                logger.info(f"Processing {i}/{len(test_data)} predictions...")
+
+            try:
+                # Use EXACT production pipeline
+                features = get_player_features(player_id, game_id, db_path=db_path)
+
+                if not features:
+                    failed_predictions += 1
+                    continue
+
+                # Convert features to model input (same as production)
+                feature_vector = [features.get(name, 0.0) for name in feature_names]
+                X = np.array([feature_vector], dtype=np.float32)
+
+                # Handle NaN values (same as training)
+                X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+                if np.isnan(X).any():
+                    failed_predictions += 1
+                    continue
+
+                # Make prediction using production model
+                pred_result = model.predict(X)
+                pred_points = pred_result.point_estimate[0]
+
+                if not np.isnan(pred_points) and not np.isinf(pred_points):
+                    predictions.append(pred_points)
+                    actuals.append(actual_points)
+                else:
+                    failed_predictions += 1
+
+            except Exception as e:
+                failed_predictions += 1
+                if failed_predictions <= 5:  # Log first few failures
+                    logger.debug(f"Prediction failed for {player_name} in {game_id}: {e}")
+
+        if len(predictions) < 10:
+            return {"error": f"Too few valid predictions: {len(predictions)}"}
+
+        # Calculate metrics
+        predictions = np.array(predictions)
+        actuals = np.array(actuals)
+
+        mae = mean_absolute_error(actuals, predictions)
+        r2 = r2_score(actuals, predictions)
+
+        # Additional metrics
+        mean_error = np.mean(predictions - actuals)  # Bias
+        std_error = np.std(predictions - actuals)    # Consistency
+
+        logger.info(f"Production backtesting complete: {len(predictions)} valid predictions")
+
+        return {
+            "mae": mae,
+            "r2": r2,
+            "mean_error": mean_error,
+            "std_error": std_error,
+            "valid_predictions": len(predictions),
+            "failed_predictions": failed_predictions,
+            "success_rate": len(predictions) / len(test_data)
+        }
+
+    except Exception as e:
+        logger.error(f"Backtesting failed: {e}")
+        return {"error": str(e)}
     finally:
         conn.close()

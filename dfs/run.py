@@ -21,7 +21,8 @@ from data import (
     get_db_connection,
     get_player_features,
     import_spreadspoke_data,
-    collect_odds_data
+    collect_odds_data,
+    collect_injury_data
 )
 from models import (
     create_model,
@@ -179,7 +180,7 @@ def update_injury_statuses(injury_file: str = None, manual_updates: Dict[str, st
 
 def extract_primary_position(roster_position: str) -> str:
     """Extract primary position from DraftKings roster position string.
-    
+
     Examples:
         'QB' -> 'QB'
         'RB/FLEX' -> 'RB'
@@ -189,10 +190,10 @@ def extract_primary_position(roster_position: str) -> str:
     """
     if not roster_position:
         return 'FLEX'
-    
+
     # Split by '/' and take the first part
     primary = roster_position.split('/')[0].strip()
-    
+
     # Handle special cases
     if primary in ['QB', 'RB', 'WR', 'TE', 'DST', 'DEF']:
         return primary
@@ -317,10 +318,10 @@ def predict_players_optimized(contest_id: str = None, output_file: str = None, i
     for player_data in players_data:
         # Use DraftKings roster position instead of database position
         dk_position = extract_primary_position(player_data.get('roster_position', ''))
-        
+
         # Store the DK position for later use
         player_data['dk_position'] = dk_position
-        
+
         # Group by DK position for model selection
         if dk_position not in players_by_position:
             players_by_position[dk_position] = []
@@ -348,7 +349,7 @@ def predict_players_optimized(contest_id: str = None, output_file: str = None, i
                                 # CRITICAL: Filter out players with 0 FPPG or very few games
                                 avg_fantasy_points = features_dict.get('avg_fantasy_points', 0)
                                 games_played = features_dict.get('games_played', 0)
-                                
+
                                 if avg_fantasy_points <= 0.1:
                                     logger.debug(f"Skipping {player_data['name']} - FPPG is {avg_fantasy_points:.1f}")
                                     fallback_players.append(player_data)
@@ -371,7 +372,7 @@ def predict_players_optimized(contest_id: str = None, output_file: str = None, i
                 if batch_features:
                     try:
                         X_pred = np.array(batch_features, dtype=np.float32)
-                        
+
                         # Check if we need to pad features to match model's expected input size
                         if hasattr(model, 'input_size') and model.input_size and X_pred.shape[1] != model.input_size:
                             logger.debug(f"Padding features for {position}: {X_pred.shape[1]} -> {model.input_size}")
@@ -382,7 +383,7 @@ def predict_players_optimized(contest_id: str = None, output_file: str = None, i
                             # Truncate if we have more features than expected (shouldn't happen but just in case)
                             elif X_pred.shape[1] > model.input_size:
                                 X_pred = X_pred[:, :model.input_size]
-                        
+
                         prediction_result = model.predict(X_pred)
 
                         for i, player_data in enumerate(valid_players):
@@ -508,7 +509,7 @@ def generate_fallback_prediction(player_data, injury_status=None):
         base_projection = pos_averages.get(position, 10.0)
         salary_factor = player_data['salary'] / 6000
         base_projection = base_projection * salary_factor * 0.5  # Conservative 50% for fallbacks
-    
+
     projected_points = base_projection
 
     # Apply injury multipliers
@@ -600,7 +601,8 @@ def optimize_lineups(
             floor=pred['floor'],
             ceiling=pred['ceiling'],
             team_abbr=pred['team'],
-            roster_position=pred.get('roster_position', '')
+            roster_position=pred.get('roster_position', ''),
+            injury_status=pred.get('injury_status')
         )
         player_pool.append(player)
 
@@ -660,6 +662,11 @@ def main():
     collect_parser.add_argument(
         "--csv",
         help="Path to DraftKings CSV file for salary integration"
+    )
+    collect_parser.add_argument(
+        "--injuries",
+        action="store_true",
+        help="Collect injury data from NFL library"
     )
 
     # Import command
@@ -762,6 +769,10 @@ def main():
         if args.csv:
             logger.info(f"Integrating DraftKings salaries from {args.csv}")
             load_draftkings_csv(args.csv, None, DEFAULT_DB_PATH)
+
+        if args.injuries:
+            logger.info("Collecting injury data from NFL library...")
+            collect_injury_data(seasons, DEFAULT_DB_PATH)
 
     elif args.command == "import":
         if args.spreadspoke:

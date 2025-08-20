@@ -51,6 +51,7 @@ class Player:
     ownership_projection: float = 0.0
     team_abbr: str = ""
     roster_position: str = ""  # DraftKings roster eligibility (e.g., "RB/FLEX")
+    injury_status: Optional[str] = None
 
     def __post_init__(self):
         """Calculate derived metrics."""
@@ -630,7 +631,8 @@ def build_tournament_lineup(
                 ceiling=player.ceiling,
                 ownership_projection=player.ownership_projection,
                 team_abbr=player.team_abbr,
-                roster_position=player.roster_position
+                roster_position=player.roster_position,
+                injury_status=player.injury_status
             )
 
             # Blend projection with ceiling for tournament optimization
@@ -673,7 +675,8 @@ def build_contrarian_lineup(
             ceiling=player.ceiling,
             ownership_projection=player.ownership_projection,
             team_abbr=player.team_abbr,
-            roster_position=player.roster_position
+            roster_position=player.roster_position,
+            injury_status=player.injury_status
         )
 
         # Penalty for high ownership
@@ -712,7 +715,8 @@ def generate_multiple_lineups(
                     ceiling=player.ceiling,
                     ownership_projection=player.ownership_projection,
                     team_abbr=player.team_abbr,
-                    roster_position=player.roster_position
+                    roster_position=player.roster_position,
+                    injury_status=player.injury_status
                 )
 
                 # Reduce value if already used
@@ -752,7 +756,7 @@ def format_lineup_display(result: OptimizationResult) -> str:
     """Format lineup with proper FLEX identification."""
     if not result.is_valid or not result.lineup:
         return "Invalid lineup"
-    
+
     # Group players by position
     position_players = {}
     for player in result.lineup:
@@ -760,63 +764,65 @@ def format_lineup_display(result: OptimizationResult) -> str:
         if pos not in position_players:
             position_players[pos] = []
         position_players[pos].append(player)
-    
+
     # DraftKings roster requirements
     roster_requirements = {"QB": 1, "RB": 2, "WR": 3, "TE": 1, "DST": 1}
-    
+
     # Track which players are assigned to base positions vs FLEX
     assigned_players = []
     flex_player = None
-    
+
     # Assign base positions first (highest salary players get base positions)
     for pos, required in roster_requirements.items():
         pos_players = position_players.get(pos, [])
         pos_players.sort(key=lambda x: x.salary, reverse=True)
-        
+
         for i in range(min(required, len(pos_players))):
             assigned_players.append((pos, pos_players[i]))
-    
+
     # Find the FLEX player (remaining RB/WR/TE)
     assigned_ids = {player.player_id for _, player in assigned_players}
-    
+
     for player in result.lineup:
         if player.player_id not in assigned_ids and player.position in ['RB', 'WR', 'TE']:
             flex_player = player
             break
-    
+
     # Build display
     display_lines = []
     display_lines.append(f"=== OPTIMAL LINEUP ===")
     display_lines.append(f"Total Salary: ${result.total_salary:,}")
     display_lines.append(f"Projected Points: {result.projected_points:.1f}")
     display_lines.append("")
-    
+
     # Group assigned players by position for display
     assigned_by_pos = {}
     for pos, player in assigned_players:
         if pos not in assigned_by_pos:
             assigned_by_pos[pos] = []
         assigned_by_pos[pos].append(player)
-    
+
     # Show lineup in DraftKings order
     lineup_order = ["QB", "RB", "RB", "WR", "WR", "WR", "TE", "FLEX", "DST"]
     position_counters = {"QB": 0, "RB": 0, "WR": 0, "TE": 0, "DST": 0}
-    
+
     for slot in lineup_order:
         if slot == "FLEX":
             if flex_player:
-                display_lines.append(f"FLEX ({flex_player.position}):  {flex_player.name} - ${flex_player.salary} - {flex_player.projected_points:.1f} pts")
+                injury_indicator = f" ({flex_player.injury_status})" if flex_player.injury_status else ""
+                display_lines.append(f"FLEX ({flex_player.position}):  {flex_player.name}{injury_indicator} - ${flex_player.salary} - {flex_player.projected_points:.1f} pts")
             else:
                 display_lines.append("FLEX: (not assigned)")
         else:
             pos_players = assigned_by_pos.get(slot, [])
             if position_counters[slot] < len(pos_players):
                 player = pos_players[position_counters[slot]]
-                display_lines.append(f"{slot}:   {player.name} - ${player.salary} - {player.projected_points:.1f} pts")
+                injury_indicator = f" ({player.injury_status})" if player.injury_status else ""
+                display_lines.append(f"{slot}:   {player.name}{injury_indicator} - ${player.salary} - {player.projected_points:.1f} pts")
                 position_counters[slot] += 1
             else:
                 display_lines.append(f"{slot}: (not assigned)")
-    
+
     return "\n".join(display_lines)
 
 def export_lineup_to_csv(lineup: OptimizationResult, filename: str = None) -> str:
@@ -835,36 +841,36 @@ def export_lineup_to_csv(lineup: OptimizationResult, filename: str = None) -> st
         if pos not in position_players:
             position_players[pos] = []
         position_players[pos].append(player)
-    
+
     # Assign base positions first
     roster_requirements = {"QB": 1, "RB": 2, "WR": 3, "TE": 1, "DST": 1}
     assigned_players = []
     flex_player = None
-    
+
     for pos, required in roster_requirements.items():
         pos_players = position_players.get(pos, [])
         pos_players.sort(key=lambda x: x.salary, reverse=True)
-        
+
         for i in range(min(required, len(pos_players))):
             assigned_players.append((pos, pos_players[i]))
-    
+
     # Find FLEX player
     assigned_ids = {player.player_id for _, player in assigned_players}
     for player in lineup.lineup:
         if player.player_id not in assigned_ids and player.position in ['RB', 'WR', 'TE']:
             flex_player = player
             break
-    
+
     # Build ordered lineup for CSV
     assigned_by_pos = {}
     for pos, player in assigned_players:
         if pos not in assigned_by_pos:
             assigned_by_pos[pos] = []
         assigned_by_pos[pos].append(player)
-    
+
     position_counters = {"QB": 0, "RB": 0, "WR": 0, "TE": 0, "DST": 0}
     ordered_lineup = []
-    
+
     for slot in position_order:
         if slot == "FLEX":
             if flex_player:
@@ -881,13 +887,19 @@ def export_lineup_to_csv(lineup: OptimizationResult, filename: str = None) -> st
             display_position = position_order[i]
             if display_position == "FLEX":
                 display_position = f"FLEX ({player.position})"
-            
+
+            # Add injury indicator to name if player is injured
+            display_name = player.name
+            if player.injury_status:
+                display_name += f" ({player.injury_status})"
+
             lineup_data.append({
                 "Position": display_position,
-                "Name": player.name,
+                "Name": display_name,
                 "Salary": player.salary,
                 "Projected": player.projected_points,
-                "Team": player.team_abbr
+                "Team": player.team_abbr,
+                "Injury": player.injury_status or ""
             })
 
     df = pd.DataFrame(lineup_data)
@@ -917,7 +929,8 @@ def optimize_cash_game_lineup(
             floor=player.floor,
             ceiling=player.ceiling,
             team_abbr=player.team_abbr,
-            roster_position=player.roster_position
+            roster_position=player.roster_position,
+            injury_status=player.injury_status
         )
         cash_pool.append(cash_player)
 
@@ -959,9 +972,9 @@ def test_optimization():
     # Create sample players
     sample_players = [
         Player(1, "Josh Allen", "QB", 8500, 22.5, 18.0, 28.0, team_abbr="BUF", roster_position="QB"),
-        Player(2, "Christian McCaffrey", "RB", 9000, 20.8, 15.5, 26.0, team_abbr="SF", roster_position="RB/FLEX"),
+        Player(2, "Christian McCaffrey", "RB", 9000, 20.8, 15.5, 26.0, team_abbr="SF", roster_position="RB/FLEX", injury_status="Q"),
         Player(3, "Stefon Diggs", "WR", 7800, 16.2, 12.0, 22.0, team_abbr="BUF", roster_position="WR/FLEX"),
-        Player(4, "Travis Kelce", "TE", 7200, 14.5, 10.0, 20.0, team_abbr="KC", roster_position="TE/FLEX"),
+        Player(4, "Travis Kelce", "TE", 7200, 14.5, 10.0, 20.0, team_abbr="KC", roster_position="TE/FLEX", injury_status="D"),
         Player(5, "Buffalo Bills", "DST", 2800, 8.5, 5.0, 15.0, team_abbr="BUF", roster_position="DST"),
         # Add more players to make valid lineups...
     ]
