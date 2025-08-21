@@ -7,7 +7,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import List, Optional, Dict, Tuple
+from typing import List, Dict, Tuple
 import numpy as np
 
 # Add parent directory to path
@@ -75,7 +75,7 @@ def get_position_specific_seasons(position: str, available_seasons: List[int]) -
 
     # Filter to only seasons we actually have data for
     valid_seasons = [s for s in target_seasons if s in available_seasons]
-    logger.info(f"Using {len(valid_seasons)} seasons for {position} (skipping 2020): {valid_seasons}")
+    logger.info(f"Using {len(valid_seasons)} seasons for {position}: {valid_seasons}")
     return valid_seasons
 
 def train_models(seasons: List[int] = None, positions: List[str] = None):
@@ -613,25 +613,68 @@ def optimize_lineups(
         logger.debug(traceback.format_exc())
         return
 
-    # Add sample odds data for testing (in production, this would come from odds API)
-    def get_sample_odds_for_team(team_abbr: str) -> dict:
-        """Get sample betting odds for testing stacking improvements."""
-        # Sample data - in production this would be real odds
-        sample_odds = {
-            'CIN': {'implied_total': 24.5, 'game_total': 47.5, 'spread': -3.0},
-            'SEA': {'implied_total': 21.5, 'game_total': 44.0, 'spread': 2.5},
-            'SF': {'implied_total': 26.0, 'game_total': 49.0, 'spread': -6.5},
-            'NYJ': {'implied_total': 19.5, 'game_total': 42.5, 'spread': 4.5},
-            'WAS': {'implied_total': 23.0, 'game_total': 46.0, 'spread': -1.5},
-            'LV': {'implied_total': 20.0, 'game_total': 43.0, 'spread': 3.0},
-            'NE': {'implied_total': 18.5, 'game_total': 41.0, 'spread': 5.5},
-        }
-        return sample_odds.get(team_abbr, {'implied_total': 21.0, 'game_total': 44.0, 'spread': 0.0})
+    # Use real odds from database to enrich player pool
+    conn = get_db_connection(DEFAULT_DB_PATH)
+
+    def get_real_odds_for_team(team_abbr: str) -> dict:
+        """Fetch betting odds for the team's next game, prioritizing live odds."""
+        try:
+            # Find next upcoming game for this team
+            row = conn.execute(
+                """
+                SELECT g.id, g.game_date,
+                       ht.team_abbr AS home_abbr, at.team_abbr AS away_abbr
+                FROM games g
+                JOIN teams ht ON g.home_team_id = ht.id
+                JOIN teams at ON g.away_team_id = at.id
+                WHERE (ht.team_abbr = ? OR at.team_abbr = ?)
+                  AND (g.game_finished = 0 OR date(g.game_date) >= date('now'))
+                ORDER BY date(g.game_date) ASC
+                LIMIT 1
+                """,
+                (team_abbr, team_abbr)
+            ).fetchone()
+
+            if not row:
+                return {'implied_total': 21.0, 'game_total': 44.0, 'spread': 0.0}
+
+            game_id, game_date, home_abbr, away_abbr = row
+
+            odds = conn.execute(
+                """
+                SELECT favorite_team, spread_favorite, over_under_line,
+                       home_team_spread, away_team_spread
+                FROM betting_odds
+                WHERE game_id = ?
+                ORDER BY CASE WHEN source = 'odds_api' THEN 1 ELSE 2 END
+                LIMIT 1
+                """,
+                (game_id,)
+            ).fetchone()
+
+            if not odds:
+                return {'implied_total': 21.0, 'game_total': 44.0, 'spread': 0.0}
+
+            favorite_team, spread_fav, total, home_spread, away_spread = odds
+
+            is_home = (team_abbr == home_abbr)
+            team_spread = home_spread if is_home else away_spread
+            total = total or 44.0
+            team_spread = team_spread or 0.0
+            implied_total = total / 2.0 - team_spread / 2.0
+
+            return {
+                'implied_total': float(implied_total),
+                'game_total': float(total),
+                'spread': float(team_spread),
+            }
+        except Exception:
+            return {'implied_total': 21.0, 'game_total': 44.0, 'spread': 0.0}
 
     # Convert to Player objects
     player_pool = []
     for pred in predictions:
-        odds_data = get_sample_odds_for_team(pred['team'])
+        odds_data = get_real_odds_for_team(pred['team'])
         player = Player(
             player_id=pred['player_id'],
             name=pred['name'],
@@ -689,6 +732,12 @@ def optimize_lineups(
     if valid_count == 0:
         logger.error("No valid lineups could be generated. Check player pool and constraints.")
 
+    # Close DB connection used for odds
+    try:
+        conn.close()
+    except Exception:
+        pass
+
 
 def main():
     """Main CLI entry point."""
@@ -718,6 +767,12 @@ def main():
     import_parser.add_argument(
         "--spreadspoke",
         help="Path to spreadspoke CSV file with weather and betting data"
+    )
+    import_parser.add_argument(
+        "--seasons",
+        nargs="+",
+        type=int,
+        help="Optional list of seasons to import (e.g., 2021 2022 2023 2024)"
     )
 
     # Odds command
@@ -821,7 +876,7 @@ def main():
     elif args.command == "import":
         if args.spreadspoke:
             logger.info(f"Importing spreadspoke data from {args.spreadspoke}")
-            import_spreadspoke_data(args.spreadspoke, DEFAULT_DB_PATH)
+            import_spreadspoke_data(args.spreadspoke, DEFAULT_DB_PATH, args.seasons)
             logger.info("Spreadspoke data import completed")
         else:
             logger.error("Please specify a data source to import (--spreadspoke)")

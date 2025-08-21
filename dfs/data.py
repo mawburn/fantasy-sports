@@ -3457,7 +3457,7 @@ def validate_data_quality(db_path: str = "data/nfl_dfs.db") -> Dict[str, Any]:
 
     return issues
 
-def import_spreadspoke_data(csv_path: str, db_path: str = "data/nfl_dfs.db") -> None:
+def import_spreadspoke_data(csv_path: str, db_path: str = "data/nfl_dfs.db", seasons: Optional[List[int]] = None) -> None:
     """Import weather and betting data from spreadspoke CSV file."""
     if not Path(csv_path).exists():
         raise FileNotFoundError(f"CSV file not found: {csv_path}")
@@ -3546,6 +3546,10 @@ def import_spreadspoke_data(csv_path: str, db_path: str = "data/nfl_dfs.db") -> 
                     logger.warning(f"Could not parse date {raw_game_date}: {e}")
                     continue
                 season = int(row['schedule_season'])
+
+                # Optional season filtering
+                if seasons is not None and season not in seasons:
+                    continue
                 is_playoff = row['schedule_playoff'].upper() == 'TRUE'
 
                 # Handle playoff weeks (Wildcard, Division, Conference, Superbowl)
@@ -3738,32 +3742,32 @@ def collect_odds_data(target_date: str = None, db_path: str = "data/nfl_dfs.db")
                         WHERE game_info LIKE ?
                     """, (f"{away_abbr}@{home_abbr} {dk_date}%",)).fetchone()
 
-                    if dk_game:
-                        # Use a meaningful game_id for upcoming games
-                        db_game_id = f"{game_date}_{away_abbr}@{home_abbr}"
-                        logger.info(f"Found upcoming game in DraftKings data: {away_abbr}@{home_abbr} on {dk_date}")
+                    # Use a meaningful game_id for upcoming games regardless of DK slate availability
+                    db_game_id = f"{game_date}_{away_abbr}@{home_abbr}"
 
-                        # Create minimal game record for foreign key constraint
-                        away_team_id = conn.execute("SELECT id FROM teams WHERE team_abbr = ?", (away_abbr,)).fetchone()
-                        home_team_id = conn.execute("SELECT id FROM teams WHERE team_abbr = ?", (home_abbr,)).fetchone()
+                    # Create minimal game record for foreign key constraint
+                    away_team_id = conn.execute("SELECT id FROM teams WHERE team_abbr = ?", (away_abbr,)).fetchone()
+                    home_team_id = conn.execute("SELECT id FROM teams WHERE team_abbr = ?", (home_abbr,)).fetchone()
 
-                        if away_team_id and home_team_id:
-                            away_team_id = away_team_id[0]
-                            home_team_id = home_team_id[0]
+                    if away_team_id and home_team_id:
+                        away_team_id = away_team_id[0]
+                        home_team_id = home_team_id[0]
 
-                            # Insert minimal game record if it doesn't exist
-                            conn.execute("""
-                                INSERT OR IGNORE INTO games (
-                                    id, game_date, season, week, home_team_id, away_team_id,
-                                    home_score, away_score, game_finished
-                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """, (db_game_id, game_date.strftime('%Y-%m-%d'), game_date.year, 1,
-                                  home_team_id, away_team_id, 0, 0, 0))
+                        # Insert minimal game record if it doesn't exist
+                        conn.execute("""
+                            INSERT OR IGNORE INTO games (
+                                id, game_date, season, week, home_team_id, away_team_id,
+                                home_score, away_score, game_finished
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (db_game_id, game_date.strftime('%Y-%m-%d'), game_date.year, 1,
+                              home_team_id, away_team_id, 0, 0, 0))
+
+                        if dk_game:
+                            logger.info(f"Found upcoming game in DraftKings data: {away_abbr}@{home_abbr} on {dk_date}")
                         else:
-                            logger.warning(f"Could not find team IDs for {away_abbr}/{home_abbr}")
-                            continue
+                            logger.info(f"No DraftKings slate found; created upcoming game: {away_abbr}@{home_abbr} on {dk_date}")
                     else:
-                        logger.warning(f"No matching DraftKings game found for {away_abbr}@{home_abbr} on {dk_date}")
+                        logger.warning(f"Could not find team IDs for {away_abbr}/{home_abbr}")
                         continue
                 else:
                     logger.warning(f"Could not find team abbreviations for {away_team} / {home_team}")
