@@ -70,12 +70,12 @@ def get_position_specific_seasons(position: str, available_seasons: List[int]) -
         # DST: Use 2019, 2021-2024+ (skip 2020 COVID year)
         target_seasons = [2019] + list(range(2021, current_year + 1))
     else:
-        # QB, RB, WR, TE: Use 2018-2024+ (balanced approach - enough data, not too old)
-        target_seasons = list(range(2018, current_year + 1))
+        # QB, RB, WR, TE: Use 2018-2019, 2021-2024+ (ALWAYS skip 2020 COVID year)
+        target_seasons = list(range(2018, 2020)) + list(range(2021, current_year + 1))
 
     # Filter to only seasons we actually have data for
     valid_seasons = [s for s in target_seasons if s in available_seasons]
-    logger.info(f"Using {len(valid_seasons)} seasons for {position}: {valid_seasons}")
+    logger.info(f"Using {len(valid_seasons)} seasons for {position} (skipping 2020): {valid_seasons}")
     return valid_seasons
 
 def train_models(seasons: List[int] = None, positions: List[str] = None):
@@ -119,9 +119,10 @@ def train_models(seasons: List[int] = None, positions: List[str] = None):
 
             logger.info(f"Training {position} with {len(X)} samples, {len(feature_names)} features")
 
-            # Create and train model
+            # Create and train model (use ensemble for QB and RB)
             config = ModelConfig(position=position, features=feature_names)
-            model = create_model(position, config)
+            use_ensemble = (position in ['QB', 'WR', 'TE', 'DST'])  # Enable ensemble for QB, WR, TE, and DST (RB neural-only performs better)
+            model = create_model(position, config, use_ensemble=use_ensemble)
 
             # Split data (80/20)
             split_idx = int(0.8 * len(X))
@@ -285,7 +286,9 @@ def predict_players_optimized(contest_id: str = None, output_file: str = None, i
                 X_sample, _, feature_names = get_training_data(position, available_seasons, DEFAULT_DB_PATH)
                 if len(X_sample) > 0:
                     config = ModelConfig(position=position, features=feature_names)
-                    model = create_model(position, config)
+                    # Use ensemble for QB, WR, TE, and DST (matches training configuration, RB neural-only)
+                    use_ensemble = (position in ['QB', 'WR', 'TE', 'DST'])
+                    model = create_model(position, config, use_ensemble=use_ensemble)
                     # Let load_model determine the input size from the saved model
                     model.load_model(str(model_path))
                     models[position] = model

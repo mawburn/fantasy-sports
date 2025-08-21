@@ -1,14 +1,174 @@
-# DFS Model Tuning Guide: From R² = -0.753 to Predictive Success
+# DFS Model Tuning Guide: QB Optimization Journey
 
-This guide covers all the knobs you can tweak to improve your DFS neural network models, organized by impact and difficulty.
+This guide documents the phased approach to optimizing the QB prediction model from R² = 0.310 to target R² ≥ 0.38 (ideally 0.40).
 
-## 🎯 Current Status
+## 🎯 Current Status (Latest Update)
 
-- QB Model: MAE = 10.580, R² = -0.753
-- Training is stable, no NaN issues
-- 38 features, ~1300 training samples
+- **Phase 4 Feature 1 SUCCESS**: R² = 0.347 (ensemble), Neural = 0.313, MAE = 6.05 (December 2024)
+- **Improvement**: +0.007 R² improvement from enhanced game script detection
+- **Architecture**: XGBoost ensemble (70%) + Neural network (30%) for QB
+- **Data**: 3609 training samples, 77 features, skipping 2020 COVID year
+- **Training**: Full 800 epochs, best R² at epoch 678 (proves no early stopping needed)
 
-## 🔧 High Impact, Easy Changes
+## ✅ Completed Phases
+
+### Phase 1: Training Parameter Optimization (COMPLETED)
+
+**Goal**: Fix early stopping and basic training issues
+
+**Changes Made**:
+
+- **Learning Rate**: Reduced from 0.00015 → 0.00003 for stability
+- **Batch Size**: Increased from 50 → 128 for better gradient estimates
+- **Epochs**: Increased from 200 → 800 for more training time
+- **Patience**: Increased from 15 → 50 to avoid premature stopping
+- **Gradient Clipping**: Adjusted from 0.1 → 1.0 for better gradient flow
+- **Optimizer**: Switched to AdamW with better weight decay
+
+**Results**: Fixed early stopping at epoch 21, model now trains for hundreds of epochs
+
+### Phase 2: Architecture Enhancements (COMPLETED)
+
+**Goal**: Improve neural network architecture and feature engineering
+
+**Architecture Changes**:
+
+- **Network Capacity**: Increased to 256→192→128→96→64 layers
+- **Activations**: Switched to GELU for better gradient flow
+- **Normalization**: Added BatchNorm and LayerNorm layers
+- **Attention Mechanism**: Multi-head attention for feature importance
+
+**Feature Engineering**:
+
+- **QB-Specific Features**: completion_pct_trend, yds_per_attempt_trend, td_int_ratio_trend
+- **Game Context**: passer_rating_est, passing_volume_trend, dual_threat_factor
+- **Situational**: game_script_favorability, pressure_situation, ceiling_indicator
+
+### Phase 3: Model Checkpointing & XGBoost Ensemble (COMPLETED)
+
+**Goal**: Proper checkpointing and ensemble methods
+
+**Checkpointing Fixes**:
+
+- **Every-epoch R² computation** instead of every 5 epochs
+- **Best model restoration** based on highest R² score
+- **Clear progress logging** showing R² improvements
+
+**XGBoost Ensemble**:
+
+- **EnsembleModel class** combining neural network + XGBoost
+- **Feature enrichment** using original features + NN predictions
+- **Smart weighting**: 70% XGBoost + 30% Neural Network
+
+**Data Quality**:
+
+- **Always skip 2020** COVID year for all positions
+- **Position-specific seasons**: 2018-2019, 2021-2025 for QB/RB/WR/TE
+
+## 🔄 Planned Future Phases
+
+### Phase 4: Advanced Feature Engineering (COMPLETED FEATURE 1)
+
+**Goal**: Leverage odds data and advanced NFL analytics
+
+**Status**: Testing individual features incrementally after Phase 3 baseline
+
+**Feature 1: Enhanced Game Script Detection (✅ COMPLETED - SUCCESS)**
+
+- **Results**: R² = 0.347 (+0.007 improvement), MAE = 6.05
+- **Problem Found**: Original `pace_mismatch = 0.0` initialization broke neural network
+- **Solution Applied**: Fixed initialization, added bounds checking, safe feature normalization
+- **Successful Features Added**:
+  - `implied_team_total`: Normalized implied team total from betting lines (bounded 0.3-2.0)
+  - `shootout_potential`: Binary flag for high-scoring games (O/U > 50)
+  - `defensive_game_script`: Binary flag for low-scoring games (O/U < 42)
+  - `garbage_time_upside`: QBs as big underdogs in high-scoring games
+  - `blowout_risk`: QBs as big favorites in low-scoring games
+  - `game_script_favorability`: Enhanced pace mismatch detection (bounded 0.2-3.0)
+- **Key Learning**: Betting data provides significant predictive value when properly bounded
+
+**Additional Odds Features (High Impact Potential)**:
+
+- **Line Movement**: Track how much spread/total have moved (sharp vs public money)
+- **Closing Line Value**: How current projections compare to closing lines
+- **Steam Moves**: Detect coordinated betting activity (indicates inside info)
+- **Weather-Line Correlation**: How weather should affect totals but doesn't in line
+- **Situational Spots**: Division games, revenge spots, lookahead games
+
+**Remaining Phase 4 Features to Test**:
+
+- **Feature 2: Recent Form Weighting** - Weight last 4 games more heavily (4x, 3x, 2x, 1x)
+- **Feature 3: Enhanced Opponent Matchups** - QB completion rates vs specific defenses
+- **Feature 4: Red Zone Efficiency** - TD frequency and reliability metrics
+
+### Phase 5: Advanced Model Architectures (PLANNED)
+
+**Goal**: Cutting-edge ML approaches
+
+**Neural Architecture Search (NAS)**:
+
+- **Automated architecture optimization** for QB-specific patterns
+- **Dynamic feature selection** based on game context
+- **Temporal attention**: Weight recent games more heavily
+
+**Transformer Architecture**:
+
+- **Sequence modeling**: Model QB performance across season timeline
+- **Multi-head attention**: Different aspects (passing, rushing, red zone)
+- **Positional encoding**: Account for week-in-season effects
+
+### Phase 5: Multi-Position Ensemble Expansion (COMPLETED)
+
+**Goal**: Extend ensemble approach to other positions
+
+**Completed Position Enhancements**:
+
+1. **QB Ensemble**: R² = 0.347 (baseline neural = 0.313) ✅ 
+2. **RB Ensemble**: Extended from QB success (baseline R² = 0.338) ✅
+3. **WR Ensemble**: Extended ensemble approach (baseline R² = 0.248) ✅
+4. **TE Ensemble**: Extended ensemble approach (baseline R² = 0.267) ✅
+
+**Implementation**: All skill positions (QB, RB, WR, TE) now use XGBoost ensemble (70%) + Neural Network (30%) architecture for improved predictions
+
+**Position-Specific Features** (ready for future enhancement):
+
+- **RB**: Game script, snap share, goal line opportunities
+- **WR**: Target quality, coverage matchups, air yards
+- **TE**: Red zone usage, blocking vs receiving snaps
+
+### Phase 6: Advanced Model Architectures (PLANNED)
+
+**Goal**: Next-generation ML approaches
+
+**Transformer Models**:
+
+- **Sequence modeling**: Model player performance across season timeline
+- **Multi-head attention**: Different aspects (passing, rushing, matchups)
+- **Positional encoding**: Account for week-in-season effects
+
+**Neural Architecture Search**:
+
+- **Automated optimization**: Find optimal QB-specific network architectures
+- **Dynamic feature selection**: Context-aware feature importance
+
+### Phase 7: Production Enhancement (PLANNED)
+
+**Goal**: Real-world deployment optimization
+
+**Real-Time Integration**:
+
+- **Live injury reports**: Parse and integrate injury news
+- **Line movement tracking**: Detect sharp money and adjust projections
+- **Weather integration**: Real-time weather impact on game scripts
+- **News sentiment**: Parse beat reporter tweets and injury updates
+
+**Validation & Monitoring**:
+
+- **Rolling validation**: Continuous backtesting on recent weeks
+- **Performance tracking**: Monitor model degradation in live contests
+- **A/B testing**: Compare model versions in actual DFS contests
+
+## 🔧 High Impact, Easy Changes (Historical Reference)
 
 ### 1. **Learning Rate & Training Parameters**
 

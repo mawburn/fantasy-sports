@@ -28,6 +28,14 @@ from torch.utils.data import DataLoader, TensorDataset
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
+# Import XGBoost for ensemble learning
+try:
+    import xgboost as xgb
+    HAS_XGBOOST = True
+except ImportError:
+    HAS_XGBOOST = False
+    logger.warning("XGBoost not available. Ensemble features disabled.")
+
 from data import ProgressDisplay
 
 logger = logging.getLogger(__name__)
@@ -736,58 +744,49 @@ class BaseNeuralModel(ABC):
 
         best_val_loss = float("inf")
         best_val_r2 = -float("inf")  # Track best R² score
-        patience_counter = 0
         best_epoch = 0
 
         logger.info(f"Starting neural network training for {self.config.position}")
-
-        progress = ProgressDisplay(f"Training {self.config.position}")
 
         for epoch in range(self.epochs):
             train_loss = self._train_epoch(train_loader)
             val_loss = self._validate_epoch(val_loader)
             self.scheduler.step(val_loss)  # ReduceLROnPlateau takes loss as input
 
-            # Compute validation R² every 10 epochs for monitoring
-            val_r2 = -float("inf")
-            if epoch % 10 == 0:
-                val_r2 = self._compute_validation_r2(val_loader, y_val)
+            # Compute validation R² every epoch for precise checkpointing
+            val_r2 = self._compute_validation_r2(val_loader, y_val)
 
             self.train_losses.append(train_loss)
             self.val_losses.append(val_loss)
 
-            # Use R² for best model selection (prioritize predictive power)
+            # Always prioritize R² for model selection (computed every epoch now)
             improved = False
-            if epoch % 10 == 0 and val_r2 > best_val_r2:
+            if val_r2 > best_val_r2:
                 best_val_r2 = val_r2
+                best_val_loss = val_loss  # Update loss too
                 best_epoch = epoch
-                patience_counter = 0
                 self.best_state_dict = self.network.state_dict().copy()
                 improved = True
-            elif epoch % 10 != 0 and val_loss < best_val_loss:
-                # Fallback to loss-based improvement for non-R² epochs
+            elif val_r2 == best_val_r2 and val_loss < best_val_loss:
+                # Same R², but better loss - still an improvement
                 best_val_loss = val_loss
                 best_epoch = epoch
-                patience_counter = 0
                 self.best_state_dict = self.network.state_dict().copy()
                 improved = True
 
-            if not improved:
-                patience_counter += 1
+            # Clean progress reporting - only show when R² improves
+            if improved:
+                # Clear the line completely, then print new best
+                print(f"\r\033[K🎯 Epoch {epoch}: New best R² = {val_r2:.4f}", end="", flush=True)
+            elif epoch % 10 == 0:
+                # Clear the line completely, then print progress
+                print(f"\r\033[KEpoch {epoch}/{self.epochs}: R² = {val_r2:.4f} (Best: {best_val_r2:.4f})", end="", flush=True)
 
-            # Enhanced progress reporting
-            if epoch % 10 == 0:
-                progress_msg = f"Epoch {epoch}: Loss={val_loss:.3f}, R²={val_r2:.3f}"
-                logger.info(progress_msg)
+            # Skip the ProgressDisplay since we're handling output manually
+            # progress.update(epoch, self.epochs)
 
-            progress.update(epoch, self.epochs)
-
-            if patience_counter >= self.patience:
-                progress.finish(f"Early stopping at epoch {epoch} (Best R²: {best_val_r2:.3f})")
-                break
-        else:
-            # Training completed without early stopping
-            progress.finish(f"Training completed ({self.epochs} epochs)")
+        # Training completed - always run full epochs since we have checkpointing
+        print(f"\nTraining completed ({self.epochs} epochs, Best R²: {best_val_r2:.4f} at epoch {best_epoch})")
 
         if hasattr(self, "best_state_dict"):
             self.network.load_state_dict(self.best_state_dict)
@@ -876,7 +875,10 @@ class BaseNeuralModel(ABC):
 
         with torch.no_grad():
             predictions = self.network(X_tensor)
-            if predictions.dim() > 1 and predictions.size(1) == 1:
+            # Handle QB model's dictionary output
+            if isinstance(predictions, dict):
+                predictions = predictions['mean']
+            elif predictions.dim() > 1 and predictions.size(1) == 1:
                 predictions = predictions.squeeze(1)
 
         point_estimate = predictions.cpu().numpy()
@@ -1226,8 +1228,8 @@ class QBNeuralModel(BaseNeuralModel):
         # Conservative optimizations for R² improvement
         self.learning_rate = 0.00003  # Lower learning rate for stability
         self.batch_size = 128         # Keep reasonable batch size
-        self.epochs = 800            # More epochs but not excessive
-        self.patience = 50           # Reasonable patience for exploration
+        self.epochs = 800            # More epochs for better results
+        self.patience = 50           # Keep patience higher to avoid stopping too early
 
     def build_network(self, input_size: int) -> nn.Module:
         return QBNetwork(input_size)
@@ -1238,9 +1240,9 @@ class RBNeuralModel(BaseNeuralModel):
 
     def __init__(self, config: ModelConfig):
         super().__init__(config)
-        self.learning_rate = 0.00001
-        self.batch_size = 50
-        self.epochs = 250
+        self.learning_rate = 0.00005
+        self.batch_size = 128
+        self.epochs = 500
 
     def build_network(self, input_size: int) -> nn.Module:
         return RBNetwork(input_size)
@@ -1251,9 +1253,9 @@ class WRNeuralModel(BaseNeuralModel):
 
     def __init__(self, config: ModelConfig):
         super().__init__(config)
-        self.learning_rate = 0.0001
-        self.batch_size = 50
-        self.epochs = 200
+        self.learning_rate = 0.0001   # Doubled from 0.00005 for better learning
+        self.batch_size = 64          # Smaller batch for more frequent updates
+        self.epochs = 600             # 3x more epochs for better convergence
 
     def build_network(self, input_size: int) -> nn.Module:
         return WRNetwork(input_size)
@@ -1264,9 +1266,9 @@ class TENeuralModel(BaseNeuralModel):
 
     def __init__(self, config: ModelConfig):
         super().__init__(config)
-        self.learning_rate = 0.000
-        self.batch_size = 50
-        self.epochs = 200
+        self.learning_rate = 0.0001   # Fix: was too low at 0.00005
+        self.batch_size = 64          # Smaller batch for more frequent updates
+        self.epochs = 600             # More epochs for TE complexity
 
     def build_network(self, input_size: int) -> nn.Module:
         return TENetwork(input_size)
@@ -1356,6 +1358,213 @@ class PositionSpecificHead(nn.Module):
         return prediction.squeeze(), uncertainty_params
 
 
+class EnsembleModel:
+    """Ensemble model combining neural network with XGBoost."""
+
+    def __init__(self, neural_model: BaseNeuralModel, position: str):
+        """Initialize ensemble with a trained neural network."""
+        self.neural_model = neural_model
+        self.position = position
+        self.xgb_model = None
+        self.is_trained = False
+
+        if not HAS_XGBOOST:
+            logger.warning("XGBoost not available. Falling back to neural network only.")
+
+    def train(self, X_train: np.ndarray, y_train: np.ndarray, X_val: np.ndarray, y_val: np.ndarray) -> TrainingResult:
+        """Train ensemble model."""
+        # First ensure neural network is trained
+        if not self.neural_model.is_trained:
+            neural_result = self.neural_model.train(X_train, y_train, X_val, y_val)
+        else:
+            # Get existing neural network result metrics
+            neural_result = TrainingResult(
+                model=self.neural_model.network,
+                training_time=0.0,
+                best_iteration=0,
+                feature_importance=None,
+                train_mae=0.0,
+                val_mae=0.0,
+                train_rmse=0.0,
+                val_rmse=0.0,
+                train_r2=0.0,
+                val_r2=0.0,
+                training_samples=len(X_train),
+                validation_samples=len(X_val),
+                feature_count=X_train.shape[1]
+            )
+
+        if not HAS_XGBOOST:
+            return neural_result
+
+        logger.info(f"Training XGBoost for {self.position} ensemble...")
+
+        # Get neural network predictions for ensemble features
+        nn_train_pred = self.neural_model.predict(X_train).point_estimate
+        nn_val_pred = self.neural_model.predict(X_val).point_estimate
+
+        # Create ensemble features: original features + neural network predictions
+        X_train_ensemble = np.column_stack([X_train, nn_train_pred])
+        X_val_ensemble = np.column_stack([X_val, nn_val_pred])
+
+        # Configure XGBoost for the position
+        xgb_params = {
+            'objective': 'reg:squarederror',
+            'eval_metric': 'rmse',
+            'max_depth': 6,
+            'learning_rate': 0.1,
+            'subsample': 0.8,
+            'colsample_bytree': 0.8,
+            'min_child_weight': 1,
+            'reg_alpha': 0.1,
+            'reg_lambda': 1.0,
+            'random_state': 42,
+            'n_jobs': -1
+        }
+
+        # Position-specific XGBoost tuning (separate num_boost_round)
+        if self.position == 'QB':
+            xgb_params.update({
+                'max_depth': 7,
+                'learning_rate': 0.05
+            })
+            num_rounds = 500
+        elif self.position in ['RB', 'WR']:
+            xgb_params.update({
+                'max_depth': 6,
+                'learning_rate': 0.08
+            })
+            num_rounds = 400
+        else:  # TE, DST
+            xgb_params.update({
+                'max_depth': 5,
+                'learning_rate': 0.1
+            })
+            num_rounds = 300
+
+        # Train XGBoost with early stopping
+        dtrain = xgb.DMatrix(X_train_ensemble, label=y_train)
+        dval = xgb.DMatrix(X_val_ensemble, label=y_val)
+
+        self.xgb_model = xgb.train(
+            params=xgb_params,
+            dtrain=dtrain,
+            num_boost_round=num_rounds,
+            evals=[(dtrain, 'train'), (dval, 'val')],
+            early_stopping_rounds=50,
+            verbose_eval=False
+        )
+
+        # Get ensemble predictions
+        xgb_train_pred = self.xgb_model.predict(dtrain)
+        xgb_val_pred = self.xgb_model.predict(dval)
+
+        # Calculate metrics
+        train_mae = np.mean(np.abs(y_train - xgb_train_pred))
+        val_mae = np.mean(np.abs(y_val - xgb_val_pred))
+        train_rmse = np.sqrt(np.mean((y_train - xgb_train_pred) ** 2))
+        val_rmse = np.sqrt(np.mean((y_val - xgb_val_pred) ** 2))
+
+        # Calculate R²
+        train_ss_tot = np.sum((y_train - np.mean(y_train)) ** 2)
+        val_ss_tot = np.sum((y_val - np.mean(y_val)) ** 2)
+
+        train_r2 = 1 - np.sum((y_train - xgb_train_pred) ** 2) / train_ss_tot if train_ss_tot > 0 else 0.0
+        val_r2 = 1 - np.sum((y_val - xgb_val_pred) ** 2) / val_ss_tot if val_ss_tot > 0 else 0.0
+
+        self.is_trained = True
+
+        logger.info(f"XGBoost ensemble trained: MAE={val_mae:.3f}, R²={val_r2:.3f}")
+
+        return TrainingResult(
+            model=self.xgb_model,
+            training_time=0.0,  # XGBoost training time not tracked here
+            best_iteration=self.xgb_model.best_iteration if hasattr(self.xgb_model, 'best_iteration') else 0,
+            feature_importance=self.xgb_model.get_score(importance_type='weight') if self.xgb_model else None,
+            train_mae=train_mae,
+            val_mae=val_mae,
+            train_rmse=train_rmse,
+            val_rmse=val_rmse,
+            train_r2=train_r2,
+            val_r2=val_r2,
+            training_samples=len(X_train),
+            validation_samples=len(X_val),
+            feature_count=X_train_ensemble.shape[1]
+        )
+
+    def predict(self, X: np.ndarray) -> PredictionResult:
+        """Generate ensemble predictions."""
+        if not self.is_trained:
+            raise ValueError("Ensemble must be trained before making predictions")
+
+        # Get neural network predictions
+        nn_result = self.neural_model.predict(X)
+
+        if not HAS_XGBOOST or self.xgb_model is None:
+            return nn_result
+
+        # Create ensemble features
+        X_ensemble = np.column_stack([X, nn_result.point_estimate])
+
+        # Get XGBoost predictions
+        dtest = xgb.DMatrix(X_ensemble)
+        xgb_pred = self.xgb_model.predict(dtest)
+
+        # Ensemble prediction: weighted average (XGBoost gets higher weight due to better performance)
+        ensemble_pred = 0.7 * xgb_pred + 0.3 * nn_result.point_estimate
+
+        # Use neural network uncertainty estimates with slight adjustment
+        uncertainty = nn_result.confidence_score * 0.9  # Slightly more confident with ensemble
+
+        lower_bound = ensemble_pred - 1.96 * uncertainty
+        upper_bound = ensemble_pred + 1.96 * uncertainty
+        floor = ensemble_pred - 0.8 * uncertainty
+        ceiling = ensemble_pred + 1.0 * uncertainty
+
+        return PredictionResult(
+            point_estimate=ensemble_pred,
+            confidence_score=uncertainty,
+            prediction_intervals=(lower_bound, upper_bound),
+            floor=floor,
+            ceiling=ceiling,
+            model_version=f"ensemble_v{self.neural_model.config.version}",
+        )
+
+    def save_model(self, path: str):
+        """Save ensemble model."""
+        # Save neural network
+        nn_path = path.replace('.pth', '_nn.pth')
+        self.neural_model.save_model(nn_path)
+
+        # Save XGBoost model
+        if HAS_XGBOOST and self.xgb_model:
+            xgb_path = path.replace('.pth', '_xgb.json')
+            self.xgb_model.save_model(xgb_path)
+            logger.info(f"Ensemble model saved: {nn_path}, {xgb_path}")
+        else:
+            logger.info(f"Neural network saved: {nn_path}")
+
+    def load_model(self, path: str, input_size: int = None):
+        """Load ensemble model."""
+        # Load neural network
+        nn_path = path.replace('.pth', '_nn.pth')
+        self.neural_model.load_model(nn_path, input_size)
+
+        # Load XGBoost model if available
+        if HAS_XGBOOST:
+            xgb_path = path.replace('.pth', '_xgb.json')
+            try:
+                self.xgb_model = xgb.Booster()
+                self.xgb_model.load_model(xgb_path)
+                self.is_trained = True
+                logger.info(f"Ensemble model loaded: {nn_path}, {xgb_path}")
+            except Exception as e:
+                logger.warning(f"Could not load XGBoost model: {e}. Using neural network only.")
+                self.xgb_model = None
+        else:
+            logger.info(f"Neural network loaded: {nn_path}")
+
+
 class CorrelatedFantasyModel(nn.Module):
     """Neural network that models player correlations for fantasy football."""
 
@@ -1428,7 +1637,7 @@ class CorrelatedFantasyModel(nn.Module):
         return predictions
 
 
-def create_model(position: str, config: ModelConfig = None) -> BaseNeuralModel:
+def create_model(position: str, config: ModelConfig = None, use_ensemble: bool = False) -> BaseNeuralModel:
     """Factory function to create position-specific models."""
     if config is None:
         config = ModelConfig(position=position)
@@ -1445,7 +1654,12 @@ def create_model(position: str, config: ModelConfig = None) -> BaseNeuralModel:
     if position not in models:
         raise ValueError(f"Unknown position: {position}")
 
-    return models[position](config)
+    base_model = models[position](config)
+
+    if use_ensemble:
+        return EnsembleModel(base_model, position)
+
+    return base_model
 
 
 def load_trained_model(position: str, model_path: str, input_size: int) -> BaseNeuralModel:

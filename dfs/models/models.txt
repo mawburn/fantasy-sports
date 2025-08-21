@@ -1,19 +1,19 @@
-2025-08-19 18:09:27,126 - __main__ - INFO - QB model trained successfully:
-2025-08-19 18:09:27,126 - __main__ - INFO -   - MAE: 6.006
-2025-08-19 18:09:27,126 - __main__ - INFO -   - R�: 0.310
+QB:
+- Neural: R²: 0.3126
+- Total: MAE=6.053, R²=0.347
 
-2025-08-19 18:45:47,885 - __main__ - INFO - TE model trained successfully:
-2025-08-19 18:45:47,885 - __main__ - INFO -   - MAE: 3.831
-2025-08-19 18:45:47,886 - __main__ - INFO -   - R�: 0.267
+RB:
+- Neural: R²: 0.3495
+- Total: MAE=4.948, R²=0.341
 
-2025-08-19 18:26:20,270 - __main__ - INFO - DST model trained successfully:
-2025-08-19 18:26:20,270 - __main__ - INFO -   - MAE: 0.696
-2025-08-19 18:26:20,270 - __main__ - INFO -   - R�: 0.959
+WR:
+- Neural: R²: 0.2414
+- Total: MAE=5.116, R²=0.246
 
-2025-08-19 18:32:48,633 - __main__ - INFO - RB model trained successfully:
-2025-08-19 18:32:48,633 - __main__ - INFO -   - MAE: 4.982
-2025-08-19 18:32:48,633 - __main__ - INFO -   - R�: 0.338
+TE:
+- Neural: R²: 0.2473
+- Total: MAE=3.861, R²=0.278
 
-2025-08-19 18:49:20,282 - __main__ - INFO - WR model trained successfully:
-2025-08-19 18:49:20,282 - __main__ - INFO -   - MAE: 5.190
-2025-08-19 18:49:20,282 - __main__ - INFO -   - R�: 0.248
+DST:
+- Neural: R²: -1.193
+- Total: MAE=4.014, R²=-0.048

@@ -2039,43 +2039,81 @@ def get_dst_training_data(
     seasons: List[int],
     db_path: str = "data/nfl_dfs.db"
 ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
-    """Get DST training data from historical team defense stats."""
+    """Get DST training data using ONLY historical features (no current-game data leakage)."""
     conn = get_db_connection(db_path)
 
     try:
-        # Get DST stats for specified seasons with window functions
+        # FIXED: Get DST features without using current game stats (prevents data leakage)
         data_query = """
             SELECT
-                team_abbr,
-                season,
-                week,
-                points_allowed,
-                sacks,
-                interceptions,
-                fumbles_recovered,
-                safeties,
-                defensive_tds,
-                fantasy_points,
-                -- Add recent performance features using window functions
-                AVG(fantasy_points) OVER (
-                    PARTITION BY team_abbr
-                    ORDER BY season, week
+                d.team_abbr,
+                d.season,
+                d.week,
+                d.fantasy_points,
+                -- Historical averages (3-game rolling, EXCLUDING current game)
+                AVG(h.fantasy_points) OVER (
+                    PARTITION BY d.team_abbr
+                    ORDER BY d.season, d.week
                     ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
-                ) as avg_recent_points,
-                AVG(points_allowed) OVER (
-                    PARTITION BY team_abbr
-                    ORDER BY season, week
+                ) as avg_recent_fantasy_points,
+                AVG(h.points_allowed) OVER (
+                    PARTITION BY d.team_abbr
+                    ORDER BY d.season, d.week
                     ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
                 ) as avg_recent_points_allowed,
-                AVG(sacks) OVER (
-                    PARTITION BY team_abbr
-                    ORDER BY season, week
+                AVG(h.sacks) OVER (
+                    PARTITION BY d.team_abbr
+                    ORDER BY d.season, d.week
                     ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
-                ) as avg_recent_sacks
-            FROM dst_stats
-            WHERE season IN ({})
-            AND week >= 4  -- Only include games where we have historical data
-            ORDER BY season, week, team_abbr
+                ) as avg_recent_sacks,
+                AVG(h.interceptions) OVER (
+                    PARTITION BY d.team_abbr
+                    ORDER BY d.season, d.week
+                    ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
+                ) as avg_recent_interceptions,
+                AVG(h.fumbles_recovered) OVER (
+                    PARTITION BY d.team_abbr
+                    ORDER BY d.season, d.week
+                    ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
+                ) as avg_recent_fumbles,
+                AVG(h.defensive_tds) OVER (
+                    PARTITION BY d.team_abbr
+                    ORDER BY d.season, d.week
+                    ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING
+                ) as avg_recent_def_tds,
+                -- Season-long averages (up to but not including current week)
+                AVG(s.fantasy_points) OVER (
+                    PARTITION BY d.team_abbr, d.season
+                    ORDER BY d.week
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                ) as season_avg_fantasy_points,
+                AVG(s.points_allowed) OVER (
+                    PARTITION BY d.team_abbr, d.season
+                    ORDER BY d.week
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                ) as season_avg_points_allowed,
+                -- Opponent strength features (would need game context)
+                g.home_team_id,
+                g.away_team_id,
+                CASE WHEN d.team_abbr = ht.team_abbr THEN 1 ELSE 0 END as is_home
+            FROM dst_stats d
+            LEFT JOIN dst_stats h ON h.team_abbr = d.team_abbr
+                AND h.season = d.season
+                AND h.week < d.week
+            LEFT JOIN dst_stats s ON s.team_abbr = d.team_abbr
+                AND s.season = d.season
+                AND s.week < d.week
+            LEFT JOIN games g ON (
+                (g.home_team_id = (SELECT id FROM teams WHERE team_abbr = d.team_abbr)
+                 OR g.away_team_id = (SELECT id FROM teams WHERE team_abbr = d.team_abbr))
+                AND g.season = d.season AND g.week = d.week
+            )
+            LEFT JOIN teams ht ON g.home_team_id = ht.id
+            WHERE d.season IN ({})
+            AND d.week >= 4  -- Only include games where we have historical data
+            GROUP BY d.team_abbr, d.season, d.week, d.fantasy_points,
+                     g.home_team_id, g.away_team_id, ht.team_abbr
+            ORDER BY d.season, d.week, d.team_abbr
         """.format(','.join('?' * len(seasons)))
 
         cursor = conn.execute(data_query, seasons)
@@ -2090,32 +2128,34 @@ def get_dst_training_data(
         X_list = []
         y_list = []
 
+        # FIXED: New feature names (no current-game data leakage)
         feature_names = [
-            'points_allowed', 'sacks', 'interceptions', 'fumbles_recovered',
-            'safeties', 'defensive_tds', 'avg_recent_points', 'avg_recent_points_allowed',
-            'avg_recent_sacks', 'week', 'season'
+            'avg_recent_fantasy_points', 'avg_recent_points_allowed', 'avg_recent_sacks',
+            'avg_recent_interceptions', 'avg_recent_fumbles', 'avg_recent_def_tds',
+            'season_avg_fantasy_points', 'season_avg_points_allowed',
+            'is_home', 'week', 'season_normalized'
         ]
 
         for row in rows:
-            # Skip rows where we don't have recent averages (early in season)
-            if row[10] is None:  # avg_recent_points
+            # Skip rows where we don't have sufficient historical data
+            if row[4] is None or row[11] is None:  # avg_recent_fantasy_points or season_avg
                 continue
 
             features = [
-                row[3],   # points_allowed
-                row[4],   # sacks
-                row[5],   # interceptions
-                row[6],   # fumbles_recovered
-                row[7],   # safeties
-                row[8],   # defensive_tds
-                row[10],  # avg_recent_points
-                row[11],  # avg_recent_points_allowed
-                row[12],  # avg_recent_sacks
-                row[2],   # week
-                row[1] - 2000  # season (normalize to reduce magnitude)
+                row[4] or 0,    # avg_recent_fantasy_points
+                row[5] or 20,   # avg_recent_points_allowed (default to league avg)
+                row[6] or 2,    # avg_recent_sacks (default to league avg)
+                row[7] or 0.8,  # avg_recent_interceptions
+                row[8] or 0.5,  # avg_recent_fumbles
+                row[9] or 0.1,  # avg_recent_def_tds
+                row[10] or 0,   # season_avg_fantasy_points
+                row[11] or 20,  # season_avg_points_allowed
+                row[14] or 0,   # is_home
+                row[2],         # week
+                (row[1] - 2022) / 5.0  # season_normalized (center around 2022, scale by 5)
             ]
 
-            target = row[9]  # fantasy_points
+            target = row[3]  # fantasy_points (current week - this is what we're predicting)
 
             X_list.append(features)
             y_list.append(target)
@@ -2127,7 +2167,8 @@ def get_dst_training_data(
         X = np.array(X_list, dtype=np.float32)
         y = np.array(y_list, dtype=np.float32)
 
-        logger.info(f"Extracted {len(X)} DST training samples")
+        logger.info(f"Extracted {len(X)} DST training samples (FIXED - no data leakage)")
+        logger.info(f"Features: {feature_names}")
         return X, y, feature_names
 
     except Exception as e:
@@ -2307,10 +2348,24 @@ def get_training_data(
             'redzone_opps_ema', 'air_yards_ema', 'adot_ema', 'yprr_ema',
             'yards_after_contact', 'missed_tackles_forced', 'pressure_rate',
             'opp_dvp_pos_allowed', 'salary', 'home', 'rest_days', 'travel', 'season_week',
-            'completion_pct_trend', 'yds_per_attempt_trend', 'td_int_ratio_trend', 
+            'completion_pct_trend', 'yds_per_attempt_trend', 'td_int_ratio_trend',
             'passer_rating_est', 'passing_volume_trend', 'dual_threat_factor',
             'red_zone_efficiency_est', 'game_script_favorability', 'pressure_situation',
-            'ceiling_indicator'
+            'ceiling_indicator', 'implied_team_total', 'shootout_potential',
+            'defensive_game_script', 'garbage_time_upside', 'blowout_risk',
+            # RB-specific features
+            'yards_per_carry_trend', 'rush_td_rate_trend', 'receiving_involvement',
+            'total_touches_trend', 'workload_efficiency', 'clock_management_upside',
+            # TE-specific features
+            'te_target_rate', 'red_zone_specialist', 'short_area_role', 'receiving_efficiency',
+            'touchdown_dependency', 'dual_role_value', 'close_game_upside', 'goal_line_opportunities',
+            # WR-specific features
+            'target_share_trend', 'air_yards_per_target', 'catch_rate_trend', 'red_zone_involvement',
+            'route_efficiency', 'big_play_upside', 'pass_heavy_script', 'garbage_time_upside',
+            # DST-specific features
+            'def_fantasy_consistency', 'points_allowed_trend', 'pass_rush_effectiveness',
+            'turnover_generation', 'defensive_consistency', 'opp_implied_team_total',
+            'pass_heavy_opponent', 'low_scoring_game', 'opponent_desperation', 'high_opportunity_game'
         ]
 
         # Combine all expected features
@@ -2506,7 +2561,7 @@ def get_training_data(
 
                 # Add advanced QB-specific features for better prediction
                 qb_features = {}
-                
+
                 # Enhanced passing efficiency metrics for QBs
                 if position == 'QB':
                     # Use recent averages to compute advanced metrics
@@ -2516,18 +2571,41 @@ def get_training_data(
                     avg_pass_tds = features.get('avg_pass_tds', 1.5)
                     avg_ints = features.get('avg_interceptions', 0.7)
                     avg_rush_yds = features.get('avg_rush_yards', 15)
-                    
+
                     # Advanced efficiency metrics
-                    completion_pct = avg_pass_comp / max(avg_pass_att, 1) 
+                    completion_pct = avg_pass_comp / max(avg_pass_att, 1)
                     yds_per_att = avg_pass_yds / max(avg_pass_att, 1)
                     td_to_int_ratio = avg_pass_tds / max(avg_ints, 0.1)
                     passer_rating_est = min((completion_pct - 0.3) * 5 + (yds_per_att - 3) * 0.25 + avg_pass_tds * 0.2 - avg_ints * 0.25, 4.0)
-                    
-                    # Game flow and situational features
+
+                    # Enhanced game flow and situational features (Phase 4: Feature 1)
                     over_under_line = features.get('total_line', 45)
                     team_spread = features.get('team_spread', 0)
+                    team_itt = over_under_line / 2.0 - team_spread / 2.0  # Implied team total
                     expected_pace = over_under_line / 45.0
-                    
+
+                    # Phase 4: Advanced game script detection
+                    is_big_favorite = team_spread < -7
+                    is_big_underdog = team_spread > 7
+                    is_shootout_game = over_under_line > 50  # High-scoring expected
+                    is_low_total = over_under_line < 42      # Low-scoring expected
+
+                    # Mismatch detection based on spread + total combination
+                    pace_mismatch = 1.0  # Default to neutral (FIXED: was 0.0)
+                    if is_shootout_game and abs(team_spread) < 3:  # High total, close spread = shootout
+                        pace_mismatch = 1.5
+                    elif is_low_total and is_big_favorite:  # Low total + big favorite = defensive game
+                        pace_mismatch = 0.5
+                    elif is_shootout_game and is_big_underdog:  # High total + big underdog = garbage time
+                        pace_mismatch = 1.2
+
+                    # Debug: Ensure safe values
+                    if team_itt < 5 or team_itt > 60:  # Sanity check for implied team total
+                        team_itt = 22.5  # Default to reasonable value
+
+                    if pace_mismatch <= 0 or pace_mismatch > 3:  # Sanity check for pace mismatch
+                        pace_mismatch = 1.0
+
                     qb_features.update({
                         'completion_pct_trend': completion_pct,
                         'yds_per_attempt_trend': yds_per_att,
@@ -2536,12 +2614,231 @@ def get_training_data(
                         'passing_volume_trend': min(avg_pass_att / 35.0, 2.0),
                         'dual_threat_factor': min(avg_rush_yds / 20.0, 1.5),  # Rushing upside
                         'red_zone_efficiency_est': avg_pass_tds / max(avg_pass_att * 0.15, 1),
-                        'game_script_favorability': expected_pace * (1.0 if team_spread > -3 else 0.8),
+                        # Phase 4: Enhanced game script features (with safe bounds)
+                        'game_script_favorability': max(0.2, min(expected_pace * pace_mismatch, 3.0)),
+                        'implied_team_total': max(0.3, min(team_itt / 30.0, 2.0)),  # Bounded normalized ITT
+                        'shootout_potential': 1.0 if is_shootout_game else 0.0,
+                        'defensive_game_script': 1.0 if is_low_total else 0.0,
+                        'garbage_time_upside': 1.0 if (is_big_underdog and is_shootout_game) else 0.0,
+                        'blowout_risk': 1.0 if (is_big_favorite and is_low_total) else 0.0,
                         'pressure_situation': 1.0 if team_spread < -7 else (0.7 if team_spread > 7 else 1.0),
                         'ceiling_indicator': min(avg_pass_yds + avg_rush_yds + avg_pass_tds * 20, 400) / 400.0
                     })
-                
-                # Add all contextual features including new QB features
+
+                # Enhanced RB-specific features for better prediction
+                elif position == 'RB':
+                    # Use recent averages to compute advanced RB metrics
+                    avg_rush_att = features.get('avg_rush_attempts', 15)
+                    avg_rush_yds = features.get('avg_rushing_yards', 75)
+                    avg_rush_tds = features.get('avg_rush_tds', 0.5)
+                    avg_rec_targs = features.get('avg_targets', 3)
+                    avg_rec_yds = features.get('avg_receiving_yards', 25)
+                    avg_rec_tds = features.get('avg_rec_tds', 0.2)
+
+                    # Advanced efficiency metrics
+                    yards_per_carry = avg_rush_yds / max(avg_rush_att, 1)
+                    rush_td_rate = avg_rush_tds / max(avg_rush_att, 1)
+                    receiving_involvement = avg_rec_targs / max(avg_rush_att + avg_rec_targs, 1)
+                    total_touches = avg_rush_att + avg_rec_targs
+
+                    # Enhanced game flow features (same betting logic as QB, but RB-specific interpretation)
+                    over_under_line = features.get('total_line', 45)
+                    team_spread = features.get('team_spread', 0)
+                    team_itt = over_under_line / 2.0 - team_spread / 2.0  # Implied team total
+                    expected_pace = over_under_line / 45.0
+
+                    # Game script detection (same logic as QB)
+                    is_big_favorite = team_spread < -7
+                    is_big_underdog = team_spread > 7
+                    is_shootout_game = over_under_line > 50  # High-scoring expected
+                    is_low_total = over_under_line < 42      # Low-scoring expected
+
+                    # RB-specific mismatch detection
+                    rb_game_script = 1.0  # Default to neutral
+                    if is_big_favorite and is_low_total:  # Big favorite + low total = run heavy game script
+                        rb_game_script = 1.8  # Very favorable for RBs
+                    elif is_big_favorite:  # Big favorite = likely to run clock
+                        rb_game_script = 1.4
+                    elif is_big_underdog and is_shootout_game:  # Big underdog + shootout = pass heavy
+                        rb_game_script = 0.6  # Less favorable for RBs
+                    elif is_shootout_game:  # Shootout = more plays but more passing
+                        rb_game_script = 1.1  # Slightly favorable due to more plays
+
+                    # Sanity checks (same as QB)
+                    if team_itt < 5 or team_itt > 60:
+                        team_itt = 22.5
+                    if rb_game_script <= 0 or rb_game_script > 3:
+                        rb_game_script = 1.0
+
+                    qb_features.update({
+                        'yards_per_carry_trend': yards_per_carry,
+                        'rush_td_rate_trend': rush_td_rate * 100,  # Convert to percentage
+                        'receiving_involvement': receiving_involvement,
+                        'total_touches_trend': min(total_touches / 20.0, 2.0),  # Normalize touches
+                        'workload_efficiency': min((avg_rush_yds + avg_rec_yds) / max(total_touches, 1), 20.0),
+                        'dual_threat_factor': min(avg_rec_yds / max(avg_rush_yds, 1), 1.5),  # Pass-catching upside
+                        'red_zone_efficiency_est': (avg_rush_tds + avg_rec_tds) / max(avg_rush_att * 0.2, 1),
+                        # Phase 4: Enhanced game script features (RB-optimized)
+                        'game_script_favorability': max(0.2, min(expected_pace * rb_game_script, 3.0)),
+                        'implied_team_total': max(0.3, min(team_itt / 30.0, 2.0)),  # Same normalization as QB
+                        'shootout_potential': 1.0 if is_shootout_game else 0.0,  # More plays = more opportunities
+                        'defensive_game_script': 1.0 if is_low_total else 0.0,   # Low scoring favors ground game
+                        'garbage_time_upside': 0.3 if (is_big_underdog and is_shootout_game) else 0.0,  # Less than QB
+                        'blowout_risk': 0.0,  # RBs benefit from blowouts (clock management)
+                        'clock_management_upside': 1.5 if (is_big_favorite and is_low_total) else (1.2 if is_big_favorite else 1.0),
+                        'pressure_situation': 0.7 if team_spread < -7 else (1.3 if team_spread > 7 else 1.0),  # Inverse of QB
+                        'ceiling_indicator': min(avg_rush_yds + avg_rec_yds + (avg_rush_tds + avg_rec_tds) * 15, 300) / 300.0
+                    })
+
+                # Enhanced TE-specific features for better prediction
+                elif position == 'TE':
+                    # TE dual-role metrics
+                    avg_targets = features.get('avg_targets', 3)
+                    avg_rec_yds = features.get('avg_receiving_yards', 35)
+                    avg_rec_tds = features.get('avg_rec_tds', 0.25)
+                    avg_receptions = features.get('avg_receptions', 2.5)
+
+                    # TE-specific efficiency
+                    te_target_rate = avg_targets / max(15, 1)  # Normalize against team average
+                    red_zone_role = avg_rec_tds / max(avg_targets * 0.25, 1)  # TEs get more RZ looks
+                    short_area_specialist = 1.0 if (avg_rec_yds / max(avg_receptions, 1)) < 12 else 0.0
+
+                    # Game script (TE-optimized)
+                    over_under_line = features.get('total_line', 45)
+                    team_spread = features.get('team_spread', 0)
+                    team_itt = over_under_line / 2.0 - team_spread / 2.0
+
+                    # TE benefits from both run-heavy (blocking) and pass-heavy (receiving) scripts
+                    te_game_script = 1.0  # Base
+                    if abs(team_spread) < 3:  # Close games = more TE involvement
+                        te_game_script = 1.3
+                    elif over_under_line > 50:  # High-scoring = more targets
+                        te_game_script = 1.2
+                    elif team_spread < -7:  # Big favorites = more goal line looks
+                        te_game_script = 1.1
+
+                    # Sanity checks
+                    if team_itt < 5 or team_itt > 60:
+                        team_itt = 22.5
+                    if te_game_script <= 0 or te_game_script > 3:
+                        te_game_script = 1.0
+
+                    qb_features.update({
+                        'te_target_rate': te_target_rate,
+                        'red_zone_specialist': red_zone_role,
+                        'short_area_role': short_area_specialist,
+                        'receiving_efficiency': min(avg_rec_yds / max(avg_targets, 1), 15.0),
+                        'touchdown_dependency': min(avg_rec_tds * 4, 1.5),  # TDs crucial for TE scoring
+                        'dual_role_value': te_game_script,
+                        # Game script features
+                        'game_script_favorability': max(0.4, min(te_game_script, 2.0)),
+                        'implied_team_total': max(0.3, min(team_itt / 30.0, 2.0)),
+                        'close_game_upside': 1.0 if abs(team_spread) < 3 else 0.0,
+                        'goal_line_opportunities': 1.0 if team_spread < -7 else 0.0,
+                        'ceiling_indicator': min(avg_rec_yds + avg_rec_tds * 20, 150) / 150.0
+                    })
+
+                # Enhanced WR-specific features for better prediction
+                elif position == 'WR':
+                    # Advanced WR efficiency metrics
+                    avg_targets = features.get('avg_targets', 5)
+                    avg_rec_yds = features.get('avg_receiving_yards', 60)
+                    avg_rec_tds = features.get('avg_rec_tds', 0.3)
+                    avg_receptions = features.get('avg_receptions', 3.5)
+
+                    # WR-specific metrics
+                    target_share = avg_targets / max(25, 1)  # Normalize against team target volume
+                    air_yards_per_target = avg_rec_yds / max(avg_targets, 1)
+                    catch_rate = avg_receptions / max(avg_targets, 1)
+                    red_zone_target_rate = avg_rec_tds / max(avg_targets * 0.15, 1)
+
+                    # Game script features (WR-optimized)
+                    over_under_line = features.get('total_line', 45)
+                    team_spread = features.get('team_spread', 0)
+                    team_itt = over_under_line / 2.0 - team_spread / 2.0
+
+                    # WR game script logic
+                    is_shootout_game = over_under_line > 50
+                    is_big_underdog = team_spread > 7
+                    is_pass_heavy_script = is_shootout_game or is_big_underdog
+
+                    wr_game_script = 1.0  # Default
+                    if is_pass_heavy_script:
+                        wr_game_script = 1.4  # Favorable for WRs
+                    elif team_spread < -7:  # Big favorite = less passing
+                        wr_game_script = 0.8
+
+                    # Sanity checks
+                    if team_itt < 5 or team_itt > 60:
+                        team_itt = 22.5
+                    if wr_game_script <= 0 or wr_game_script > 3:
+                        wr_game_script = 1.0
+
+                    qb_features.update({
+                        'target_share_trend': min(target_share, 1.0),
+                        'air_yards_per_target': min(air_yards_per_target, 25.0),
+                        'catch_rate_trend': catch_rate,
+                        'red_zone_involvement': red_zone_target_rate,
+                        'route_efficiency': min(avg_rec_yds / max(avg_receptions, 1), 25.0),
+                        'big_play_upside': 1.0 if air_yards_per_target > 12 else 0.0,
+                        # Game script features
+                        'game_script_favorability': max(0.3, min(wr_game_script, 2.5)),
+                        'implied_team_total': max(0.3, min(team_itt / 30.0, 2.0)),
+                        'shootout_potential': 1.0 if is_shootout_game else 0.0,
+                        'pass_heavy_script': 1.0 if is_pass_heavy_script else 0.0,
+                        'garbage_time_upside': 1.2 if (is_big_underdog and is_shootout_game) else 1.0,
+                        'ceiling_indicator': min(avg_rec_yds + avg_rec_tds * 15, 200) / 200.0
+                    })
+
+                # Enhanced DST-specific features for better prediction
+                elif position in ['DST', 'DEF']:
+                    # Get historical defensive stats (this should use the new fixed DST data)
+                    avg_recent_fantasy = features.get('avg_recent_fantasy_points', 6)
+                    avg_recent_pa = features.get('avg_recent_points_allowed', 20)
+                    avg_recent_sacks = features.get('avg_recent_sacks', 2)
+                    avg_recent_ints = features.get('avg_recent_interceptions', 0.8)
+
+                    # Game script analysis for DST (opposite of offensive positions)
+                    over_under_line = features.get('total_line', 45)
+                    team_spread = features.get('team_spread', 0)  # Opponent's spread from DST perspective
+                    opp_itt = over_under_line / 2.0 + team_spread / 2.0  # Opponent implied team total
+
+                    # DST game script favorability
+                    is_opp_pass_heavy = team_spread > 7 or over_under_line > 50  # Opponent likely to pass more
+                    is_low_scoring = over_under_line < 42
+                    is_opp_big_favorite = team_spread > 7
+
+                    dst_game_script = 1.0  # Base
+                    if is_opp_pass_heavy:
+                        dst_game_script = 1.4  # More pass attempts = more sack/int opportunities
+                    elif is_low_scoring:
+                        dst_game_script = 1.2  # Low-scoring = better points allowed
+                    elif is_opp_big_favorite:
+                        dst_game_script = 1.3  # Opponent forced to throw more
+
+                    # Sanity checks
+                    if opp_itt < 5 or opp_itt > 60:
+                        opp_itt = 22.5
+                    if dst_game_script <= 0 or dst_game_script > 3:
+                        dst_game_script = 1.0
+
+                    qb_features.update({
+                        'def_fantasy_consistency': min(avg_recent_fantasy / max(np.std([avg_recent_fantasy] * 3), 1), 3.0),
+                        'points_allowed_trend': max(0.2, min(25.0 / max(avg_recent_pa, 10), 2.5)),  # Lower PA = better
+                        'pass_rush_effectiveness': min(avg_recent_sacks / 2.5, 2.0),
+                        'turnover_generation': min(avg_recent_ints * 2.5, 2.0),  # INTs are valuable
+                        'defensive_consistency': 1.0 - min(abs(avg_recent_fantasy - 6) / 10.0, 1.0),  # Closer to 6 = more consistent
+                        # Game script features (DST perspective)
+                        'game_script_favorability': max(0.3, min(dst_game_script, 2.5)),
+                        'opp_implied_team_total': max(0.3, min(opp_itt / 35.0, 2.0)),  # Higher opponent total = more opportunities
+                        'pass_heavy_opponent': 1.0 if is_opp_pass_heavy else 0.0,
+                        'low_scoring_game': 1.0 if is_low_scoring else 0.0,
+                        'opponent_desperation': 1.0 if is_opp_big_favorite else 0.0,  # Desperate teams throw more
+                        'high_opportunity_game': 1.0 if (over_under_line > 48 or abs(team_spread) > 7) else 0.0,
+                        'ceiling_indicator': min(avg_recent_fantasy + avg_recent_sacks * 0.5, 20) / 20.0
+                    })
+
+                # Add all contextual features including new position-specific features
                 all_features = {
                     'games_missed_last4': 0, 'practice_trend': 0, 'returning_from_injury': 0,
                     'team_injured_starters': 0, 'opp_injured_starters': 0,
@@ -3468,7 +3765,7 @@ def backtest_production_pipeline(
     db_path: str = "data/nfl_dfs.db"
 ) -> Dict[str, float]:
     """Backtest model using exact production pipeline for accurate performance metrics."""
-    from models import create_model
+    from models import create_model, ModelConfig
     import numpy as np
     from sklearn.metrics import mean_absolute_error, r2_score
 
@@ -3496,11 +3793,14 @@ def backtest_production_pipeline(
         if not Path(model_path).exists():
             return {"error": f"No trained model found: {model_path}"}
 
-        model = create_model(position)
-
         # Get expected feature count from training data
         X_train, _, feature_names = get_training_data(position, [2022, 2023], db_path)
         expected_features = len(feature_names)
+
+        # Use ensemble for QB, WR, TE, and DST (matches training and prediction configuration, RB neural-only)
+        config = ModelConfig(position=position, features=feature_names)
+        use_ensemble = (position in ['QB', 'WR', 'TE', 'DST'])
+        model = create_model(position, config, use_ensemble=use_ensemble)
 
         model.load_model(model_path, expected_features)
 
