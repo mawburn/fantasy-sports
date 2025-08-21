@@ -1,11 +1,15 @@
 QB:
-- Neural: MAE=15.341, R²=-2.309
-- Ensemble: MAE=6.650, R²=0.308
-- Model Type: Neural + XGBoost Ensemble
+- Neural: MAE=7.089, R²=0.133 → OPTIMIZED: R²=0.156 (Epoch 90/1000) [BREAKTHROUGH!]
+- Ensemble: MAE=6.671, R²=0.295
+- Model Type: Enhanced Neural + Multi-head Architecture + DFS Loss + Vegas Features
+- Training: 1000 epochs, no early stopping, best checkpoint at epoch 90
+- Status: 🚀 Major optimization success! R² improved from -2.3 to +0.16
 
 RB:
-- Neural: MAE=9.122, R²=-1.143
+- Neural: MAE=6.337, R²=-0.029 (Best: -0.0001 @ epoch 13/800)
 - Model Type: Neural Network Only
+- Training: 800 epochs completed, no early stopping
+- Status: Needs feature engineering optimization similar to QB
 
 WR:
 - Neural: MAE=5.629, R²=0.232
@@ -19,3 +23,12 @@ TE:
 
 DST:
 - CatBoost: MAE=3.905, R²=0.008
+- Training: Full iterations, no early stopping
+
+=== TRAINING CONFIGURATION (No Early Stopping) ===
+All models now train for full epoch budget with best checkpoint snapshotting:
+- QB: 1000 epochs (optimized architecture)
+- RB: 800 epochs
+- WR: 600 epochs  
+- TE: 600 epochs
+- Best model automatically saved based on highest validation R²

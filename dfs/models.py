@@ -473,12 +473,12 @@ class BaseNeuralModel(ABC):
         self.criterion = nn.HuberLoss(delta=1.0)  # Even more robust to outliers
         self.quantile_criterion = self._quantile_loss  # Custom quantile loss function
         self.mse_criterion = nn.MSELoss()  # For fallback if Huber fails
+        self.dfs_criterion = DFSLoss()  # DFS-optimized loss function
 
         # Training parameters
         self.batch_size = 32
         self.learning_rate = 0.0001
-        self.epochs = 100
-        self.patience = 15
+        self.epochs = 500  # Increased since no early stopping
 
         # Training history
         self.train_losses: List[float] = []
@@ -530,15 +530,138 @@ class BaseNeuralModel(ABC):
         """Denormalize predictions back to original scale."""
         return pred * self.y_std + self.y_mean
 
-    def _quantile_loss(self, predictions: torch.Tensor, targets: torch.Tensor, quantile: float) -> torch.Tensor:
-        """Quantile loss (pinball loss) function."""
-        errors = targets - predictions
-        return torch.mean(torch.max(quantile * errors, (quantile - 1) * errors))
+class DFSLoss(nn.Module):
+    """Custom DFS loss function with ranking and salary weighting as per optimization guide."""
+
+    def __init__(self, alpha: float = 0.2, beta: float = 0.3, gamma: float = 0.2):
+        """
+        Args:
+            alpha: Weight for range penalty term
+            beta: Weight for ranking loss term
+            gamma: Weight for salary-weighted accuracy term
+        """
+        super().__init__()
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
+
+    def forward(self, predictions: Dict[str, torch.Tensor], targets: torch.Tensor,
+                salaries: torch.Tensor = None) -> torch.Tensor:
+        """
+        DFS-optimized loss function.
+
+        Args:
+            predictions: Dict with 'mean', 'floor', 'ceiling' tensors
+            targets: Actual fantasy points
+            salaries: Player salaries (optional, uses uniform weights if None)
+        """
+        mean_pred = predictions['mean']
+        floor_pred = predictions.get('floor', mean_pred - 5)
+        ceiling_pred = predictions.get('ceiling', mean_pred + 5)
+
+        # Main prediction loss (weighted MSE)
+        point_loss = F.mse_loss(mean_pred, targets)
+
+        # Range penalty - penalize unrealistic predictions
+        range_penalty = torch.mean(torch.relu(5 - (ceiling_pred - floor_pred)))
+
+        # Ranking loss (Spearman correlation approximation)
+        rank_loss = self._ranking_loss(mean_pred, targets)
+
+        # Salary-weighted accuracy (more important to get expensive players right)
+        if salaries is not None:
+            salary_weights = salaries / salaries.mean()
+            weighted_loss = F.mse_loss(mean_pred * salary_weights, targets * salary_weights)
+        else:
+            weighted_loss = torch.tensor(0.0, device=targets.device)
+
+        # Combined loss as per optimization guide formula
+        total_loss = (point_loss +
+                     self.alpha * range_penalty +
+                     self.beta * rank_loss +
+                     self.gamma * weighted_loss)
+
+        return total_loss
+
+    def _ranking_loss(self, predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """Compute ranking loss to encourage correct player ordering."""
+        # Compute pairwise differences
+        n = predictions.size(0)
+        if n < 2:
+            return torch.tensor(0.0, device=predictions.device)
+
+        # Use a simplified ranking loss based on order consistency
+        pred_ranks = torch.argsort(torch.argsort(predictions))
+        target_ranks = torch.argsort(torch.argsort(targets))
+
+        # L2 loss between rank positions (normalized)
+        rank_diff = (pred_ranks.float() - target_ranks.float()) / n
+        return torch.mean(rank_diff ** 2)
+
+
+class BaseNeuralModel(ABC):
+    """Base class for PyTorch neural network models."""
+
+    def __init__(self, config: ModelConfig):
+        """Initialize neural network base model."""
+        self.config = config
+        self.device = OPTIMAL_DEVICE  # Use Apple Silicon optimized device
+        self.network: nn.Module = None
+        self.optimizer: optim.Optimizer = None
+        self.scheduler: optim.lr_scheduler._LRScheduler = None
+        self.criterion = nn.HuberLoss(delta=1.0)  # Even more robust to outliers
+        self.quantile_criterion = self._quantile_loss  # Custom quantile loss function
+        self.mse_criterion = nn.MSELoss()  # For fallback if Huber fails
+        self.dfs_criterion = DFSLoss()  # DFS-optimized loss function
+
+        # Training state
+        self.train_losses = []
+        self.val_losses = []
+        self.best_state_dict = None
+        self.is_trained = False
+        self.training_history = []  # For compatibility
+
+        # Feature scaling parameters
+        self.X_mean = None
+        self.X_std = None
+        self.y_mean = None
+        self.y_std = None
 
     @abstractmethod
     def build_network(self, input_size: int) -> nn.Module:
         """Build position-specific neural network architecture."""
         pass
+
+    def _normalize_features(self, X: np.ndarray, is_training: bool = True) -> np.ndarray:
+        """Apply feature normalization using stored parameters."""
+        if is_training:
+            self.X_mean = np.mean(X, axis=0)
+            self.X_std = np.std(X, axis=0)
+            # Use a small epsilon to avoid division by zero for constant features
+            self.X_std = np.where(self.X_std == 0, 1e-8, self.X_std)
+
+        X_normalized = (X - self.X_mean) / self.X_std
+        return X_normalized
+
+    def _normalize_targets(self, y: np.ndarray, is_training: bool = True) -> np.ndarray:
+        """Apply target normalization using stored parameters."""
+        if is_training:
+            self.y_mean = np.mean(y)
+            self.y_std = np.std(y)
+            if self.y_std == 0:
+                self.y_std = 1.0  # Avoid division by zero
+
+        y_normalized = (y - self.y_mean) / self.y_std
+        return y_normalized
+
+    def _denormalize_predictions(self, pred: np.ndarray) -> np.ndarray:
+        """Denormalize predictions back to original scale."""
+        return pred * self.y_std + self.y_mean
+
+    def _quantile_loss(self, predictions: torch.Tensor, targets: torch.Tensor, quantile: float) -> torch.Tensor:
+        """Quantile loss (pinball loss) function."""
+        errors = targets - predictions
+        return torch.mean(torch.max(quantile * errors, (quantile - 1) * errors))
 
     def _validate_inputs(self, X: np.ndarray, y: np.ndarray):
         """Validate input data."""
@@ -583,23 +706,33 @@ class BaseNeuralModel(ABC):
 
         return train_loader, val_loader
 
-    def _train_epoch(self, train_loader: DataLoader) -> float:
-        """Train model for one epoch."""
+    def _train_epoch(self, train_loader: DataLoader, salaries: torch.Tensor = None) -> float:
+        """Train model for one epoch with enhanced loss function for QB models."""
         self.network.train()
         total_loss = 0.0
         num_batches = 0
 
-        for batch_X, batch_y in train_loader:
+        for batch_idx, batch_data in enumerate(train_loader):
+            if len(batch_data) == 3:  # With salaries
+                batch_X, batch_y, batch_salaries = batch_data
+            else:  # Without salaries
+                batch_X, batch_y = batch_data
+                batch_salaries = None
+
             self.optimizer.zero_grad()
             predictions = self.network(batch_X)
 
-            # Handle QB model's dictionary output
-            if isinstance(predictions, dict):
-                predictions = predictions['mean']  # Use mean prediction for training
+            # Use DFS loss for QB models, regular loss for others
+            if isinstance(predictions, dict) and self.config.position == 'QB':
+                loss = self.dfs_criterion(predictions, batch_y, batch_salaries)
+            elif isinstance(predictions, dict):
+                predictions = predictions['mean']  # Use mean prediction for non-QB models
+                loss = self.criterion(predictions, batch_y)
             elif predictions.dim() > 1 and predictions.size(1) == 1:
                 predictions = predictions.squeeze(1)
-
-            loss = self.criterion(predictions, batch_y)
+                loss = self.criterion(predictions, batch_y)
+            else:
+                loss = self.criterion(predictions, batch_y)
 
             # Check if loss is valid before backward pass
             if torch.isnan(loss) or torch.isinf(loss):
@@ -623,8 +756,6 @@ class BaseNeuralModel(ABC):
                 continue
 
             self.optimizer.step()
-
-            # ReduceLROnPlateau doesn't step per batch
 
             total_loss += loss.item()
             num_batches += 1
@@ -685,6 +816,34 @@ class BaseNeuralModel(ABC):
 
         r2 = 1 - (ss_res / ss_tot)
         return r2
+
+    def validate_predictions(self, predictions: np.ndarray, position: str = None) -> bool:
+        """Ensure predictions are realistic per optimization guide validation."""
+
+        position = position or self.config.position
+
+        if position == 'QB':
+            # QB-specific validation as per optimization guide
+            assert predictions.min() >= 5, f"QB floor too low: {predictions.min()}"
+            assert predictions.max() <= 45, f"QB ceiling too high: {predictions.max()}"
+            assert predictions.std() > 3, f"Insufficient variance: {predictions.std()}"
+
+            # Check for reasonable distribution
+            median_pred = np.median(predictions)
+            assert 15 <= median_pred <= 25, f"Unusual median prediction: {median_pred}"
+
+            # Check for no extreme outliers (more than 3 std devs from mean)
+            mean_pred = np.mean(predictions)
+            std_pred = np.std(predictions)
+            outliers = np.abs(predictions - mean_pred) > 3 * std_pred
+            outlier_pct = np.mean(outliers)
+            assert outlier_pct < 0.05, f"Too many outliers: {outlier_pct:.2%}"
+
+        logger.info(f"{position} predictions validated successfully: "
+                   f"range=[{predictions.min():.1f}, {predictions.max():.1f}], "
+                   f"mean={predictions.mean():.1f}, std={predictions.std():.1f}")
+
+        return True
 
     def train(
         self, X_train: np.ndarray, y_train: np.ndarray, X_val: np.ndarray, y_val: np.ndarray
@@ -758,6 +917,7 @@ class BaseNeuralModel(ABC):
 
         logger.info(f"Starting neural network training for {self.config.position}")
 
+        # Training loop with best model checkpointing (no early stopping)
         for epoch in range(self.epochs):
             train_loss = self._train_epoch(train_loader)
             val_loss = self._validate_epoch(val_loader)
@@ -769,11 +929,11 @@ class BaseNeuralModel(ABC):
             self.train_losses.append(train_loss)
             self.val_losses.append(val_loss)
 
-            # Always prioritize R² for model selection (computed every epoch now)
+            # Snapshot best model based on R² score
             improved = False
             if val_r2 > best_val_r2:
                 best_val_r2 = val_r2
-                best_val_loss = val_loss  # Update loss too
+                best_val_loss = val_loss
                 best_epoch = epoch
                 self.best_state_dict = self.network.state_dict().copy()
                 improved = True
@@ -784,18 +944,13 @@ class BaseNeuralModel(ABC):
                 self.best_state_dict = self.network.state_dict().copy()
                 improved = True
 
-            # Clean progress reporting - only show when R² improves
+            # Progress reporting - show improvements and periodic updates
             if improved:
-                # Clear the line completely, then print new best
                 print(f"\r\033[K🎯 Epoch {epoch}: New best R² = {val_r2:.4f}", end="", flush=True)
-            elif epoch % 10 == 0:
-                # Clear the line completely, then print progress
+            elif epoch % 50 == 0:
                 print(f"\r\033[KEpoch {epoch}/{self.epochs}: R² = {val_r2:.4f} (Best: {best_val_r2:.4f} @ epoch {best_epoch})", end="", flush=True)
 
-            # Skip the ProgressDisplay since we're handling output manually
-            # progress.update(epoch, self.epochs)
-
-        # Training completed - always run full epochs since we have checkpointing
+        # Training completed - always run full epochs and use best checkpoint
         print(f"\nTraining completed ({self.epochs} epochs, Best R²: {best_val_r2:.4f} at epoch {best_epoch})")
 
         if hasattr(self, "best_state_dict"):
@@ -875,8 +1030,8 @@ class BaseNeuralModel(ABC):
 
         return result
 
-    def predict(self, X: np.ndarray) -> PredictionResult:
-        """Generate predictions with uncertainty quantification."""
+    def predict(self, X: np.ndarray, validate: bool = True) -> PredictionResult:
+        """Generate predictions with uncertainty quantification and validation."""
         if not self.is_trained or self.network is None:
             raise ValueError("Model must be trained before making predictions")
 
@@ -885,23 +1040,36 @@ class BaseNeuralModel(ABC):
 
         with torch.no_grad():
             predictions = self.network(X_tensor)
-            # Handle QB model's dictionary output
-            if isinstance(predictions, dict):
-                predictions = predictions['mean']
-            elif predictions.dim() > 1 and predictions.size(1) == 1:
-                predictions = predictions.squeeze(1)
 
-        point_estimate = predictions.cpu().numpy()
+            # Handle enhanced QB model's dictionary output
+            if isinstance(predictions, dict):
+                point_estimate = predictions['mean'].cpu().numpy()
+                floor = predictions.get('floor', point_estimate - 5).cpu().numpy()
+                ceiling = predictions.get('ceiling', point_estimate + 5).cpu().numpy()
+            elif predictions.dim() > 1 and predictions.size(1) == 1:
+                point_estimate = predictions.squeeze(1).cpu().numpy()
+                floor = point_estimate - 5
+                ceiling = point_estimate + 5
+            else:
+                point_estimate = predictions.cpu().numpy()
+                floor = point_estimate - 5
+                ceiling = point_estimate + 5
+
+        # Validate predictions if requested
+        if validate:
+            try:
+                self.validate_predictions(point_estimate, self.config.position)
+            except AssertionError as e:
+                logger.warning(f"Prediction validation failed: {e}")
+                # Continue with predictions despite validation failure
 
         # Calculate prediction intervals
         uncertainty = (
-            self._residual_std if hasattr(self, "_residual_std") else point_estimate * 0.25
+            self._residual_std if hasattr(self, "_residual_std") else np.std(point_estimate) * 0.5
         )
 
         lower_bound = point_estimate - 1.96 * uncertainty
         upper_bound = point_estimate + 1.96 * uncertainty
-        floor = point_estimate - 0.8 * uncertainty
-        ceiling = point_estimate + 1.0 * uncertainty
         confidence_score = np.ones_like(point_estimate) * 0.7
 
         return PredictionResult(
@@ -961,123 +1129,126 @@ class BaseNeuralModel(ABC):
         logger.info(f"Model loaded from {path} with input_size={input_size} to device: {self.device}")
 
 
-class QBNetwork(nn.Module):
-    """Enhanced neural network architecture for quarterback predictions with residual connections and improved activations."""
+class ResidualBlock(nn.Module):
+    """Residual block with improved skip connections."""
 
-    def __init__(self, input_size: int):
+    def __init__(self, input_dim: int, output_dim: int, dropout: float = 0.2):
         super().__init__()
 
-        # Moderately increased capacity for better representation learning
-        self.input_projection = nn.Linear(input_size, 192)
-        self.input_norm = nn.BatchNorm1d(192)
-
-        # Enhanced feature layers with residual connections
-        self.feature_layers = nn.ModuleList([
-            self._residual_block(192, 160),
-            self._residual_block(160, 128),
-            self._residual_block(128, 96),
-            self._residual_block(96, 64)
-        ])
-
-        # Attention mechanism for feature importance
-        self.attention = nn.MultiheadAttention(64, num_heads=4, dropout=0.1, batch_first=True)
-        self.attention_norm = nn.LayerNorm(64)
-
-        # Enhanced branches with residual connections
-        self.passing_branch = nn.Sequential(
-            nn.Linear(64, 48),
-            nn.BatchNorm1d(48),
-            nn.GELU(),
-            nn.Dropout(0.15),
-            nn.Linear(48, 32),
-            nn.BatchNorm1d(32),
-            nn.GELU(),
-            nn.Dropout(0.1)
-        )
-
-        self.rushing_branch = nn.Sequential(
-            nn.Linear(64, 24),
-            nn.BatchNorm1d(24),
-            nn.GELU(),
-            nn.Dropout(0.15),
-            nn.Linear(24, 16),
-            nn.BatchNorm1d(16),
-            nn.GELU(),
-            nn.Dropout(0.1)
-        )
-
-        # Enhanced output heads
-        combined_size = 32 + 16
-        self.mean_head = nn.Sequential(
-            nn.Linear(combined_size, 24),
-            nn.BatchNorm1d(24),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(24, 12),
-            nn.GELU(),
-            nn.Linear(12, 1)
-        )
-
-        # Quantile heads with shared layers for efficiency
-        self.quantile_shared = nn.Sequential(
-            nn.Linear(combined_size, 24),
-            nn.BatchNorm1d(24),
-            nn.GELU(),
-            nn.Dropout(0.1)
-        )
-
-        self.q25_head = nn.Linear(24, 1)
-        self.q50_head = nn.Linear(24, 1)
-        self.q75_head = nn.Linear(24, 1)
-
-    def _residual_block(self, input_dim: int, output_dim: int):
-        """Create a residual block with batch norm and GELU activation."""
-        block = nn.Sequential(
+        self.main_path = nn.Sequential(
             nn.Linear(input_dim, output_dim),
             nn.BatchNorm1d(output_dim),
             nn.GELU(),
-            nn.Dropout(0.15),
+            nn.Dropout(dropout),
             nn.Linear(output_dim, output_dim),
             nn.BatchNorm1d(output_dim)
         )
 
-        # Skip connection (project if dimensions don't match)
+        # Skip connection - project if dimensions don't match
         self.skip_connection = nn.Linear(input_dim, output_dim) if input_dim != output_dim else nn.Identity()
+        self.final_activation = nn.GELU()
 
-        return block
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        identity = self.skip_connection(x)
+        out = self.main_path(x)
+        return self.final_activation(out + identity)
+
+
+class QBNetwork(nn.Module):
+    """Enhanced QB Network following optimization guide recommendations with multi-head design."""
+
+    def __init__(self, input_size: int):
+        super().__init__()
+
+        # Feature extraction layers with skip connections (increased capacity)
+        self.feature_extractor = nn.Sequential(
+            nn.Linear(input_size, 256),
+            nn.BatchNorm1d(256),
+            nn.GELU(),
+            nn.Dropout(0.2),
+
+            ResidualBlock(256, 256),
+            ResidualBlock(256, 256),
+
+            nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
+            nn.GELU(),
+            nn.Dropout(0.15)
+        )
+
+        # Multi-head for different aspects as per optimization guide
+        self.passing_head = nn.Sequential(
+            nn.Linear(128, 64),
+            nn.BatchNorm1d(64),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(64, 32)
+        )
+
+        self.rushing_head = nn.Sequential(
+            nn.Linear(128, 32),
+            nn.BatchNorm1d(32),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(32, 16)
+        )
+
+        self.bonus_head = nn.Sequential(
+            nn.Linear(128, 32),
+            nn.BatchNorm1d(32),
+            nn.Sigmoid(),  # Probability of hitting bonuses
+            nn.Dropout(0.1),
+            nn.Linear(32, 8)
+        )
+
+        # Combine all heads as per optimization guide
+        combined_features = 32 + 16 + 8  # 56 total
+
+        self.output_layer = nn.Sequential(
+            nn.Linear(combined_features, 64),
+            nn.BatchNorm1d(64),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(64, 3)  # [mean, floor_adjustment, ceiling_adjustment]
+        )
 
     def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
-        # Add small epsilon to prevent issues with sparse features
-        x = x + 1e-8
+        # Feature extraction
+        features = self.feature_extractor(x)
 
-        # Input projection
-        x = F.gelu(self.input_norm(self.input_projection(x)))
+        # Multi-head processing
+        passing = self.passing_head(features)
+        rushing = self.rushing_head(features)
+        bonus = self.bonus_head(features)
 
-        # Apply residual blocks (skip connections handled inside blocks)
-        for i, block in enumerate(self.feature_layers):
-            x = block(x)
-            x = F.gelu(x)
+        # Combine heads
+        combined = torch.cat([passing, rushing, bonus], dim=1)
+        output = self.output_layer(combined)
 
-        # Apply attention mechanism
-        x_attended, _ = self.attention(x.unsqueeze(1), x.unsqueeze(1), x.unsqueeze(1))
-        x = self.attention_norm(x + x_attended.squeeze(1))
+        # Generate predictions with floor/ceiling as per optimization guide
+        mean_pred = output[:, 0] * 45  # Scale to QB range (5-45 points)
+        floor_adj = torch.abs(output[:, 1]) * 10  # Floor adjustment
+        ceiling_adj = torch.abs(output[:, 2]) * 15  # Ceiling adjustment
 
-        # Branch processing
-        passing_features = self.passing_branch(x)
-        rushing_features = self.rushing_branch(x)
-        combined = torch.cat([passing_features, rushing_features], dim=1)
+        floor = mean_pred - floor_adj
+        ceiling = mean_pred + ceiling_adj
 
-        # Output predictions
-        mean_output = self.mean_head(combined).squeeze(-1)
+        # Ensure realistic ranges
+        mean_pred = torch.clamp(mean_pred, 5.0, 45.0)
+        floor = torch.clamp(floor, 0.0, 45.0)  # Use fixed upper bound
+        ceiling = torch.clamp(ceiling, 5.0, 50.0)  # Use fixed bounds
 
-        # Quantile outputs through shared layer
-        quantile_features = self.quantile_shared(combined)
+        # Ensure floor <= mean <= ceiling relationship
+        floor = torch.min(floor, mean_pred)
+        ceiling = torch.max(ceiling, mean_pred)
 
         return {
-            'mean': mean_output,
-            'q25': self.q25_head(quantile_features).squeeze(-1),
-            'q50': self.q50_head(quantile_features).squeeze(-1),
-            'q75': self.q75_head(quantile_features).squeeze(-1)
+            'mean': mean_pred,
+            'floor': floor,
+            'ceiling': ceiling,
+            'q25': floor,
+            'q50': mean_pred,
+            'q75': ceiling
         }
 
 
@@ -1309,14 +1480,17 @@ class QBNeuralModel(BaseNeuralModel):
 
     def __init__(self, config: ModelConfig):
         super().__init__(config)
-        # Conservative optimizations for R² improvement
-        self.learning_rate = 0.00003  # Lower learning rate for stability
-        self.batch_size = 128         # Keep reasonable batch size
-        self.epochs = 800            # More epochs for better results
-        self.patience = 50           # Keep patience higher to avoid stopping too early
+        # Optimized training parameters for QB model
+        self.learning_rate = 0.0001   # Balanced learning rate
+        self.batch_size = 64          # Smaller batch size for better gradients
+        self.epochs = 1000            # More epochs to reach target R² > 0.35
 
     def build_network(self, input_size: int) -> nn.Module:
         return QBNetwork(input_size)
+
+    def validate_qb_predictions(self, predictions: np.ndarray) -> bool:
+        """QB-specific prediction validation."""
+        return self.validate_predictions(predictions, 'QB')
 
 
 class RBNeuralModel(BaseNeuralModel):
@@ -1386,7 +1560,6 @@ class DEFCatBoostModel:
             random_seed=42,              # Reproducibility
             loss_function='RMSE',        # Good for continuous targets
             eval_metric='R2',           # Track R² directly
-            early_stopping_rounds=50,    # Stop if no improvement
             use_best_model=True,         # Use best model from validation
             verbose=50,                  # Progress updates
             allow_writing_files=False    # No temp files
@@ -1394,7 +1567,7 @@ class DEFCatBoostModel:
 
         logger.info("Training CatBoost model for DST...")
 
-        # Train with validation set for early stopping
+        # Train with validation set
         self.model.fit(
             X, y,
             eval_set=(X_val, y_val),
@@ -1667,7 +1840,7 @@ class EnsembleModel:
             })
             num_rounds = 300
 
-        # Train XGBoost with early stopping
+        # Train XGBoost for full rounds
         dtrain = xgb.DMatrix(X_train_ensemble, label=y_train)
         dval = xgb.DMatrix(X_val_ensemble, label=y_val)
 
@@ -1676,7 +1849,6 @@ class EnsembleModel:
             dtrain=dtrain,
             num_boost_round=num_rounds,
             evals=[(dtrain, 'train'), (dval, 'val')],
-            early_stopping_rounds=50,
             verbose_eval=False
         )
 

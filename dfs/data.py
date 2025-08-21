@@ -31,6 +31,469 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Feature extraction functions for QB model optimization
+def extract_vegas_features(db_path: str, game_id: str, team_id: int, is_home: bool) -> Dict[str, float]:
+    """Extract critical Vegas-based features for QB predictions."""
+    features = {}
+
+    with sqlite3.connect(db_path) as conn:
+        # Get betting odds for the game
+        odds_query = """
+            SELECT over_under_line, home_team_spread, away_team_spread
+            FROM betting_odds
+            WHERE game_id = ?
+        """
+        odds_result = conn.execute(odds_query, (game_id,)).fetchone()
+
+        if odds_result:
+            over_under, home_spread, away_spread = odds_result
+            team_spread = home_spread if is_home else away_spread
+
+            # Team Implied Total (most predictive single feature)
+            implied_total = (over_under / 2) - (team_spread / 2) if over_under and team_spread else 0
+
+            # Game Environment Features
+            features.update({
+                'team_implied_total': implied_total,
+                'game_total': over_under or 0,
+                'spread': team_spread or 0,
+                'is_favorite': 1 if team_spread and team_spread < 0 else 0,
+                'favorite_margin': abs(team_spread) if team_spread and team_spread < 0 else 0,
+                'expected_pass_rate': min(0.7, 0.55 + abs(team_spread or 0) * 0.01),
+                'shootout_probability': 1 if over_under and over_under > 50 else 0,
+                'blowout_risk': 1 if team_spread and abs(team_spread) > 10 else 0
+            })
+        else:
+            # Default values if no betting data
+            features.update({
+                'team_implied_total': 0,
+                'game_total': 0,
+                'spread': 0,
+                'is_favorite': 0,
+                'favorite_margin': 0,
+                'expected_pass_rate': 0.55,
+                'shootout_probability': 0,
+                'blowout_risk': 0
+            })
+
+    return features
+
+
+def extract_volume_features(db_path: str, player_id: int, game_id: str, lookback_weeks: int = 4) -> Dict[str, float]:
+    """Extract passing volume and opportunity metrics."""
+    features = {}
+
+    with sqlite3.connect(db_path) as conn:
+        # Get game date for lookback window
+        game_date_query = "SELECT game_date FROM games WHERE id = ?"
+        game_date_result = conn.execute(game_date_query, (game_id,)).fetchone()
+
+        if not game_date_result:
+            return features
+
+        game_date_str = game_date_result[0]
+        try:
+            game_date = datetime.strptime(game_date_str[:10], '%Y-%m-%d')
+        except (ValueError, TypeError):
+            return features
+
+        start_date = (game_date - timedelta(weeks=lookback_weeks)).strftime('%Y-%m-%d')
+
+        # Core volume metrics from play-by-play data
+        volume_query = """
+            SELECT
+                COUNT(CASE WHEN pass_attempt = 1 THEN 1 END) as pass_attempts,
+                COUNT(CASE WHEN pass_attempt = 1 AND yardline_100 <= 20 THEN 1 END) as rz_pass_attempts,
+                COUNT(CASE WHEN pass_attempt = 1 AND yardline_100 <= 10 THEN 1 END) as inside_10_passes,
+                COUNT(CASE WHEN touchdown = 1 AND pass_attempt = 1 AND yardline_100 <= 20 THEN 1 END) as rz_pass_tds,
+                COUNT(CASE WHEN yardline_100 <= 20 THEN 1 END) as rz_plays,
+                COUNT(CASE WHEN yardline_100 <= 10 THEN 1 END) as inside_10_plays,
+                COUNT(*) as total_plays
+            FROM play_by_play pbp
+            JOIN games g ON pbp.game_id = g.id
+            WHERE pbp.posteam = (
+                SELECT t.team_abbr
+                FROM players p
+                JOIN teams t ON p.team_id = t.id
+                WHERE p.id = ?
+            )
+            AND g.game_date >= ? AND g.game_date < ?
+            AND g.game_finished = 1
+        """
+
+        volume_result = conn.execute(volume_query, (player_id, start_date, game_date_str)).fetchone()
+
+        if volume_result:
+            pass_attempts, rz_pass_attempts, inside_10_passes, rz_pass_tds, rz_plays, inside_10_plays, total_plays = volume_result
+            games_count = max(1, lookback_weeks)  # Assume roughly 1 game per week
+
+            features.update({
+                'avg_pass_attempts': pass_attempts / games_count,
+                'rz_pass_attempts_pg': rz_pass_attempts / games_count,
+                'inside_10_pass_rate': inside_10_passes / max(inside_10_plays, 1),
+                'td_rate_rz': rz_pass_tds / max(rz_pass_attempts, 1),
+                'pass_rate_overall': pass_attempts / max(total_plays, 1)
+            })
+        else:
+            features.update({
+                'avg_pass_attempts': 0,
+                'rz_pass_attempts_pg': 0,
+                'inside_10_pass_rate': 0,
+                'td_rate_rz': 0,
+                'pass_rate_overall': 0
+            })
+
+    return features
+
+
+def extract_qb_rushing_features(db_path: str, player_id: int, game_id: str, lookback_weeks: int = 4) -> Dict[str, float]:
+    """QB rushing is the stickiest fantasy advantage."""
+    features = {}
+
+    with sqlite3.connect(db_path) as conn:
+        # Get game date for lookback window
+        game_date_query = "SELECT game_date FROM games WHERE id = ?"
+        game_date_result = conn.execute(game_date_query, (game_id,)).fetchone()
+
+        if not game_date_result:
+            return features
+
+        game_date_str = game_date_result[0]
+        try:
+            game_date = datetime.strptime(game_date_str[:10], '%Y-%m-%d')
+        except (ValueError, TypeError):
+            return features
+
+        start_date = (game_date - timedelta(weeks=lookback_weeks)).strftime('%Y-%m-%d')
+
+        # Get QB rushing stats from player_stats table
+        rushing_query = """
+            SELECT
+                AVG(ps.rushing_attempts) as avg_rush_attempts,
+                AVG(ps.rushing_yards) as avg_rush_yards,
+                AVG(ps.rushing_tds) as avg_rush_tds,
+                SUM(ps.rushing_tds) as total_rush_tds,
+                COUNT(*) as games_played
+            FROM player_stats ps
+            JOIN games g ON ps.game_id = g.id
+            WHERE ps.player_id = ?
+            AND g.game_date >= ? AND g.game_date < ?
+            AND g.game_finished = 1
+        """
+
+        rushing_result = conn.execute(rushing_query, (player_id, start_date, game_date_str)).fetchone()
+
+        if rushing_result and rushing_result[4] > 0:  # games_played > 0
+            avg_attempts, avg_yards, avg_tds, total_tds, games_played = rushing_result
+
+            features.update({
+                'avg_rush_attempts': avg_attempts or 0,
+                'rush_yards_per_attempt': (avg_yards / max(avg_attempts, 1)) if avg_attempts else 0,
+                'rush_td_rate': (avg_tds / max(avg_attempts, 1)) if avg_attempts else 0,
+                'recent_rush_tds': total_tds or 0,
+                'rush_upside': min(1, (avg_attempts or 0) * 0.1)  # Rushing attempt rate as upside indicator
+            })
+        else:
+            features.update({
+                'avg_rush_attempts': 0,
+                'rush_yards_per_attempt': 0,
+                'rush_td_rate': 0,
+                'recent_rush_tds': 0,
+                'rush_upside': 0
+            })
+
+    return features
+
+
+def extract_opponent_features(db_path: str, opponent_team_id: int, position: str = 'QB', lookback_weeks: int = 4) -> Dict[str, float]:
+    """Opponent defensive efficiency metrics."""
+    features = {}
+
+    with sqlite3.connect(db_path) as conn:
+        # Get opponent team abbreviation
+        team_query = "SELECT team_abbr FROM teams WHERE id = ?"
+        team_result = conn.execute(team_query, (opponent_team_id,)).fetchone()
+
+        if not team_result:
+            return features
+
+        opponent_abbr = team_result[0]
+
+        # Get current season/week for lookback
+        current_season_query = "SELECT MAX(season) FROM games WHERE game_finished = 1"
+        current_season = conn.execute(current_season_query).fetchone()[0] or 2024
+
+        # Defensive stats from play-by-play data
+        def_query = """
+            SELECT
+                AVG(CASE WHEN complete_pass = 1 THEN yards_gained ELSE 0 END) as avg_completion_yards,
+                AVG(CASE WHEN complete_pass = 1 THEN 1.0 ELSE 0.0 END) as completion_rate_allowed,
+                AVG(CASE WHEN touchdown = 1 AND pass_attempt = 1 THEN 1.0 ELSE 0.0 END) as pass_td_rate_allowed,
+                COUNT(CASE WHEN sack = 1 THEN 1 END) as sacks,
+                COUNT(CASE WHEN pass_attempt = 1 THEN 1 END) as pass_attempts_faced,
+                COUNT(CASE WHEN interception = 1 THEN 1 END) as interceptions
+            FROM play_by_play
+            WHERE defteam = ?
+            AND season = ?
+            AND pass_attempt = 1
+        """
+
+        def_result = conn.execute(def_query, (opponent_abbr, current_season)).fetchone()
+
+        if def_result:
+            avg_comp_yards, comp_rate, td_rate, sacks, attempts_faced, ints = def_result
+
+            features.update({
+                'def_completion_yards_allowed': avg_comp_yards or 0,
+                'def_completion_rate_allowed': comp_rate or 0,
+                'def_pass_td_rate_allowed': td_rate or 0,
+                'def_pressure_rate': (sacks or 0) / max(attempts_faced or 1, 1),
+                'def_int_rate': (ints or 0) / max(attempts_faced or 1, 1)
+            })
+        else:
+            features.update({
+                'def_completion_yards_allowed': 0,
+                'def_completion_rate_allowed': 0,
+                'def_pass_td_rate_allowed': 0,
+                'def_pressure_rate': 0,
+                'def_int_rate': 0
+            })
+
+        # Fantasy points allowed to position
+        fps_query = """
+            SELECT AVG(ds.dfs_points) as avg_fps_allowed
+            FROM dfs_scores ds
+            JOIN players p ON ds.player_id = p.id
+            WHERE ds.opponent_id = ?
+            AND p.position = ?
+            AND ds.season = ?
+        """
+
+        fps_result = conn.execute(fps_query, (opponent_team_id, position, current_season)).fetchone()
+
+        if fps_result:
+            features['def_qb_fps_allowed_avg'] = fps_result[0] or 0
+        else:
+            features['def_qb_fps_allowed_avg'] = 0
+
+    return features
+
+
+def extract_pace_features(db_path: str, team_id: int, opponent_id: int, lookback_weeks: int = 4) -> Dict[str, float]:
+    """Game pace and neutral situation metrics."""
+    features = {}
+
+    with sqlite3.connect(db_path) as conn:
+        # Get team abbreviations
+        team_query = "SELECT team_abbr FROM teams WHERE id = ?"
+        team_result = conn.execute(team_query, (team_id,)).fetchone()
+        opp_result = conn.execute(team_query, (opponent_id,)).fetchone()
+
+        if not team_result or not opp_result:
+            return features
+
+        team_abbr, opp_abbr = team_result[0], opp_result[0]
+
+        # Get current season
+        current_season_query = "SELECT MAX(season) FROM games WHERE game_finished = 1"
+        current_season = conn.execute(current_season_query).fetchone()[0] or 2024
+
+        # Team pace metrics
+        pace_query = """
+            SELECT
+                COUNT(*) / COUNT(DISTINCT game_id) as plays_per_game,
+                AVG(CASE WHEN pass_attempt = 1 THEN 1.0 ELSE 0.0 END) as pass_rate,
+                COUNT(CASE WHEN down >= 3 THEN 1 END) / COUNT(*) as third_down_rate
+            FROM play_by_play
+            WHERE posteam = ?
+            AND season = ?
+            AND (pass_attempt = 1 OR rush_attempt = 1)
+        """
+
+        team_pace = conn.execute(pace_query, (team_abbr, current_season)).fetchone()
+        opp_pace = conn.execute(pace_query, (opp_abbr, current_season)).fetchone()
+
+        if team_pace and opp_pace:
+            team_plays, team_pass_rate, team_3d_rate = team_pace
+            opp_plays, opp_pass_rate, opp_3d_rate = opp_pace
+
+            features.update({
+                'team_plays_per_game': team_plays or 0,
+                'opponent_plays_per_game': opp_plays or 0,
+                'combined_pace': (team_plays + opp_plays) / 2 if team_plays and opp_plays else 0,
+                'team_pass_rate': team_pass_rate or 0,
+                'opponent_pass_rate': opp_pass_rate or 0,
+                'team_third_down_freq': team_3d_rate or 0
+            })
+        else:
+            features.update({
+                'team_plays_per_game': 0,
+                'opponent_plays_per_game': 0,
+                'combined_pace': 0,
+                'team_pass_rate': 0,
+                'opponent_pass_rate': 0,
+                'team_third_down_freq': 0
+            })
+
+    return features
+
+
+class FeatureProcessor:
+    """Enhanced feature processing pipeline with proper scaling and normalization."""
+
+    def __init__(self):
+        self.scalers = {}
+        self.feature_groups = {
+            'volume': ['avg_pass_attempts', 'rz_pass_attempts_pg', 'avg_rush_attempts', 'team_plays_per_game'],
+            'efficiency': ['rush_yards_per_attempt', 'td_rate_rz', 'def_completion_rate_allowed', 'inside_10_pass_rate'],
+            'vegas': ['team_implied_total', 'spread', 'game_total', 'favorite_margin'],
+            'defensive': ['def_pressure_rate', 'def_int_rate', 'def_completion_yards_allowed', 'def_qb_fps_allowed_avg'],
+            'pace': ['combined_pace', 'team_pass_rate', 'opponent_pass_rate', 'team_third_down_freq']
+        }
+
+    def process_features(self, features_dict: Dict[str, float]) -> Dict[str, float]:
+        """Process features with position-specific enhancements."""
+
+        # Handle missing values with position-specific defaults
+        features_dict = self._impute_missing_values(features_dict)
+
+        # Create ratio and interaction features
+        features_dict = self._create_interaction_features(features_dict)
+
+        # Apply feature transformations
+        features_dict = self._apply_transformations(features_dict)
+
+        return features_dict
+
+    def _impute_missing_values(self, features: Dict[str, float]) -> Dict[str, float]:
+        """Handle missing values with intelligent defaults."""
+        defaults = {
+            'team_implied_total': 21.0,  # Average NFL team score
+            'game_total': 42.0,          # Average total
+            'spread': 0.0,               # Pick'em game
+            'avg_pass_attempts': 35.0,   # League average
+            'avg_rush_attempts': 4.0,    # QB rushing attempts
+            'def_completion_rate_allowed': 0.65,  # League average
+            'def_pressure_rate': 0.25,   # League average pressure rate
+            'combined_pace': 65.0,       # Average plays per game
+            'team_pass_rate': 0.60       # Average pass rate
+        }
+
+        for key, default_value in defaults.items():
+            if key not in features or features[key] is None or np.isnan(features[key]):
+                features[key] = default_value
+
+        return features
+
+    def _create_interaction_features(self, features: Dict[str, float]) -> Dict[str, float]:
+        """Create interaction features that capture QB-specific relationships."""
+
+        # Vegas x Volume interactions
+        features['implied_total_x_attempts'] = features.get('team_implied_total', 0) * features.get('avg_pass_attempts', 0)
+        features['spread_x_rush_attempts'] = abs(features.get('spread', 0)) * features.get('avg_rush_attempts', 0)
+
+        # Efficiency ratios
+        if features.get('avg_pass_attempts', 0) > 0:
+            features['rz_pass_rate'] = features.get('rz_pass_attempts_pg', 0) / features.get('avg_pass_attempts', 1)
+        else:
+            features['rz_pass_rate'] = 0
+
+        # Defensive matchup interactions
+        features['def_weakness_score'] = (
+            features.get('def_completion_rate_allowed', 0) * features.get('def_completion_yards_allowed', 0) *
+            (1 - features.get('def_pressure_rate', 0))
+        )
+
+        # Game script features
+        if features.get('spread', 0) < -3:  # Big favorite
+            features['positive_game_script'] = 1
+            features['rush_game_script_boost'] = features.get('avg_rush_attempts', 0) * 0.2
+        elif features.get('spread', 0) > 7:  # Big underdog
+            features['positive_game_script'] = -1
+            features['rush_game_script_boost'] = features.get('avg_rush_attempts', 0) * -0.1
+        else:
+            features['positive_game_script'] = 0
+            features['rush_game_script_boost'] = 0
+
+        # Pace matchups
+        pace_diff = features.get('team_plays_per_game', 65) - features.get('opponent_plays_per_game', 65)
+        features['pace_advantage'] = pace_diff / 65.0  # Normalized pace advantage
+
+        return features
+
+    def _apply_transformations(self, features: Dict[str, float]) -> Dict[str, float]:
+        """Apply mathematical transformations to improve feature distributions."""
+
+        # Log transform for right-skewed features (add 1 to handle zeros)
+        log_features = ['team_implied_total', 'game_total', 'avg_pass_attempts', 'combined_pace']
+        for feature in log_features:
+            if feature in features and features[feature] > 0:
+                features[f'{feature}_log'] = np.log1p(features[feature])
+
+        # Square root transform for moderately skewed features
+        sqrt_features = ['favorite_margin', 'avg_rush_attempts']
+        for feature in sqrt_features:
+            if feature in features and features[feature] >= 0:
+                features[f'{feature}_sqrt'] = np.sqrt(features[feature])
+
+        # Polynomial features for key predictors
+        if 'team_implied_total' in features:
+            itt = features['team_implied_total']
+            features['team_implied_total_squared'] = itt ** 2
+            features['team_implied_total_cubed'] = itt ** 3
+
+        # Boolean transformations
+        features['is_high_total'] = 1 if features.get('game_total', 0) > 47 else 0
+        features['is_road_favorite'] = 1 if features.get('spread', 0) < -3 and not features.get('is_home', 0) else 0
+        features['has_rush_upside'] = 1 if features.get('avg_rush_attempts', 0) > 6 else 0
+
+        return features
+
+
+def create_comprehensive_qb_features(db_path: str, player_id: int, game_id: str) -> Dict[str, float]:
+    """Create comprehensive QB feature set using all optimization guide recommendations."""
+
+    # Get basic game info
+    with sqlite3.connect(db_path) as conn:
+        game_info_query = """
+            SELECT g.home_team_id, g.away_team_id, p.team_id
+            FROM games g, players p
+            WHERE g.id = ? AND p.id = ?
+        """
+        result = conn.execute(game_info_query, (game_id, player_id)).fetchone()
+
+        if not result:
+            return {}
+
+        home_team_id, away_team_id, team_id = result
+        is_home = team_id == home_team_id
+        opponent_id = away_team_id if is_home else home_team_id
+
+    # Extract all feature categories
+    vegas_features = extract_vegas_features(db_path, game_id, team_id, is_home)
+    volume_features = extract_volume_features(db_path, player_id, game_id)
+    rushing_features = extract_qb_rushing_features(db_path, player_id, game_id)
+    opponent_features = extract_opponent_features(db_path, opponent_id, 'QB')
+    pace_features = extract_pace_features(db_path, team_id, opponent_id)
+
+    # Combine all features
+    all_features = {
+        **vegas_features,
+        **volume_features,
+        **rushing_features,
+        **opponent_features,
+        **pace_features
+    }
+
+    # Add contextual features
+    all_features['is_home'] = 1 if is_home else 0
+
+    # Process features through enhanced pipeline
+    processor = FeatureProcessor()
+    processed_features = processor.process_features(all_features)
+
+    return processed_features
+
 
 class ProgressDisplay:
     """Simple progress display that updates in place."""
@@ -200,6 +663,22 @@ DB_SCHEMA = {
             special_teams_tds INTEGER DEFAULT 0,
             fantasy_points REAL DEFAULT 0.0,
             UNIQUE(team_abbr, game_id)
+        )
+    ''',
+    'historical_ownership': '''
+        CREATE TABLE IF NOT EXISTS historical_ownership (
+            id INTEGER PRIMARY KEY,
+            contest_date TEXT,
+            slate_type TEXT,
+            player_id INTEGER,
+            actual_ownership REAL,
+            projected_ownership REAL,
+            salary INTEGER,
+            projected_points REAL,
+            actual_points REAL,
+            contest_entries INTEGER,
+            FOREIGN KEY (player_id) REFERENCES players (id),
+            UNIQUE(contest_date, slate_type, player_id)
         )
     ''',
     'play_by_play': '''

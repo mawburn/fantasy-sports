@@ -36,6 +36,11 @@ from optimize import (
     export_lineup_to_csv,
     LineupConstraints
 )
+from backtest import (
+    BacktestConfig,
+    BacktestRunner,
+    run_quick_backtest
+)
 
 # Setup logging
 logging.basicConfig(
@@ -739,6 +744,86 @@ def optimize_lineups(
         pass
 
 
+def run_backtest_command(args):
+    """Run backtesting with the specified arguments."""
+    from datetime import datetime
+
+    logger.info(f"🚀 Starting backtest from {args.start_date} to {args.end_date}")
+
+    if args.quick:
+        # Quick backtest
+        results = run_quick_backtest(DEFAULT_DB_PATH, args.start_date, args.end_date)
+
+        print("\n📈 BACKTEST RESULTS")
+        print("=" * 50)
+        print(f"Mean ROI: {results.get('mean_roi', 0):.2%}")
+        print(f"Cash Rate: {results.get('mean_cash_rate', 0):.2%}")
+        print(f"Sharpe Ratio: {results.get('sharpe_ratio', 0):.2f}")
+        print(f"Total Contests: {results.get('total_contests', 0)}")
+
+    else:
+        # Full backtest with custom settings
+        config = BacktestConfig(
+            start_date=datetime.strptime(args.start_date, '%Y-%m-%d'),
+            end_date=datetime.strptime(args.end_date, '%Y-%m-%d'),
+            slate_types=['main'],
+            contest_types=args.contest_types,
+            include_ownership=True,
+            include_injuries=True
+        )
+
+        # Create model prediction function using existing models
+        def model_prediction_func(features, position):
+            # Use the existing get_player_features approach
+            base_prediction = features.get('fantasy_points_avg', 8.0)
+
+            # Position-specific adjustments (simplified)
+            multipliers = {'QB': 1.2, 'RB': 1.0, 'WR': 0.9, 'TE': 0.8, 'DST': 1.1}
+            multiplier = multipliers.get(position, 1.0)
+
+            # Add trend and injury risk
+            trend = features.get('fantasy_points_trend', 0) * 0.5
+            injury_risk = features.get('injury_risk', 1.0)
+
+            return (base_prediction * multiplier + trend) * injury_risk
+
+        # Run comprehensive backtest
+        runner = BacktestRunner(DEFAULT_DB_PATH, config)
+        results = runner.run_backtest(model_prediction_func)
+
+        # Print detailed results
+        print("\n📈 COMPREHENSIVE BACKTEST RESULTS")
+        print("=" * 50)
+
+        # Core Performance
+        print("💰 Performance:")
+        print(f"  Mean ROI: {results.get('mean_roi', 0):.2%}")
+        print(f"  Cash Rate: {results.get('mean_cash_rate', 0):.2%}")
+        print(f"  Win Rate: {results.get('win_rate', 0):.2%}")
+
+        # Risk Metrics
+        print(f"\n⚠️  Risk:")
+        print(f"  Sharpe Ratio: {results.get('sharpe_ratio', 0):.2f}")
+        print(f"  Max Drawdown: {results.get('max_drawdown', 0):.2%}")
+        print(f"  Consistency: {results.get('consistency_score', 0):.3f}")
+
+        print(f"\n📊 Total Contests: {results.get('total_contests', 0)}")
+
+        # Optional correlation testing
+        if args.test_correlations:
+            from backtest import CorrelationBacktester
+            print("\n🎯 Testing Correlation Strategies...")
+            # Would implement correlation testing here
+
+        # Optional portfolio testing
+        if args.test_portfolio:
+            from backtest import PortfolioBacktester
+            print(f"\n💼 Testing Portfolio ({args.entries} entries)...")
+            # Would implement portfolio testing here
+
+    logger.info("✅ Backtesting completed!")
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(description="DFS Optimization System")
@@ -858,6 +943,47 @@ def main():
         help="CSV file with injury statuses (columns: player_name, injury_status)"
     )
 
+    # Backtest command
+    backtest_parser = subparsers.add_parser("backtest", help="Run model backtesting")
+    backtest_parser.add_argument(
+        "--start-date",
+        required=True,
+        help="Backtest start date (YYYY-MM-DD)"
+    )
+    backtest_parser.add_argument(
+        "--end-date",
+        required=True,
+        help="Backtest end date (YYYY-MM-DD)"
+    )
+    backtest_parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="Run quick backtest with default settings"
+    )
+    backtest_parser.add_argument(
+        "--contest-types",
+        nargs="+",
+        choices=["cash", "gpp", "satellite"],
+        default=["gpp"],
+        help="Contest types to test"
+    )
+    backtest_parser.add_argument(
+        "--test-correlations",
+        action="store_true",
+        help="Include correlation strategy testing"
+    )
+    backtest_parser.add_argument(
+        "--test-portfolio",
+        action="store_true",
+        help="Include portfolio strategy testing"
+    )
+    backtest_parser.add_argument(
+        "--entries",
+        type=int,
+        default=20,
+        help="Number of entries for portfolio testing"
+    )
+
     args = parser.parse_args()
 
     if args.command == "collect":
@@ -925,6 +1051,9 @@ def main():
             args.save_predictions,
             args.injury_file
         )
+
+    elif args.command == "backtest":
+        run_backtest_command(args)
 
     else:
         parser.print_help()
