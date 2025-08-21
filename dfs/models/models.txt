@@ -1,26 +1,21 @@
 QB:
-- Neural: R²: 0.3317
-- Ensemble: MAE=6.082, R²=0.342
+- Neural: MAE=15.341, R²=-2.309
+- Ensemble: MAE=6.650, R²=0.308
 - Model Type: Neural + XGBoost Ensemble
 
 RB:
-- Neural: R²: 0.3532, MAE=4.671 (IMPROVED from 0.3495!)
-- Model Type: Neural Network Only (enhanced with research-based features)
-- Status: Successfully enhanced with Phase 4B research features
+- Neural: MAE=9.122, R²=-1.143
+- Model Type: Neural Network Only
 
 WR:
-- Neural: R²: 0.2414
-- Ensemble: MAE=5.116, R²=0.246
+- Neural: MAE=5.629, R²=0.232
+- Ensemble: MAE=5.382, R²=0.247
 - Model Type: Neural + XGBoost Ensemble
 
 TE:
-- Neural: R²: 0.2473
-- Ensemble: MAE=3.861, R²=0.278
+- Neural: MAE=3.864, R²=0.260
+- Ensemble: MAE=4.135, R²=0.248
 - Model Type: Neural + XGBoost Ensemble
 
 DST:
-- CatBoost: R²: 0.012, MAE=3.915
-- Model Type: CatBoost Only (winner over LightGBM comparison)
-- LightGBM tested: R²: 0.006, MAE=3.924 (CatBoost performed better)
-- Previous Neural: R²: -1.193 (replaced due to severe overfitting)
-- Improvement: +1.205 R² improvement vs neural network
+- CatBoost: MAE=3.905, R²=0.008
