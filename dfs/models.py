@@ -41,7 +41,7 @@ except ImportError:
     logger.warning("XGBoost not available.")
 
 try:
-    from catboost import CatBoostRegressor
+    from catboost import CatBoostRegressor, CatBoostClassifier
     HAS_CATBOOST = True
 except ImportError:
     HAS_CATBOOST = False
@@ -133,6 +133,813 @@ class TrainingResult:
     training_samples: int
     validation_samples: int
     feature_count: int
+
+
+class LRFinder:
+    """Learning Rate Range Test implementation for finding optimal learning rates."""
+
+    def __init__(self, model: nn.Module, optimizer: optim.Optimizer, criterion: nn.Module, device: torch.device):
+        """Initialize LR Finder.
+
+        Args:
+            model: PyTorch model to test
+            optimizer: Optimizer instance
+            criterion: Loss function
+            device: Device (cpu/cuda/mps)
+        """
+        self.model = model
+        self.optimizer = optimizer
+        self.criterion = criterion
+        self.device = device
+
+        # Store initial model state
+        self.initial_state = model.state_dict()
+
+        # Results storage
+        self.learning_rates = []
+        self.losses = []
+        self.smoothed_losses = []
+
+    def range_test(self, train_loader: DataLoader, start_lr: float = 1e-8,
+                   end_lr: float = 1.0, num_iter: int = 100, smooth_f: float = 0.98) -> float:
+        """Run learning rate range test.
+
+        Args:
+            train_loader: Training data loader
+            start_lr: Starting learning rate
+            end_lr: Ending learning rate
+            num_iter: Number of iterations
+            smooth_f: Smoothing factor for loss
+
+        Returns:
+            Optimal learning rate
+        """
+        # Reset model to initial state
+        self.model.load_state_dict(self.initial_state)
+        self.model.train()
+
+        # Calculate LR schedule (exponential)
+        lr_schedule = np.logspace(np.log10(start_lr), np.log10(end_lr), num_iter)
+
+        # Initialize tracking
+        avg_loss = 0.0
+        best_loss = float('inf')
+        batch_num = 0
+
+        # Create iterator from data loader
+        data_iter = iter(train_loader)
+
+        for iteration, lr in enumerate(lr_schedule):
+            # Get batch
+            try:
+                batch = next(data_iter)
+            except StopIteration:
+                data_iter = iter(train_loader)
+                batch = next(data_iter)
+
+            # Unpack batch
+            if len(batch) == 2:
+                inputs, targets = batch
+            else:
+                inputs, targets = batch[0], batch[1]
+
+            inputs = inputs.to(self.device)
+            targets = targets.to(self.device)
+
+            # Update learning rate
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = lr
+
+            # Forward pass
+            self.optimizer.zero_grad()
+            outputs = self.model(inputs)
+
+            # Handle dictionary outputs (for models with mean/floor/ceiling)
+            if isinstance(outputs, dict):
+                outputs = outputs['mean']
+
+            # Ensure outputs and targets have same shape
+            if outputs.dim() > 1 and outputs.size(-1) == 1:
+                outputs = outputs.squeeze(-1)
+
+            loss = self.criterion(outputs, targets)
+
+            # Compute smoothed loss
+            if iteration == 0:
+                avg_loss = loss.item()
+            else:
+                avg_loss = smooth_f * avg_loss + (1 - smooth_f) * loss.item()
+
+            # Track best loss
+            if avg_loss < best_loss:
+                best_loss = avg_loss
+
+            # Store results
+            self.learning_rates.append(lr)
+            self.losses.append(loss.item())
+            self.smoothed_losses.append(avg_loss)
+
+            # Check for explosion (loss > 4x best loss)
+            if avg_loss > 4 * best_loss:
+                logger.info(f"Loss exploded at LR={lr:.2e}, stopping early")
+                break
+
+            # Backward pass
+            loss.backward()
+            self.optimizer.step()
+
+            batch_num += 1
+
+        # Find optimal learning rate
+        optimal_lr = self._find_optimal_lr()
+
+        # Reset model to initial state
+        self.model.load_state_dict(self.initial_state)
+
+        return optimal_lr
+
+    def _find_optimal_lr(self) -> float:
+        """Find optimal learning rate from test results.
+
+        Returns:
+            Optimal learning rate (steepest decline point)
+        """
+        if len(self.smoothed_losses) < 10:
+            # Not enough data, return conservative estimate
+            return self.learning_rates[len(self.learning_rates) // 2]
+
+        # Calculate gradients of smoothed loss curve
+        gradients = np.gradient(self.smoothed_losses)
+
+        # Find steepest negative gradient (biggest improvement)
+        min_gradient_idx = np.argmin(gradients)
+
+        # Get learning rate at that point
+        optimal_lr = self.learning_rates[min_gradient_idx]
+
+        # Apply safety factor (use slightly lower LR for stability)
+        safety_factor = 0.5
+        optimal_lr *= safety_factor
+
+        logger.info(f"Found optimal LR: {optimal_lr:.2e} (steepest decline at index {min_gradient_idx})")
+
+        return optimal_lr
+
+    def plot_results(self, save_path: str = None):
+        """Plot learning rate vs loss curve.
+
+        Args:
+            save_path: Optional path to save plot
+        """
+        try:
+            import matplotlib.pyplot as plt
+
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+
+            # Plot raw losses
+            ax1.semilogx(self.learning_rates, self.losses, label='Raw Loss')
+            ax1.semilogx(self.learning_rates, self.smoothed_losses, label='Smoothed Loss')
+            ax1.set_xlabel('Learning Rate')
+            ax1.set_ylabel('Loss')
+            ax1.set_title('Learning Rate Range Test')
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+
+            # Plot gradients
+            gradients = np.gradient(self.smoothed_losses)
+            ax2.semilogx(self.learning_rates, gradients)
+            ax2.set_xlabel('Learning Rate')
+            ax2.set_ylabel('Loss Gradient')
+            ax2.set_title('Loss Gradient (for finding optimal LR)')
+            ax2.grid(True, alpha=0.3)
+            ax2.axhline(y=0, color='r', linestyle='--', alpha=0.5)
+
+            # Mark optimal LR
+            optimal_lr = self._find_optimal_lr()
+            for ax in [ax1, ax2]:
+                ax.axvline(x=optimal_lr, color='g', linestyle='--',
+                          label=f'Optimal LR={optimal_lr:.2e}')
+                ax.legend()
+
+            plt.tight_layout()
+
+            if save_path:
+                plt.savefig(save_path)
+                logger.info(f"LR finder plot saved to {save_path}")
+            else:
+                plt.show()
+
+        except ImportError:
+            logger.warning("Matplotlib not available for plotting")
+
+
+class BatchSizeOptimizer:
+    """Optimizer for finding optimal batch size considering memory constraints."""
+
+    def __init__(self, model: nn.Module, device: torch.device):
+        """Initialize batch size optimizer.
+
+        Args:
+            model: PyTorch model
+            device: Device (cpu/cuda/mps)
+        """
+        self.model = model
+        self.device = device
+
+    def find_max_batch_size(self, sample_input: torch.Tensor, max_batch_size: int = 512,
+                            min_batch_size: int = 8) -> int:
+        """Find maximum batch size that fits in memory.
+
+        Args:
+            sample_input: Sample input tensor (single example)
+            max_batch_size: Maximum batch size to test
+            min_batch_size: Minimum batch size
+
+        Returns:
+            Maximum feasible batch size
+        """
+        # Binary search for max batch size
+        left, right = min_batch_size, max_batch_size
+        max_feasible = min_batch_size
+
+        while left <= right:
+            mid = (left + right) // 2
+
+            if self._test_batch_size(sample_input, mid):
+                max_feasible = mid
+                left = mid + 1
+            else:
+                right = mid - 1
+
+        logger.info(f"Maximum feasible batch size: {max_feasible}")
+        return max_feasible
+
+    def _test_batch_size(self, sample_input: torch.Tensor, batch_size: int) -> bool:
+        """Test if batch size fits in memory.
+
+        Args:
+            sample_input: Sample input tensor
+            batch_size: Batch size to test
+
+        Returns:
+            True if batch size fits, False otherwise
+        """
+        try:
+            # Create batch
+            batch = sample_input.unsqueeze(0).repeat(batch_size, 1)
+            batch = batch.to(self.device)
+
+            # Forward pass
+            self.model.eval()
+            with torch.no_grad():
+                output = self.model(batch)
+
+            # Clean up
+            del batch
+            del output
+
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
+            elif self.device.type == "mps":
+                # MPS doesn't have explicit cache clearing
+                pass
+
+            return True
+
+        except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
+            if "out of memory" in str(e).lower():
+                logger.debug(f"Batch size {batch_size} caused OOM")
+
+                # Clean up
+                if self.device.type == "cuda":
+                    torch.cuda.empty_cache()
+
+                return False
+            else:
+                raise
+
+    def optimize_batch_size(self, train_loader: DataLoader, val_loader: DataLoader,
+                           model_trainer, batch_sizes: List[int] = None,
+                           epochs_per_test: int = 50) -> int:
+        """Find optimal batch size by testing performance.
+
+        Args:
+            train_loader: Training data loader (will be recreated with different batch sizes)
+            val_loader: Validation data loader
+            model_trainer: Model trainer instance with train method
+            batch_sizes: List of batch sizes to test (default: [16, 32, 64, 128, 256])
+            epochs_per_test: Number of epochs to train for each batch size
+
+        Returns:
+            Optimal batch size
+        """
+        if batch_sizes is None:
+            batch_sizes = [16, 32, 64, 128, 256]
+
+        # Get sample input for memory testing
+        sample_batch = next(iter(train_loader))
+        if len(sample_batch) == 2:
+            sample_input = sample_batch[0][0]
+        else:
+            sample_input = sample_batch[0][0]
+
+        # Find max feasible batch size
+        max_feasible = self.find_max_batch_size(sample_input)
+
+        # Filter batch sizes to feasible ones
+        feasible_batch_sizes = [bs for bs in batch_sizes if bs <= max_feasible]
+
+        if not feasible_batch_sizes:
+            logger.warning(f"No feasible batch sizes found, using minimum: {min(batch_sizes)}")
+            return min(batch_sizes)
+
+        results = {}
+
+        for batch_size in feasible_batch_sizes:
+            logger.info(f"Testing batch size: {batch_size}")
+
+            # Store original epochs setting
+            original_epochs = model_trainer.epochs
+            model_trainer.epochs = epochs_per_test
+            model_trainer.batch_size = batch_size
+
+            # Train with this batch size
+            try:
+                # Get training data
+                train_dataset = train_loader.dataset
+                val_dataset = val_loader.dataset
+
+                # Create new loaders with test batch size
+                test_train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+                test_val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+                # Train for limited epochs
+                result = model_trainer._train_epochs(test_train_loader, test_val_loader, epochs_per_test)
+
+                # Store result (use validation loss as metric)
+                results[batch_size] = result['val_loss']
+
+                logger.info(f"Batch size {batch_size}: val_loss={result['val_loss']:.4f}")
+
+            except Exception as e:
+                logger.warning(f"Failed to test batch size {batch_size}: {e}")
+                results[batch_size] = float('inf')
+
+            # Restore original epochs
+            model_trainer.epochs = original_epochs
+
+        # Find best batch size (lowest validation loss)
+        best_batch_size = min(results.keys(), key=lambda k: results[k])
+
+        logger.info(f"Optimal batch size: {best_batch_size} (val_loss={results[best_batch_size]:.4f})")
+
+        return best_batch_size
+
+
+# Only import optuna if available
+try:
+    import optuna
+    from optuna.trial import Trial
+    HAS_OPTUNA = True
+
+    class HyperparameterTuner:
+        """Joint hyperparameter optimization using Optuna."""
+
+        def __init__(self, model_class, model_config: ModelConfig,
+                     X_train: np.ndarray, y_train: np.ndarray,
+                     X_val: np.ndarray, y_val: np.ndarray):
+            """Initialize hyperparameter tuner.
+
+            Args:
+                model_class: Model class to optimize
+                model_config: Model configuration
+                X_train: Training features
+                y_train: Training targets
+                X_val: Validation features
+                y_val: Validation targets
+            """
+            self.model_class = model_class
+            self.model_config = model_config
+            self.X_train = X_train
+            self.y_train = y_train
+            self.X_val = X_val
+            self.y_val = y_val
+
+            # Store best results
+            self.best_params = None
+            self.best_score = None
+
+        def objective(self, trial: Trial) -> float:
+            """Optuna objective function.
+
+            Args:
+                trial: Optuna trial
+
+            Returns:
+                Validation R² score (to maximize)
+            """
+            # Suggest hyperparameters
+            lr = trial.suggest_float('learning_rate', 1e-6, 1e-2, log=True)
+            batch_size = trial.suggest_categorical('batch_size', [16, 32, 64, 128, 256])
+
+            # Position-specific hyperparameter ranges
+            position = self.model_config.position.upper()
+
+            if position == 'QB':
+                hidden_size = trial.suggest_categorical('hidden_size', [128, 256, 512])
+                dropout_rate = trial.suggest_float('dropout_rate', 0.1, 0.5)
+                num_layers = trial.suggest_int('num_layers', 2, 4)
+            elif position in ['RB', 'WR']:
+                hidden_size = trial.suggest_categorical('hidden_size', [64, 128, 256])
+                dropout_rate = trial.suggest_float('dropout_rate', 0.1, 0.4)
+                num_layers = trial.suggest_int('num_layers', 2, 3)
+            elif position == 'TE':
+                hidden_size = trial.suggest_categorical('hidden_size', [32, 64, 128])
+                dropout_rate = trial.suggest_float('dropout_rate', 0.1, 0.3)
+                num_layers = trial.suggest_int('num_layers', 1, 3)
+            else:  # DST
+                # DST uses CatBoost, different hyperparameters
+                if HAS_CATBOOST:
+                    learning_rate = trial.suggest_float('learning_rate', 0.01, 0.3, log=True)
+                    depth = trial.suggest_int('depth', 4, 10)
+                    iterations = trial.suggest_int('iterations', 100, 1000)
+                    l2_leaf_reg = trial.suggest_float('l2_leaf_reg', 1, 10)
+
+                    # Create and train CatBoost model with suggested params
+                    from catboost import CatBoostRegressor
+                    model = CatBoostRegressor(
+                        learning_rate=learning_rate,
+                        depth=depth,
+                        iterations=iterations,
+                        l2_leaf_reg=l2_leaf_reg,
+                        verbose=False,
+                        random_seed=42
+                    )
+
+                    model.fit(self.X_train, self.y_train,
+                             eval_set=(self.X_val, self.y_val),
+                             early_stopping_rounds=50,
+                             verbose=False)
+
+                    # Evaluate
+                    from sklearn.metrics import r2_score
+                    val_pred = model.predict(self.X_val)
+                    val_r2 = r2_score(self.y_val, val_pred)
+
+                    return val_r2
+                else:
+                    return 0.0
+
+            # Create model with suggested hyperparameters
+            model = self.model_class(self.model_config)
+            model.learning_rate = lr
+            model.batch_size = batch_size
+
+            # For neural network models, update architecture params
+            if hasattr(model, 'hidden_size'):
+                model.hidden_size = hidden_size
+            if hasattr(model, 'dropout_rate'):
+                model.dropout_rate = dropout_rate
+            if hasattr(model, 'num_layers'):
+                model.num_layers = num_layers
+
+            # Train for limited epochs (100 for speed)
+            model.epochs = 100
+
+            try:
+                # Train model
+                result = model.train(self.X_train, self.y_train, self.X_val, self.y_val)
+
+                # Return validation R² (to maximize)
+                return result.val_r2
+
+            except Exception as e:
+                logger.warning(f"Trial failed: {e}")
+                return -1.0  # Return bad score for failed trials
+
+        def optimize(self, n_trials: int = 20, timeout: int = 3600) -> Dict[str, Any]:
+            """Run hyperparameter optimization.
+
+            Args:
+                n_trials: Number of trials to run
+                timeout: Maximum time in seconds
+
+            Returns:
+                Dictionary with best hyperparameters
+            """
+            # Create study
+            study = optuna.create_study(
+                direction='maximize',
+                sampler=optuna.samplers.TPESampler(seed=42),
+                pruner=optuna.pruners.MedianPruner(n_startup_trials=5)
+            )
+
+            # Optimize
+            study.optimize(
+                self.objective,
+                n_trials=n_trials,
+                timeout=timeout,
+                show_progress_bar=True
+            )
+
+            # Store best results
+            self.best_params = study.best_params
+            self.best_score = study.best_value
+
+            logger.info(f"Best hyperparameters: {self.best_params}")
+            logger.info(f"Best validation R²: {self.best_score:.4f}")
+
+            return self.best_params
+
+        def get_importance(self, study: optuna.Study) -> Dict[str, float]:
+            """Get hyperparameter importance.
+
+            Args:
+                study: Completed Optuna study
+
+            Returns:
+                Dictionary of parameter importances
+            """
+            try:
+                from optuna.importance import get_param_importances
+                importance = get_param_importances(study)
+                return importance
+            except ImportError:
+                logger.warning("Optuna importance module not available")
+                return {}
+
+except ImportError:
+    HAS_OPTUNA = False
+    logger.warning("Optuna not available. Joint hyperparameter optimization disabled.")
+
+
+class HyperparameterValidator:
+    """Validation and A/B testing for hyperparameter optimization."""
+
+    def __init__(self, model_class, model_config: ModelConfig):
+        """Initialize hyperparameter validator.
+
+        Args:
+            model_class: Model class to validate
+            model_config: Model configuration
+        """
+        self.model_class = model_class
+        self.model_config = model_config
+        self.results = {}
+
+    def ab_test(self, X_train: np.ndarray, y_train: np.ndarray,
+                X_val: np.ndarray, y_val: np.ndarray,
+                baseline_params: Dict[str, Any],
+                optimized_params: Dict[str, Any],
+                num_runs: int = 3) -> Dict[str, Any]:
+        """Perform A/B testing between baseline and optimized hyperparameters.
+
+        Args:
+            X_train: Training features
+            y_train: Training targets
+            X_val: Validation features
+            y_val: Validation targets
+            baseline_params: Baseline hyperparameters
+            optimized_params: Optimized hyperparameters
+            num_runs: Number of runs for each configuration
+
+        Returns:
+            Dictionary with comparison results
+        """
+        baseline_results = []
+        optimized_results = []
+
+        logger.info(f"Starting A/B test for {self.model_config.position} model")
+        logger.info(f"Baseline params: {baseline_params}")
+        logger.info(f"Optimized params: {optimized_params}")
+
+        # Run baseline configuration
+        for run in range(num_runs):
+            logger.info(f"Running baseline configuration (run {run + 1}/{num_runs})")
+
+            model = self.model_class(self.model_config)
+
+            # Apply baseline parameters
+            for param, value in baseline_params.items():
+                if hasattr(model, param):
+                    setattr(model, param, value)
+
+            # Train with reduced epochs for speed
+            model.epochs = min(model.epochs, 200)
+
+            start_time = time.time()
+            result = model.train(X_train, y_train, X_val, y_val)
+            training_time = time.time() - start_time
+
+            baseline_results.append({
+                'val_mae': result.val_mae,
+                'val_r2': result.val_r2,
+                'val_rmse': result.val_rmse,
+                'training_time': training_time
+            })
+
+        # Run optimized configuration
+        for run in range(num_runs):
+            logger.info(f"Running optimized configuration (run {run + 1}/{num_runs})")
+
+            model = self.model_class(self.model_config)
+
+            # Apply optimized parameters
+            for param, value in optimized_params.items():
+                if hasattr(model, param):
+                    setattr(model, param, value)
+
+            # Train with reduced epochs for speed
+            model.epochs = min(model.epochs, 200)
+
+            start_time = time.time()
+            result = model.train(X_train, y_train, X_val, y_val)
+            training_time = time.time() - start_time
+
+            optimized_results.append({
+                'val_mae': result.val_mae,
+                'val_r2': result.val_r2,
+                'val_rmse': result.val_rmse,
+                'training_time': training_time
+            })
+
+        # Calculate statistics
+        baseline_stats = self._calculate_stats(baseline_results)
+        optimized_stats = self._calculate_stats(optimized_results)
+
+        # Calculate improvements
+        improvements = {
+            'r2_improvement': ((optimized_stats['mean_r2'] - baseline_stats['mean_r2']) /
+                              max(abs(baseline_stats['mean_r2']), 0.001)) * 100,
+            'mae_improvement': ((baseline_stats['mean_mae'] - optimized_stats['mean_mae']) /
+                               max(baseline_stats['mean_mae'], 0.001)) * 100,
+            'rmse_improvement': ((baseline_stats['mean_rmse'] - optimized_stats['mean_rmse']) /
+                                max(baseline_stats['mean_rmse'], 0.001)) * 100,
+            'training_time_change': ((optimized_stats['mean_time'] - baseline_stats['mean_time']) /
+                                    max(baseline_stats['mean_time'], 0.001)) * 100
+        }
+
+        # Determine if optimization is beneficial
+        decision = self._make_decision(improvements)
+
+        results = {
+            'baseline': baseline_stats,
+            'optimized': optimized_stats,
+            'improvements': improvements,
+            'decision': decision,
+            'num_runs': num_runs
+        }
+
+        self._print_results(results)
+
+        return results
+
+    def _calculate_stats(self, results: List[Dict[str, float]]) -> Dict[str, float]:
+        """Calculate statistics from multiple runs.
+
+        Args:
+            results: List of result dictionaries
+
+        Returns:
+            Dictionary with mean and std statistics
+        """
+        import numpy as np
+
+        mae_values = [r['val_mae'] for r in results]
+        r2_values = [r['val_r2'] for r in results]
+        rmse_values = [r['val_rmse'] for r in results]
+        time_values = [r['training_time'] for r in results]
+
+        return {
+            'mean_mae': np.mean(mae_values),
+            'std_mae': np.std(mae_values),
+            'mean_r2': np.mean(r2_values),
+            'std_r2': np.std(r2_values),
+            'mean_rmse': np.mean(rmse_values),
+            'std_rmse': np.std(rmse_values),
+            'mean_time': np.mean(time_values),
+            'std_time': np.std(time_values)
+        }
+
+    def _make_decision(self, improvements: Dict[str, float]) -> str:
+        """Make decision based on improvements.
+
+        Args:
+            improvements: Dictionary with improvement percentages
+
+        Returns:
+            Decision string (ADOPT, REJECT, or MARGINAL)
+        """
+        # Decision criteria (as per guide: >10% improvement)
+        if improvements['r2_improvement'] > 10:
+            return "ADOPT - Significant R² improvement"
+        elif improvements['r2_improvement'] > 5 and improvements['mae_improvement'] > 5:
+            return "ADOPT - Good overall improvement"
+        elif improvements['r2_improvement'] > 0 and improvements['training_time_change'] < 50:
+            return "MARGINAL - Small improvement, reasonable training time"
+        else:
+            return "REJECT - No significant improvement"
+
+    def _print_results(self, results: Dict[str, Any]):
+        """Print formatted A/B test results.
+
+        Args:
+            results: Results dictionary
+        """
+        print("\n" + "="*60)
+        print(f"A/B Test Results for {self.model_config.position} Model")
+        print("="*60)
+
+        print("\nBaseline Performance:")
+        baseline = results['baseline']
+        print(f"  R²: {baseline['mean_r2']:.4f} ± {baseline['std_r2']:.4f}")
+        print(f"  MAE: {baseline['mean_mae']:.3f} ± {baseline['std_mae']:.3f}")
+        print(f"  RMSE: {baseline['mean_rmse']:.3f} ± {baseline['std_rmse']:.3f}")
+        print(f"  Training Time: {baseline['mean_time']:.1f}s ± {baseline['std_time']:.1f}s")
+
+        print("\nOptimized Performance:")
+        optimized = results['optimized']
+        print(f"  R²: {optimized['mean_r2']:.4f} ± {optimized['std_r2']:.4f}")
+        print(f"  MAE: {optimized['mean_mae']:.3f} ± {optimized['std_mae']:.3f}")
+        print(f"  RMSE: {optimized['mean_rmse']:.3f} ± {optimized['std_rmse']:.3f}")
+        print(f"  Training Time: {optimized['mean_time']:.1f}s ± {optimized['std_time']:.1f}s")
+
+        print("\nImprovements:")
+        improvements = results['improvements']
+        print(f"  R² Improvement: {improvements['r2_improvement']:+.1f}%")
+        print(f"  MAE Improvement: {improvements['mae_improvement']:+.1f}%")
+        print(f"  RMSE Improvement: {improvements['rmse_improvement']:+.1f}%")
+        print(f"  Training Time Change: {improvements['training_time_change']:+.1f}%")
+
+        print(f"\nDecision: {results['decision']}")
+        print("="*60)
+
+    def cross_validate_hyperparameters(self, X: np.ndarray, y: np.ndarray,
+                                      hyperparameters: Dict[str, Any],
+                                      cv_folds: int = 5) -> Dict[str, Any]:
+        """Cross-validate hyperparameters to ensure robustness.
+
+        Args:
+            X: Features
+            y: Targets
+            hyperparameters: Hyperparameters to validate
+            cv_folds: Number of cross-validation folds
+
+        Returns:
+            Dictionary with cross-validation results
+        """
+        from sklearn.model_selection import KFold
+
+        kf = KFold(n_splits=cv_folds, shuffle=True, random_state=42)
+        cv_results = []
+
+        logger.info(f"Starting {cv_folds}-fold cross-validation for {self.model_config.position}")
+
+        for fold, (train_idx, val_idx) in enumerate(kf.split(X), 1):
+            logger.info(f"Training fold {fold}/{cv_folds}")
+
+            X_train, X_val = X[train_idx], X[val_idx]
+            y_train, y_val = y[train_idx], y[val_idx]
+
+            # Create and configure model
+            model = self.model_class(self.model_config)
+
+            # Apply hyperparameters
+            for param, value in hyperparameters.items():
+                if hasattr(model, param):
+                    setattr(model, param, value)
+
+            # Train with reduced epochs for speed
+            model.epochs = min(model.epochs, 200)
+
+            # Train model
+            result = model.train(X_train, y_train, X_val, y_val)
+
+            cv_results.append({
+                'fold': fold,
+                'val_mae': result.val_mae,
+                'val_r2': result.val_r2,
+                'val_rmse': result.val_rmse
+            })
+
+        # Calculate aggregate statistics
+        mae_values = [r['val_mae'] for r in cv_results]
+        r2_values = [r['val_r2'] for r in cv_results]
+        rmse_values = [r['val_rmse'] for r in cv_results]
+
+        summary = {
+            'mean_mae': np.mean(mae_values),
+            'std_mae': np.std(mae_values),
+            'mean_r2': np.mean(r2_values),
+            'std_r2': np.std(r2_values),
+            'mean_rmse': np.mean(rmse_values),
+            'std_rmse': np.std(rmse_values),
+            'fold_results': cv_results
+        }
+
+        logger.info(f"Cross-validation complete: R²={summary['mean_r2']:.4f}±{summary['std_r2']:.4f}")
+
+        return summary
 
 
 class CorrelationFeatureExtractor:
@@ -627,10 +1434,182 @@ class BaseNeuralModel(ABC):
         self.y_mean = None
         self.y_std = None
 
+        # Default hyperparameters (can be overridden by tuning)
+        self.batch_size = 32
+        self.learning_rate = 0.0001
+        self.epochs = 500
+
     @abstractmethod
     def build_network(self, input_size: int) -> nn.Module:
         """Build position-specific neural network architecture."""
         pass
+
+    def find_optimal_lr(self, X_train: np.ndarray, y_train: np.ndarray,
+                       start_lr: float = 1e-8, end_lr: float = 1.0,
+                       num_iter: int = 100) -> float:
+        """Find optimal learning rate using LR range test.
+
+        Args:
+            X_train: Training features
+            y_train: Training targets
+            start_lr: Starting learning rate
+            end_lr: Ending learning rate
+            num_iter: Number of iterations
+
+        Returns:
+            Optimal learning rate
+        """
+        # Prepare data
+        X_train = np.nan_to_num(X_train, nan=0.0, posinf=0.0, neginf=0.0)
+        y_train = np.nan_to_num(y_train, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Build network if not already built
+        if self.network is None:
+            input_size = X_train.shape[1]
+            self.network = self.build_network(input_size)
+            self.network.to(self.device)
+
+        # Create temporary optimizer for LR finding
+        temp_optimizer = optim.AdamW(self.network.parameters(), lr=start_lr)
+
+        # Create data loader
+        X_tensor = torch.tensor(X_train, dtype=torch.float32).to(self.device)
+        y_tensor = torch.tensor(y_train, dtype=torch.float32).to(self.device)
+        dataset = TensorDataset(X_tensor, y_tensor)
+        loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
+
+        # Run LR finder
+        lr_finder = LRFinder(self.network, temp_optimizer, self.criterion, self.device)
+        optimal_lr = lr_finder.range_test(loader, start_lr, end_lr, num_iter)
+
+        # Save plot if matplotlib available
+        try:
+            import matplotlib
+            matplotlib.use('Agg')  # Non-interactive backend
+            lr_finder.plot_results(save_path=f"lr_finder_{self.config.position}.png")
+        except ImportError:
+            pass
+
+        logger.info(f"Found optimal learning rate for {self.config.position}: {optimal_lr:.2e}")
+        return optimal_lr
+
+    def optimize_batch_size(self, X_train: np.ndarray, y_train: np.ndarray,
+                           X_val: np.ndarray, y_val: np.ndarray,
+                           batch_sizes: List[int] = None) -> int:
+        """Find optimal batch size considering memory and performance.
+
+        Args:
+            X_train: Training features
+            y_train: Training targets
+            X_val: Validation features
+            y_val: Validation targets
+            batch_sizes: List of batch sizes to test
+
+        Returns:
+            Optimal batch size
+        """
+        # Build network if not already built
+        if self.network is None:
+            input_size = X_train.shape[1]
+            self.network = self.build_network(input_size)
+            self.network.to(self.device)
+
+        # Create batch size optimizer
+        batch_optimizer = BatchSizeOptimizer(self.network, self.device)
+
+        # Create data loaders for testing
+        X_train_tensor = torch.tensor(X_train, dtype=torch.float32).to(self.device)
+        y_train_tensor = torch.tensor(y_train, dtype=torch.float32).to(self.device)
+        X_val_tensor = torch.tensor(X_val, dtype=torch.float32).to(self.device)
+        y_val_tensor = torch.tensor(y_val, dtype=torch.float32).to(self.device)
+
+        train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
+        val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
+
+        # Create initial loaders (will be recreated with different batch sizes)
+        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+        val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+
+        # Find optimal batch size
+        optimal_batch_size = batch_optimizer.optimize_batch_size(
+            train_loader, val_loader, self, batch_sizes, epochs_per_test=50
+        )
+
+        logger.info(f"Found optimal batch size for {self.config.position}: {optimal_batch_size}")
+        return optimal_batch_size
+
+    def tune_hyperparameters(self, X_train: np.ndarray, y_train: np.ndarray,
+                            X_val: np.ndarray, y_val: np.ndarray,
+                            n_trials: int = 20, timeout: int = 3600) -> Dict[str, Any]:
+        """Perform joint hyperparameter optimization using Optuna.
+
+        Args:
+            X_train: Training features
+            y_train: Training targets
+            X_val: Validation features
+            y_val: Validation targets
+            n_trials: Number of optimization trials
+            timeout: Maximum time in seconds
+
+        Returns:
+            Dictionary with best hyperparameters
+        """
+        if not HAS_OPTUNA:
+            logger.warning("Optuna not available, using default hyperparameters")
+            return {
+                'learning_rate': self.learning_rate,
+                'batch_size': self.batch_size
+            }
+
+        # Create hyperparameter tuner
+        tuner = HyperparameterTuner(
+            self.__class__, self.config,
+            X_train, y_train, X_val, y_val
+        )
+
+        # Run optimization
+        best_params = tuner.optimize(n_trials, timeout)
+
+        # Apply best parameters
+        self.learning_rate = best_params.get('learning_rate', self.learning_rate)
+        self.batch_size = best_params.get('batch_size', self.batch_size)
+
+        # Apply architecture params if present
+        if 'hidden_size' in best_params and hasattr(self, 'hidden_size'):
+            self.hidden_size = best_params['hidden_size']
+        if 'dropout_rate' in best_params and hasattr(self, 'dropout_rate'):
+            self.dropout_rate = best_params['dropout_rate']
+        if 'num_layers' in best_params and hasattr(self, 'num_layers'):
+            self.num_layers = best_params['num_layers']
+
+        logger.info(f"Applied best hyperparameters for {self.config.position}: {best_params}")
+        return best_params
+
+    def _train_epochs(self, train_loader: DataLoader, val_loader: DataLoader,
+                      epochs: int) -> Dict[str, float]:
+        """Train for a specific number of epochs (used by batch size optimizer).
+
+        Args:
+            train_loader: Training data loader
+            val_loader: Validation data loader
+            epochs: Number of epochs to train
+
+        Returns:
+            Dictionary with final metrics
+        """
+        best_val_loss = float('inf')
+
+        for epoch in range(epochs):
+            train_loss = self._train_epoch(train_loader)
+            val_loss = self._validate_epoch(val_loader)
+
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+
+        return {
+            'train_loss': train_loss,
+            'val_loss': best_val_loss
+        }
 
     def _normalize_features(self, X: np.ndarray, is_training: bool = True) -> np.ndarray:
         """Apply feature normalization using stored parameters."""
@@ -1258,109 +2237,315 @@ class RBNetwork(nn.Module):
     def __init__(self, input_size: int):
         super().__init__()
 
-        # Optimized for Apple Silicon MPS
-        self.feature_layers = nn.Sequential(
-            nn.Linear(input_size, 96),
-            nn.LayerNorm(96),  # LayerNorm works better than BatchNorm on MPS
-            nn.ReLU(),
+        # RB-specific architecture with proper depth
+        self.input_norm = nn.LayerNorm(input_size)
+
+        self.feature_extractor = nn.Sequential(
+            nn.Linear(input_size, 256),
+            nn.LayerNorm(256),
+            nn.LeakyReLU(0.01),
             nn.Dropout(0.25),
-            nn.Linear(96, 48),
-            nn.LayerNorm(48),
-            nn.ReLU(),
+
+            nn.Linear(256, 128),
+            nn.LayerNorm(128),
+            nn.LeakyReLU(0.01),
             nn.Dropout(0.2),
+
+            nn.Linear(128, 64),
+            nn.LayerNorm(64),
+            nn.LeakyReLU(0.01),
+            nn.Dropout(0.15),
         )
 
-        self.workload_branch = nn.Sequential(nn.Linear(48, 24), nn.ReLU(), nn.Dropout(0.15))
-        self.efficiency_branch = nn.Sequential(nn.Linear(48, 16), nn.ReLU(), nn.Dropout(0.1))
-
-        self.output = nn.Sequential(
-            nn.Linear(24 + 16, 16),
-            nn.ReLU(),
-            nn.Linear(16, 1),
-            nn.Sigmoid()
+        # Attention mechanism for feature importance
+        self.attention = nn.Sequential(
+            nn.Linear(64, 32),
+            nn.Tanh(),
+            nn.Linear(32, 64),
+            nn.Softmax(dim=1)
         )
+
+        # Output heads
+        self.mean_head = nn.Sequential(
+            nn.Linear(64, 32),
+            nn.LeakyReLU(0.01),
+            nn.Linear(32, 1)
+        )
+
+        self.std_head = nn.Sequential(
+            nn.Linear(64, 32),
+            nn.LeakyReLU(0.01),
+            nn.Linear(32, 1),
+            nn.Softplus()  # Ensure positive std
+        )
+
+        # Initialize weights properly
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            nn.init.xavier_normal_(module.weight)
+            if module.bias is not None:
+                nn.init.constant_(module.bias, 0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        features = self.feature_layers(x)
-        workload_features = self.workload_branch(features)
-        efficiency_features = self.efficiency_branch(features)
-        combined = torch.cat([workload_features, efficiency_features], dim=1)
-        output = self.output(combined)
-        scaled_output = output * POSITION_RANGES['RB']
-        return scaled_output
+        x = self.input_norm(x)
+        features = self.feature_extractor(x)
+
+        # Apply attention
+        attention_weights = self.attention(features)
+        features = features * attention_weights
+
+        mean = self.mean_head(features).squeeze(-1)
+        std = self.std_head(features).squeeze(-1)
+
+        # Ensure realistic ranges for RB
+        mean = torch.clamp(mean, min=3, max=35)
+        std = torch.clamp(std, min=1, max=8)
+
+        # Return mean for compatibility with existing code
+        return mean
 
 
 class WRNetwork(nn.Module):
-    """Neural network architecture for wide receiver predictions."""
+    """Enhanced neural network architecture for wide receiver predictions."""
 
     def __init__(self, input_size: int):
         super().__init__()
 
-        self.main_layers = nn.Sequential(
-            nn.Linear(input_size, 112),
-            nn.ReLU(),
+        # WR-specific architecture with target share focus
+        self.input_norm = nn.LayerNorm(input_size)
+
+        # Enhanced feature extraction for WR complexity
+        self.feature_extractor = nn.Sequential(
+            nn.Linear(input_size, 320),  # Larger for WR feature complexity
+            nn.LayerNorm(320),
+            nn.LeakyReLU(0.01),
             nn.Dropout(0.3),
-            nn.Linear(112, 56),
-            nn.ReLU(),
+
+            nn.Linear(320, 160),
+            nn.LayerNorm(160),
+            nn.LeakyReLU(0.01),
             nn.Dropout(0.25),
-            nn.Linear(56, 28),
-            nn.ReLU(),
+
+            nn.Linear(160, 80),
+            nn.LayerNorm(80),
+            nn.LeakyReLU(0.01),
             nn.Dropout(0.2),
         )
 
-        self.target_branch = nn.Sequential(nn.Linear(28, 16), nn.ReLU(), nn.Dropout(0.15))
-        self.bigplay_branch = nn.Sequential(nn.Linear(28, 12), nn.ReLU(), nn.Dropout(0.1))
-
-        self.output = nn.Sequential(
-            nn.Linear(16 + 12, 16),
-            nn.ReLU(),
-            nn.Linear(16, 1),
-            nn.Sigmoid()
+        # Specialized branches for WR prediction
+        self.target_branch = nn.Sequential(
+            nn.Linear(80, 40),
+            nn.LayerNorm(40),
+            nn.LeakyReLU(0.01),
+            nn.Dropout(0.15),
+            nn.Linear(40, 24)
         )
 
+        self.efficiency_branch = nn.Sequential(
+            nn.Linear(80, 32),
+            nn.LayerNorm(32),
+            nn.LeakyReLU(0.01),
+            nn.Dropout(0.1),
+            nn.Linear(32, 16)
+        )
+
+        self.game_script_branch = nn.Sequential(
+            nn.Linear(80, 24),
+            nn.LayerNorm(24),
+            nn.LeakyReLU(0.01),
+            nn.Dropout(0.1),
+            nn.Linear(24, 12)
+        )
+
+        # Attention mechanism for feature importance
+        self.attention = nn.Sequential(
+            nn.Linear(52, 26),  # 24 + 16 + 12 = 52
+            nn.Tanh(),
+            nn.Linear(26, 52),
+            nn.Softmax(dim=1)
+        )
+
+        # Output heads
+        self.mean_head = nn.Sequential(
+            nn.Linear(52, 32),
+            nn.LeakyReLU(0.01),
+            nn.Linear(32, 1)
+        )
+
+        self.std_head = nn.Sequential(
+            nn.Linear(52, 32),
+            nn.LeakyReLU(0.01),
+            nn.Linear(32, 1),
+            nn.Softplus()
+        )
+
+        # Initialize weights
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            nn.init.xavier_normal_(module.weight)
+            if module.bias is not None:
+                nn.init.constant_(module.bias, 0)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        main_features = self.main_layers(x)
-        target_features = self.target_branch(main_features)
-        bigplay_features = self.bigplay_branch(main_features)
-        combined = torch.cat([target_features, bigplay_features], dim=1)
-        output = self.output(combined)
-        scaled_output = output * POSITION_RANGES['WR']
-        return scaled_output
+        x = self.input_norm(x)
+        features = self.feature_extractor(x)
+
+        # Specialized branches
+        target_features = self.target_branch(features)
+        efficiency_features = self.efficiency_branch(features)
+        script_features = self.game_script_branch(features)
+
+        # Combine branches
+        combined = torch.cat([target_features, efficiency_features, script_features], dim=1)
+
+        # Apply attention
+        attention_weights = self.attention(combined)
+        attended_features = combined * attention_weights
+
+        mean = self.mean_head(attended_features).squeeze(-1)
+        std = self.std_head(attended_features).squeeze(-1)
+
+        # Ensure realistic ranges for WR - NO SIGMOID COMPRESSION
+        mean = torch.clamp(mean, min=2, max=40)
+        std = torch.clamp(std, min=1, max=10)
+
+        # Return mean for compatibility with existing code
+        return mean
 
 
 class TENetwork(nn.Module):
-    """Neural network architecture for tight end predictions."""
+    """Enhanced multi-head neural network architecture for tight end predictions.
+
+    Specialized architecture focusing on:
+    - Red zone target share (most predictive for TEs)
+    - Formation usage (2-TE sets vs single TE)
+    - Game script dependency (receiving vs blocking role)
+    - Opponent-specific matchups
+    """
 
     def __init__(self, input_size: int):
         super().__init__()
 
-        # Optimized for Apple Silicon MPS
-        self.feature_layers = nn.Sequential(
-            nn.Linear(input_size, 80),
-            nn.LayerNorm(80),  # LayerNorm works better than BatchNorm on MPS
+        # Multi-head architecture for TE-specific feature processing
+        # Red Zone/Target Branch - processes target share, red zone usage, goal line opportunities
+        self.redzone_branch = nn.Sequential(
+            nn.Linear(input_size, 64),
+            nn.LayerNorm(64),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(64, 32),
+            nn.LayerNorm(32),
+            nn.ReLU(),
+            nn.Dropout(0.15)
+        )
+
+        # Formation/Role Branch - processes snap share, blocking vs receiving role, two-TE sets
+        self.formation_branch = nn.Sequential(
+            nn.Linear(input_size, 64),
+            nn.LayerNorm(64),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(64, 32),
+            nn.LayerNorm(32),
+            nn.ReLU(),
+            nn.Dropout(0.15)
+        )
+
+        # Game Script Branch - processes team passing volume, game script factors, vegas correlation
+        self.script_branch = nn.Sequential(
+            nn.Linear(input_size, 64),
+            nn.LayerNorm(64),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(64, 32),
+            nn.LayerNorm(32),
+            nn.ReLU(),
+            nn.Dropout(0.15)
+        )
+
+        # Efficiency Branch - processes catch rate, YAC efficiency, ceiling indicators
+        self.efficiency_branch = nn.Sequential(
+            nn.Linear(input_size, 48),
+            nn.LayerNorm(48),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(48, 24),
+            nn.LayerNorm(24),
+            nn.ReLU(),
+            nn.Dropout(0.15)
+        )
+
+        # Attention mechanism for branch importance
+        self.attention = nn.MultiheadAttention(32, num_heads=4, batch_first=True)
+
+        # Combined processing after multi-head extraction
+        combined_size = 32 + 32 + 32 + 24  # Sum of branch outputs: 120
+        self.combination_layers = nn.Sequential(
+            nn.Linear(combined_size, 80),
+            nn.LayerNorm(80),
             nn.ReLU(),
             nn.Dropout(0.2),
             nn.Linear(80, 40),
             nn.LayerNorm(40),
             nn.ReLU(),
-            nn.Dropout(0.15),
-            nn.Linear(40, 20),
-            nn.LayerNorm(20),
-            nn.ReLU(),
-            nn.Dropout(0.1),
+            nn.Dropout(0.15)
         )
 
+        # Output layers - NO sigmoid compression (learned from optimization guide)
         self.output = nn.Sequential(
-            nn.Linear(20, 12),
+            nn.Linear(40, 20),
             nn.ReLU(),
-            nn.Linear(12, 1),
-            nn.Sigmoid()
+            nn.Linear(20, 10),
+            nn.ReLU(),
+            nn.Linear(10, 1),
+            # NO Sigmoid - allows full range output (2-40 points)
+            nn.ReLU()  # Ensures non-negative output
         )
+
+        # Initialize weights properly
+        self._init_weights()
+
+    def _init_weights(self):
+        """Initialize weights with Xavier/Glorot initialization for better gradient flow."""
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight, gain=1.0)
+                if module.bias is not None:
+                    # Small random bias initialization for diversity
+                    nn.init.uniform_(module.bias, -0.1, 0.1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        features = self.feature_layers(x)
-        output = self.output(features)
-        scaled_output = output * POSITION_RANGES['TE']
+        # Multi-head feature extraction
+        redzone_features = self.redzone_branch(x)        # [batch, 32]
+        formation_features = self.formation_branch(x)    # [batch, 32]
+        script_features = self.script_branch(x)          # [batch, 32]
+        efficiency_features = self.efficiency_branch(x)  # [batch, 24]
+
+        # Apply attention to the main predictive branches (redzone, formation, script)
+        # Stack the three 32-dim branches for attention
+        attention_input = torch.stack([redzone_features, formation_features, script_features], dim=1)  # [batch, 3, 32]
+        attended_features, attention_weights = self.attention(
+            attention_input, attention_input, attention_input
+        )
+        # Flatten attention output: [batch, 3, 32] -> [batch, 96]
+        attended_flat = attended_features.flatten(start_dim=1)
+
+        # Combine all features: attended (96) + efficiency (24) = 120 total
+        combined = torch.cat([attended_flat, efficiency_features], dim=1)
+
+        # Process combined features
+        processed = self.combination_layers(combined)
+
+        # Generate output with proper scaling (2-40 point range for TEs)
+        raw_output = self.output(processed)
+
+        # Apply scaling similar to other position networks for consistency
+        scaled_output = raw_output * POSITION_RANGES['TE']
+
         return scaled_output
 
 
@@ -1498,27 +2683,165 @@ class RBNeuralModel(BaseNeuralModel):
 
     def __init__(self, config: ModelConfig):
         super().__init__(config)
-        # PHASE 4B: Research-optimized RB training parameters (REVERT TO WORKING VERSION)
-        # Proven: R² = 0.3532, peaked at epoch 302/800
-        self.learning_rate = 0.00003  # Back to working learning rate
-        self.batch_size = 128         # Back to working batch size
-        self.epochs = 800             # Back to working epoch count
+        # Optimized RB training parameters
+        self.learning_rate = 0.00005  # Lower LR for RB stability
+        self.batch_size = 32          # Smaller batches for RB
+        self.epochs = 500             # Reduced epochs with better architecture
 
     def build_network(self, input_size: int) -> nn.Module:
         return RBNetwork(input_size)
 
+    def train_rb_model(self, X_train, y_train, X_val, y_val, salaries_train=None):
+        """Special training for RB models with validation."""
+
+        # Validate input data
+        assert y_train.min() >= 0, "Negative fantasy points in training"
+        assert y_train.max() <= 60, "Unrealistic max points in training"
+        assert y_train.std() > 2, "Insufficient variance in training labels"
+
+        # Add sample weights based on recency
+        sample_weights = np.ones(len(y_train))
+        # Weight recent games more heavily if week data is available
+        if len(X_train.shape) > 1 and X_train.shape[1] > 10:  # Assume week is in features
+            # Use simple time-based weighting
+            sample_weights = 1 + 0.1 * np.linspace(-0.5, 0.5, len(y_train))
+            sample_weights = np.clip(sample_weights, 0.5, 1.5)
+
+        # Custom loss for RB
+        def rb_loss_fn(predictions, targets):
+            if isinstance(predictions, dict):
+                mean_pred = predictions['mean']
+            else:
+                mean_pred = predictions
+
+            mean_loss = F.smooth_l1_loss(mean_pred, targets)
+
+            # Penalty for unrealistic predictions
+            range_penalty = torch.mean(
+                F.relu(3 - mean_pred) * 2 +  # Heavy penalty below 3
+                F.relu(mean_pred - 35) * 2   # Heavy penalty above 35
+            )
+
+            # Ensure proper variance
+            batch_std = torch.std(mean_pred)
+            variance_loss = F.relu(3 - batch_std) * 0.5
+
+            total_loss = mean_loss + 0.1 * range_penalty + variance_loss
+            return total_loss
+
+        # Override the criterion for RB
+        original_criterion = self.criterion
+        self.criterion = rb_loss_fn
+
+        # Train with lower LR
+        if self.optimizer is None:
+            self.optimizer = torch.optim.AdamW(
+                self.network.parameters(),
+                lr=self.learning_rate,
+                weight_decay=1e-4
+            )
+
+        # Train normally but with validation checks
+        try:
+            history = self.train(X_train, y_train, X_val, y_val)
+
+            # Validate final predictions
+            self.network.eval()
+            with torch.no_grad():
+                val_tensor = torch.FloatTensor(X_val).to(self.device)
+                val_preds = self.network(val_tensor)
+                val_preds_np = val_preds.cpu().numpy()
+
+                # Check predictions are reasonable
+                assert val_preds_np.min() >= 2, f"RB predictions too low: {val_preds_np.min()}"
+                assert val_preds_np.max() <= 40, f"RB predictions too high: {val_preds_np.max()}"
+                assert val_preds_np.std() > 2, f"RB predictions lack variance: {val_preds_np.std()}"
+
+            return history
+        finally:
+            # Restore original criterion
+            self.criterion = original_criterion
+
 
 class WRNeuralModel(BaseNeuralModel):
-    """Neural network model for wide receiver predictions."""
+    """Enhanced neural network model for wide receiver predictions with target share optimization."""
 
     def __init__(self, config: ModelConfig):
         super().__init__(config)
-        self.learning_rate = 0.0001   # Doubled from 0.00005 for better learning
-        self.batch_size = 64          # Smaller batch for more frequent updates
-        self.epochs = 600             # 3x more epochs for better convergence
+        # Optimized WR training parameters
+        self.learning_rate = 0.0001   # Higher LR for WR complexity
+        self.batch_size = 32          # Smaller batches for better gradients
+        self.epochs = 500             # Balanced epochs with better architecture
 
     def build_network(self, input_size: int) -> nn.Module:
         return WRNetwork(input_size)
+
+    def train_wr_model(self, X_train, y_train, X_val, y_val, salaries_train=None):
+        """Special training for WR models with target share validation."""
+
+        # Validate input data
+        assert y_train.min() >= 0, "Negative fantasy points in training"
+        assert y_train.max() <= 50, "Unrealistic max points for WR"
+        assert y_train.std() > 3, "Insufficient variance in WR training labels"
+
+        # Custom loss for WR with target share importance
+        def wr_loss_fn(predictions, targets):
+            if isinstance(predictions, dict):
+                mean_pred = predictions['mean']
+            else:
+                mean_pred = predictions
+
+            # Base loss
+            mean_loss = F.smooth_l1_loss(mean_pred, targets)
+
+            # WR-specific penalties
+            range_penalty = torch.mean(
+                F.relu(2 - mean_pred) * 3 +  # Heavy penalty below 2
+                F.relu(mean_pred - 40) * 2   # Heavy penalty above 40
+            )
+
+            # Target consistency - WRs should have reasonable variance
+            batch_std = torch.std(mean_pred)
+            variance_loss = F.relu(4 - batch_std) * 0.3  # WRs more volatile than RBs
+
+            # Ceiling preservation - some WRs should project high
+            ceiling_loss = F.relu(15 - torch.max(mean_pred)) * 0.1
+
+            total_loss = mean_loss + 0.1 * range_penalty + variance_loss + ceiling_loss
+            return total_loss
+
+        # Override criterion
+        original_criterion = self.criterion
+        self.criterion = wr_loss_fn
+
+        # WR-optimized training parameters
+        if self.optimizer is None:
+            self.optimizer = torch.optim.AdamW(
+                self.network.parameters(),
+                lr=self.learning_rate,
+                weight_decay=1e-5
+            )
+
+        # Train with validation
+        try:
+            history = self.train(X_train, y_train, X_val, y_val)
+
+            # Validate WR predictions
+            self.network.eval()
+            with torch.no_grad():
+                val_tensor = torch.FloatTensor(X_val).to(self.device)
+                val_preds = self.network(val_tensor)
+                val_preds_np = val_preds.cpu().numpy()
+
+                # WR validation checks
+                assert val_preds_np.min() >= 1, f"WR predictions too low: {val_preds_np.min()}"
+                assert val_preds_np.max() <= 45, f"WR predictions too high: {val_preds_np.max()}"
+                assert val_preds_np.std() > 3, f"WR predictions lack variance: {val_preds_np.std()}"
+                assert np.percentile(val_preds_np, 90) > 15, "No WR ceiling players projected"
+
+            return history
+        finally:
+            self.criterion = original_criterion
 
 
 class TENeuralModel(BaseNeuralModel):
@@ -1532,6 +2855,118 @@ class TENeuralModel(BaseNeuralModel):
 
     def build_network(self, input_size: int) -> nn.Module:
         return TENetwork(input_size)
+
+    def train_te_model(self, X_train, y_train, X_val, y_val, salaries_train=None):
+        """Specialized training for TE models focusing on TE-specific patterns."""
+
+        # Validate input data for TE-specific ranges
+        assert y_train.min() >= 0, "Negative fantasy points in training"
+        assert y_train.max() <= 50, "Unrealistic max points in training (TEs typically 2-35)"
+        assert y_train.std() > 1.5, "Insufficient variance in TE training labels"
+
+        # Special handling for zero variance issue (seen in performance log)
+        if y_train.std() < 1.0:
+            logger.warning(f"TE model has very low target variance: {y_train.std():.3f}")
+            # Add small amount of noise to break zero variance
+            noise = np.random.normal(0, 0.5, len(y_train))
+            y_train = y_train + noise
+            y_train = np.clip(y_train, 0, 50)  # Ensure valid range
+
+        # Sample weights emphasizing recent data and high-scoring games
+        sample_weights = np.ones(len(y_train))
+        # Weight higher-scoring games more (TEs have high ceiling variance)
+        high_score_mask = y_train > np.percentile(y_train, 70)
+        sample_weights[high_score_mask] *= 1.3
+
+        # Custom loss function for TE-specific characteristics
+        def te_loss_fn(predictions, targets):
+            if isinstance(predictions, dict):
+                mean_pred = predictions['mean']
+            else:
+                mean_pred = predictions
+
+            # Base loss - smooth L1 for robustness to outliers
+            mean_loss = F.smooth_l1_loss(mean_pred, targets)
+
+            # Range penalty for TE-appropriate scoring (2-35 points typically)
+            range_penalty = torch.mean(
+                F.relu(2 - mean_pred) * 3 +     # Heavy penalty below 2
+                F.relu(mean_pred - 40) * 2      # Moderate penalty above 40
+            )
+
+            # Ceiling preservation - TEs need ability to predict high scores (15+ points)
+            batch_mean = torch.mean(mean_pred)
+            ceiling_penalty = F.relu(4 - batch_mean) * 0.5  # Penalize if avg prediction too low
+
+            # Variance preservation - critical for TE position
+            batch_std = torch.std(mean_pred)
+            variance_penalty = F.relu(2 - batch_std) * 0.8  # TEs need at least 2-point std dev
+
+            # Red zone dependency - bonus for predicting TDs accurately
+            # Approximate TD prediction from points (6 points per TD)
+            estimated_tds = mean_pred / 15.0  # Rough estimate
+            td_regularization = torch.mean(torch.abs(estimated_tds - torch.round(estimated_tds)) * 0.1)
+
+            # Total loss combining all TE-specific factors
+            total_loss = (mean_loss +
+                         0.15 * range_penalty +
+                         0.1 * ceiling_penalty +
+                         0.2 * variance_penalty +
+                         0.05 * td_regularization)
+
+            return total_loss
+
+        # Override criterion for TE-specific training
+        original_criterion = self.criterion
+        self.criterion = te_loss_fn
+
+        # Optimizer with TE-tuned parameters
+        if self.optimizer is None:
+            self.optimizer = torch.optim.AdamW(
+                self.network.parameters(),
+                lr=self.learning_rate,
+                weight_decay=2e-4,  # Slightly higher regularization for complex TE architecture
+                betas=(0.9, 0.999)
+            )
+
+        # Add learning rate scheduler for better convergence
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer, mode='min', factor=0.7, patience=15, verbose=True
+        )
+
+        try:
+            # Train with validation monitoring
+            history = self.train(X_train, y_train, X_val, y_val)
+
+            # Post-training validation for TE-specific issues
+            self.network.eval()
+            with torch.no_grad():
+                val_tensor = torch.FloatTensor(X_val).to(self.device)
+                val_preds = self.network(val_tensor)
+                val_preds_np = val_preds.cpu().numpy()
+
+                # Check for zero variance issue (major problem in previous TE model)
+                pred_std = val_preds_np.std()
+                pred_mean = val_preds_np.mean()
+
+                logger.info(f"TE Validation - Mean: {pred_mean:.3f}, Std: {pred_std:.3f}, "
+                           f"Range: {val_preds_np.min():.3f}-{val_preds_np.max():.3f}")
+
+                # Strict validation checks
+                assert val_preds_np.min() >= 1.5, f"TE predictions too low: {val_preds_np.min()}"
+                assert val_preds_np.max() <= 45, f"TE predictions too high: {val_preds_np.max()}"
+                assert pred_std > 1.5, f"TE predictions lack variance (zero variance issue): {pred_std}"
+                assert not np.allclose(val_preds_np, val_preds_np[0]), "All predictions identical - model broken"
+
+                # Check for reasonable score distribution
+                high_score_count = np.sum(val_preds_np > 12)
+                assert high_score_count > len(val_preds_np) * 0.1, f"Too few high predictions: {high_score_count}/{len(val_preds_np)}"
+
+            return history
+
+        finally:
+            # Restore original criterion
+            self.criterion = original_criterion
 
 
 
@@ -1551,18 +2986,28 @@ class DEFCatBoostModel:
         """Train CatBoost model optimized for DST volatility."""
         start_time = time.time()
 
-        # CatBoost parameters optimized for small, volatile DST dataset
+        # Enhanced CatBoost parameters for DST with rich feature set (11 → 42 features)
         self.model = CatBoostRegressor(
-            iterations=500,              # More iterations for better performance
-            learning_rate=0.1,           # Higher learning rate for small dataset
-            depth=4,                     # Shallow trees to prevent overfitting
-            l2_leaf_reg=3,              # L2 regularization for stability
+            iterations=4000,             # More iterations needed for complex features
+            learning_rate=0.04,          # Lower LR for stable convergence with more features
+            depth=7,                     # Deeper trees to capture feature interactions
+            l2_leaf_reg=6,              # Stronger regularization to prevent overfitting
             random_seed=42,              # Reproducibility
-            loss_function='RMSE',        # Good for continuous targets
-            eval_metric='R2',           # Track R² directly
+            loss_function='MAE',         # MAE better for DST outliers vs RMSE
+            eval_metric='MAE',           # Primary metric for DST prediction
             use_best_model=True,         # Use best model from validation
-            verbose=50,                  # Progress updates
-            allow_writing_files=False    # No temp files
+            verbose=100,                 # Less frequent updates for longer training
+            allow_writing_files=False,   # No temp files
+            # Advanced parameters for enhanced model
+            bootstrap_type='Bayesian',   # Better uncertainty estimation
+            bagging_temperature=0.5,     # Reduce overfitting with Bayesian bootstrap
+            od_type='IncToDec',         # Overfitting detection
+            od_wait=50,                 # Wait period for overfitting detection
+            max_ctr_complexity=4,        # Handle categorical interactions better
+            model_size_reg=0.5,         # Regularize model complexity
+            # Feature interaction settings
+            min_data_in_leaf=3,         # Min samples per leaf (small for DST volatility)
+            leaf_estimation_iterations=5 # Better leaf value estimation
         )
 
         logger.info("Training CatBoost model for DST...")
@@ -1617,6 +3062,161 @@ class DEFCatBoostModel:
         logger.info(f"CatBoost training completed: MAE={val_mae:.3f}, R²={val_r2:.3f}")
 
         return result
+
+    def train_component_models(self, X: np.ndarray, y_components: dict, X_val: np.ndarray, y_val_components: dict) -> dict:
+        """Train component-based DST models (sacks, turnovers, PA, TDs) for enhanced predictions."""
+        logger.info("Training DST component models...")
+
+        component_models = {}
+        component_results = {}
+
+        # Component 1: Sacks Model (Poisson regression)
+        logger.info("Training sacks component model...")
+        sacks_model = CatBoostRegressor(
+            iterations=2000,
+            learning_rate=0.05,
+            depth=6,
+            l2_leaf_reg=4,
+            loss_function='Poisson',  # Poisson loss for count data
+            eval_metric='Poisson',
+            use_best_model=True,
+            random_seed=42,
+            verbose=False,
+            allow_writing_files=False,
+            early_stopping_rounds=100
+        )
+
+        sacks_model.fit(
+            X, y_components['sacks'],
+            eval_set=(X_val, y_val_components['sacks'])
+        )
+        component_models['sacks'] = sacks_model
+
+        # Component 2: Turnovers Model (Poisson regression)
+        logger.info("Training turnovers component model...")
+        turnovers_model = CatBoostRegressor(
+            iterations=2000,
+            learning_rate=0.05,
+            depth=6,
+            l2_leaf_reg=4,
+            loss_function='Poisson',  # Poisson for count data
+            eval_metric='Poisson',
+            use_best_model=True,
+            random_seed=42,
+            verbose=False,
+            allow_writing_files=False,
+            early_stopping_rounds=100
+        )
+
+        turnovers_model.fit(
+            X, y_components['turnovers'],
+            eval_set=(X_val, y_val_components['turnovers'])
+        )
+        component_models['turnovers'] = turnovers_model
+
+        # Component 3: Points Allowed Bucket Model (Multiclass)
+        logger.info("Training PA bucket component model...")
+        pa_model = CatBoostClassifier(
+            iterations=2000,
+            learning_rate=0.05,
+            depth=6,
+            l2_leaf_reg=4,
+            loss_function='MultiClass',
+            eval_metric='MultiClass',
+            use_best_model=True,
+            random_seed=42,
+            verbose=False,
+            allow_writing_files=False,
+            early_stopping_rounds=100
+        )
+
+        pa_model.fit(
+            X, y_components['pa_bucket'],
+            eval_set=(X_val, y_val_components['pa_bucket'])
+        )
+        component_models['pa_bucket'] = pa_model
+
+        # Component 4: Defensive TD Model (Binary classifier with class weighting)
+        logger.info("Training defensive TD component model...")
+        td_model = CatBoostClassifier(
+            iterations=2000,
+            learning_rate=0.05,
+            depth=6,
+            l2_leaf_reg=4,
+            loss_function='Logloss',
+            eval_metric='Logloss',
+            use_best_model=True,
+            random_seed=42,
+            verbose=False,
+            allow_writing_files=False,
+            early_stopping_rounds=100,
+            class_weights={0: 1, 1: 5}  # Handle imbalanced TD data
+        )
+
+        td_model.fit(
+            X, y_components['td'],
+            eval_set=(X_val, y_val_components['td'])
+        )
+        component_models['td'] = td_model
+
+        # Store component models
+        self.component_models = component_models
+
+        logger.info("DST component models training completed")
+        return component_models
+
+    def predict_components(self, X: np.ndarray) -> dict:
+        """Generate component-based predictions and combine into final DST score."""
+        if not hasattr(self, 'component_models') or not self.component_models:
+            raise ValueError("Component models must be trained before making component predictions")
+
+        # Get component predictions
+        sack_pred = self.component_models['sacks'].predict(X)
+        turnover_pred = self.component_models['turnovers'].predict(X)
+        pa_bucket_pred = self.component_models['pa_bucket'].predict(X)
+        td_prob = self.component_models['td'].predict_proba(X)[:, 1]  # Probability of TD
+
+        # Convert PA buckets to points using DraftKings scoring
+        def pa_bucket_to_points(bucket):
+            """Convert PA tier bucket to DraftKings points."""
+            pa_points_map = {
+                0: 10,    # 0 points allowed
+                1: 7,     # 1-6 points
+                2: 4,     # 7-13 points
+                3: 1,     # 14-20 points
+                4: 0,     # 21-27 points
+                5: -1,    # 28-34 points
+                6: -4     # 35+ points
+            }
+            return pa_points_map.get(int(bucket), 0)
+
+        # Calculate combined DST fantasy points
+        dst_points = []
+        for i in range(len(X)):
+            # DraftKings DST scoring formula
+            points = 0.0
+
+            # Sacks: 1 point each
+            points += sack_pred[i] * 1.0
+
+            # Turnovers: 2 points each (INT + FR)
+            points += turnover_pred[i] * 2.0
+
+            # Points allowed tier bonus
+            points += pa_bucket_to_points(pa_bucket_pred[i])
+
+            # Defensive TDs: 6 points each (weighted by probability)
+            points += td_prob[i] * 6.0
+
+            dst_points.append(points)
+
+        return {
+            'combined_points': np.array(dst_points),
+            'sacks': sack_pred,
+            'turnovers': turnover_pred,
+            'pa_bucket': pa_bucket_pred,
+            'td_probability': td_prob
+        }
 
     def predict(self, X: np.ndarray) -> PredictionResult:
         """Generate predictions with CatBoost."""
@@ -1888,6 +3488,66 @@ class EnsembleModel:
             validation_samples=len(X_val),
             feature_count=X_train_ensemble.shape[1]
         )
+
+    def tune_hyperparameters(self, X_train: np.ndarray, y_train: np.ndarray,
+                            X_val: np.ndarray, y_val: np.ndarray,
+                            n_trials: int = 20, timeout: int = 3600) -> Dict[str, Any]:
+        """Perform hyperparameter optimization for ensemble model.
+
+        First tunes the neural network, then uses default XGBoost parameters.
+
+        Args:
+            X_train: Training features
+            y_train: Training targets
+            X_val: Validation features
+            y_val: Validation targets
+            n_trials: Number of optimization trials
+            timeout: Maximum time in seconds
+
+        Returns:
+            Dictionary with best hyperparameters
+        """
+        logger.info(f"Tuning hyperparameters for {self.position} ensemble model...")
+
+        # First tune the neural network component
+        if hasattr(self.neural_model, 'tune_hyperparameters'):
+            nn_params = self.neural_model.tune_hyperparameters(
+                X_train, y_train, X_val, y_val, n_trials, timeout
+            )
+            logger.info(f"Neural network hyperparameters tuned: {nn_params}")
+        else:
+            logger.warning("Neural model doesn't support hyperparameter tuning")
+            nn_params = {}
+
+        # XGBoost hyperparameters are position-specific and fixed for now
+        # In a future version, we could also tune XGBoost parameters
+        xgb_params = {
+            'max_depth': 6,
+            'learning_rate': 0.1,
+            'subsample': 0.8,
+            'colsample_bytree': 0.8
+        }
+
+        if self.position == 'QB':
+            xgb_params.update({
+                'max_depth': 7,
+                'learning_rate': 0.05
+            })
+        elif self.position in ['RB', 'WR']:
+            xgb_params.update({
+                'max_depth': 6,
+                'learning_rate': 0.08
+            })
+        else:  # TE, DST
+            xgb_params.update({
+                'max_depth': 5,
+                'learning_rate': 0.1
+            })
+
+        # Return combined parameters
+        combined_params = {**nn_params, **xgb_params}
+        logger.info(f"Ensemble hyperparameters: {combined_params}")
+        return combined_params
 
     def predict(self, X: np.ndarray) -> PredictionResult:
         """Generate ensemble predictions."""

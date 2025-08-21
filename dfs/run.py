@@ -83,12 +83,21 @@ def get_position_specific_seasons(position: str, available_seasons: List[int]) -
     logger.info(f"Using {len(valid_seasons)} seasons for {position}: {valid_seasons}")
     return valid_seasons
 
-def train_models(seasons: List[int] = None, positions: List[str] = None):
+def train_models(seasons: List[int] = None, positions: List[str] = None,
+                tune_lr: bool = False, tune_batch_size: bool = False,
+                tune_all: bool = False, trials: int = 20,
+                override_lr: float = None, override_batch_size: int = None):
     """Train prediction models for specified positions using position-specific seasons.
 
     Args:
         seasons: List of seasons to use for training (if None, uses position-specific optimal ranges)
         positions: Specific positions to train (default: all)
+        tune_lr: Whether to find optimal learning rate
+        tune_batch_size: Whether to find optimal batch size
+        tune_all: Whether to perform full hyperparameter optimization
+        trials: Number of trials for hyperparameter optimization
+        override_lr: Override learning rate (if not tuning)
+        override_batch_size: Override batch size (if not tuning)
     """
     available_seasons = get_available_seasons()
 
@@ -133,6 +142,34 @@ def train_models(seasons: List[int] = None, positions: List[str] = None):
             split_idx = int(0.8 * len(X))
             X_train, X_val = X[:split_idx], X[split_idx:]
             y_train, y_val = y[:split_idx], y[split_idx:]
+
+            # Apply hyperparameter tuning if requested
+            if tune_all:
+                logger.info(f"Running full hyperparameter optimization for {position} ({trials} trials)...")
+                best_params = model.tune_hyperparameters(X_train, y_train, X_val, y_val, n_trials=trials)
+                logger.info(f"Best hyperparameters for {position}: {best_params}")
+            else:
+                # Apply individual tuning options
+                if tune_lr:
+                    logger.info(f"Finding optimal learning rate for {position}...")
+                    optimal_lr = model.find_optimal_lr(X_train, y_train)
+                    model.learning_rate = optimal_lr
+                    logger.info(f"Using optimal LR for {position}: {optimal_lr:.2e}")
+                
+                if tune_batch_size:
+                    logger.info(f"Finding optimal batch size for {position}...")
+                    optimal_batch_size = model.optimize_batch_size(X_train, y_train, X_val, y_val)
+                    model.batch_size = optimal_batch_size
+                    logger.info(f"Using optimal batch size for {position}: {optimal_batch_size}")
+                
+                # Apply manual overrides
+                if override_lr is not None:
+                    model.learning_rate = override_lr
+                    logger.info(f"Using override LR for {position}: {override_lr:.2e}")
+                
+                if override_batch_size is not None:
+                    model.batch_size = override_batch_size
+                    logger.info(f"Using override batch size for {position}: {override_batch_size}")
 
             # Train model
             result = model.train(X_train, y_train, X_val, y_val)
@@ -881,6 +918,37 @@ def main():
         choices=['QB', 'RB', 'WR', 'TE', 'DST'],
         help="Positions to train"
     )
+    train_parser.add_argument(
+        "--tune-lr",
+        action="store_true",
+        help="Find optimal learning rate using LR range test"
+    )
+    train_parser.add_argument(
+        "--tune-batch-size",
+        action="store_true",
+        help="Find optimal batch size considering memory constraints"
+    )
+    train_parser.add_argument(
+        "--tune-all",
+        action="store_true",
+        help="Perform full hyperparameter optimization with Optuna"
+    )
+    train_parser.add_argument(
+        "--trials",
+        type=int,
+        default=20,
+        help="Number of trials for hyperparameter optimization (default: 20)"
+    )
+    train_parser.add_argument(
+        "--lr",
+        type=float,
+        help="Override learning rate (if not tuning)"
+    )
+    train_parser.add_argument(
+        "--batch-size",
+        type=int,
+        help="Override batch size (if not tuning)"
+    )
 
     # Predict command
     predict_parser = subparsers.add_parser("predict", help="Generate player predictions")
@@ -1025,7 +1093,16 @@ def main():
             sys.exit(1)
 
     elif args.command == "train":
-        train_models(args.seasons, args.positions)
+        train_models(
+            seasons=args.seasons,
+            positions=args.positions,
+            tune_lr=args.tune_lr,
+            tune_batch_size=args.tune_batch_size,
+            tune_all=args.tune_all,
+            trials=args.trials,
+            override_lr=args.lr,
+            override_batch_size=args.batch_size
+        )
 
     elif args.command == "injury":
         manual_updates = {}

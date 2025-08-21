@@ -2294,6 +2294,843 @@ def get_player_vs_defense_features(
 
     return features
 
+def get_rb_specific_features(player_id, player_name, team_abbr, opponent_abbr, season, week, conn):
+    """Extract RB-specific features including red zone and receiving metrics."""
+    features = {}
+
+    try:
+        # Get recent games for rolling windows
+        recent_games = conn.execute("""
+            SELECT DISTINCT g.id
+            FROM games g
+            JOIN player_stats ps ON g.id = ps.game_id
+            WHERE ps.player_id = ?
+            AND (g.season < ? OR (g.season = ? AND g.week < ?))
+            ORDER BY g.season DESC, g.week DESC
+            LIMIT 5
+        """, (player_id, season, season, week)).fetchall()
+
+        if not recent_games:
+            return features
+
+        game_ids = [g[0] for g in recent_games]
+        game_id_placeholders = ','.join(['?' for _ in game_ids])
+
+        # Red zone and goal line stats from play_by_play
+        rz_query = f"""
+            SELECT
+                COUNT(CASE WHEN yardline_100 <= 20 THEN 1 END) as rz_attempts,
+                COUNT(CASE WHEN yardline_100 <= 10 THEN 1 END) as inside_10,
+                COUNT(CASE WHEN yardline_100 <= 5 THEN 1 END) as inside_5,
+                COUNT(CASE WHEN touchdown = 1 THEN 1 END) as tds,
+                COUNT(*) as total_attempts,
+                AVG(yards_gained) as avg_yards
+            FROM play_by_play
+            WHERE game_id IN ({game_id_placeholders})
+            AND rush_attempt = 1
+            AND description LIKE ?
+        """
+
+        rz_stats = conn.execute(rz_query, (*game_ids, f'%{player_name.split()[0]}%')).fetchone()
+
+        if rz_stats and rz_stats[4] > 0:  # Has attempts
+            features['rb_rz_attempts_pg'] = rz_stats[0] / len(game_ids)
+            features['rb_inside10_attempts_pg'] = rz_stats[1] / len(game_ids)
+            features['rb_inside5_attempts_pg'] = rz_stats[2] / len(game_ids)
+            features['rb_td_rate'] = rz_stats[3] / rz_stats[4] if rz_stats[4] > 0 else 0
+            features['rb_ypc'] = rz_stats[5] or 0
+
+        # Get team red zone attempts for share calculation
+        team_rz_query = f"""
+            SELECT COUNT(CASE WHEN yardline_100 <= 20 THEN 1 END) as team_rz
+            FROM play_by_play
+            WHERE game_id IN ({game_id_placeholders})
+            AND posteam = ?
+            AND rush_attempt = 1
+        """
+
+        team_rz = conn.execute(team_rz_query, (*game_ids, team_abbr)).fetchone()
+        if team_rz and team_rz[0] > 0 and 'rb_rz_attempts_pg' in features:
+            features['rb_rz_share'] = (features['rb_rz_attempts_pg'] * len(game_ids)) / team_rz[0]
+
+        # Volume and receiving stats from player_stats
+        volume_query = f"""
+            SELECT
+                AVG(rushing_attempts) as avg_rushes,
+                AVG(targets) as avg_targets,
+                AVG(receptions) as avg_rec,
+                AVG(rushing_attempts + receptions) as avg_touches,
+                MIN(rushing_attempts + receptions) as touch_floor,
+                MAX(rushing_attempts + receptions) as touch_ceiling,
+                AVG(rushing_yards) as avg_rush_yds,
+                AVG(receiving_yards) as avg_rec_yds,
+                AVG(rushing_tds + receiving_tds) as avg_tds
+            FROM player_stats
+            WHERE player_id = ?
+            AND game_id IN ({game_id_placeholders})
+        """
+
+        volume_stats = conn.execute(volume_query, (player_id, *game_ids)).fetchone()
+
+        if volume_stats:
+            features.update({
+                'rb_avg_rushes': volume_stats[0] or 0,
+                'rb_avg_targets': volume_stats[1] or 0,
+                'rb_avg_receptions': volume_stats[2] or 0,
+                'rb_avg_touches': volume_stats[3] or 0,
+                'rb_touch_floor': volume_stats[4] or 0,
+                'rb_touch_ceiling': volume_stats[5] or 0,
+                'rb_avg_rush_yards': volume_stats[6] or 0,
+                'rb_avg_rec_yards': volume_stats[7] or 0,
+                'rb_avg_total_tds': volume_stats[8] or 0
+            })
+
+        # Game script features from betting odds
+        game_script = conn.execute("""
+            SELECT
+                b.spread_favorite,
+                b.over_under_line,
+                CASE
+                    WHEN ht.abbreviation = ? THEN b.home_team_spread
+                    ELSE b.away_team_spread
+                END as team_spread
+            FROM games g
+            JOIN betting_odds b ON g.id = b.game_id
+            JOIN teams ht ON g.home_team_id = ht.id
+            JOIN teams at ON g.away_team_id = at.id
+            WHERE g.season = ? AND g.week = ?
+            AND (ht.abbreviation = ? OR at.abbreviation = ?)
+        """, (team_abbr, season, week, team_abbr, team_abbr)).fetchone()
+
+        if game_script:
+            features['rb_team_spread'] = game_script[2] or 0
+            features['rb_game_total'] = game_script[1] or 47
+            features['rb_implied_total'] = (game_script[1] / 2.0) - (game_script[2] / 2.0) if game_script[1] else 23.5
+            features['rb_positive_script'] = 1 if game_script[2] and game_script[2] < 0 else 0
+
+        # Opponent defense vs RB
+        opp_def = conn.execute("""
+            SELECT
+                AVG(ps.rushing_yards + ps.receiving_yards) as avg_yards_allowed,
+                AVG(ps.fantasy_points) as avg_fp_allowed
+            FROM player_stats ps
+            JOIN games g ON ps.game_id = g.id
+            JOIN teams t ON ps.team_id = t.id
+            JOIN players p ON ps.player_id = p.player_id
+            WHERE p.position = 'RB'
+            AND t.abbreviation != ?
+            AND (
+                (g.home_team_id = (SELECT id FROM teams WHERE abbreviation = ?) AND
+                 g.away_team_id = t.id) OR
+                (g.away_team_id = (SELECT id FROM teams WHERE abbreviation = ?) AND
+                 g.home_team_id = t.id)
+            )
+            AND g.season = ? AND g.week < ?
+            AND g.week >= ?
+        """, (opponent_abbr, opponent_abbr, opponent_abbr, season, week, max(1, week - 5))).fetchone()
+
+        if opp_def:
+            features['rb_opp_yards_allowed'] = opp_def[0] or 85
+            features['rb_opp_fp_allowed'] = opp_def[1] or 12
+
+    except Exception as e:
+        logger.error(f"Error extracting RB features: {e}")
+
+    return features
+
+def get_wr_specific_features(player_id, player_name, team_abbr, opponent_abbr, season, week, conn):
+    """Extract WR-specific features including target share and route metrics."""
+    features = {}
+
+    try:
+        # Get recent games for rolling windows
+        recent_games = conn.execute("""
+            SELECT DISTINCT g.id
+            FROM games g
+            JOIN player_stats ps ON g.id = ps.game_id
+            WHERE ps.player_id = ?
+            AND (g.season < ? OR (g.season = ? AND g.week < ?))
+            ORDER BY g.season DESC, g.week DESC
+            LIMIT 5
+        """, (player_id, season, season, week)).fetchall()
+
+        if not recent_games:
+            return features
+
+        game_ids = [g[0] for g in recent_games]
+        game_id_placeholders = ','.join(['?' for _ in game_ids])
+
+        # Target share and volume from player_stats
+        target_query = f"""
+            SELECT
+                AVG(targets) as avg_targets,
+                AVG(receptions) as avg_receptions,
+                AVG(receiving_yards) as avg_rec_yards,
+                AVG(receiving_tds) as avg_rec_tds,
+                MIN(targets) as target_floor,
+                MAX(targets) as target_ceiling,
+                AVG(CASE WHEN targets > 0 THEN receptions * 1.0 / targets ELSE 0.6 END) as catch_rate,
+                AVG(CASE WHEN receptions > 0 THEN receiving_yards * 1.0 / receptions ELSE 10 END) as yards_per_rec,
+                AVG(CASE WHEN targets > 0 THEN receiving_yards * 1.0 / targets ELSE 6 END) as yards_per_target
+            FROM player_stats
+            WHERE player_id = ?
+            AND game_id IN ({game_id_placeholders})
+        """
+
+        target_stats = conn.execute(target_query, (player_id, *game_ids)).fetchone()
+
+        if target_stats:
+            features.update({
+                'wr_avg_targets': target_stats[0] or 0,
+                'wr_avg_receptions': target_stats[1] or 0,
+                'wr_avg_rec_yards': target_stats[2] or 0,
+                'wr_avg_rec_tds': target_stats[3] or 0,
+                'wr_target_floor': target_stats[4] or 0,
+                'wr_target_ceiling': target_stats[5] or 0,
+                'wr_catch_rate': target_stats[6] or 0.6,
+                'wr_yards_per_rec': target_stats[7] or 10,
+                'wr_yards_per_target': target_stats[8] or 6
+            })
+
+        # Team target share calculation - simplified approach
+        team_targets_query = f"""
+            SELECT
+                AVG(total_team_targets) as avg_team_targets
+            FROM (
+                SELECT
+                    g.id,
+                    SUM(ps.targets) as total_team_targets
+                FROM games g
+                JOIN player_stats ps ON g.id = ps.game_id
+                JOIN players p ON ps.player_id = p.id
+                WHERE g.id IN ({game_id_placeholders})
+                AND p.position IN ('WR', 'TE', 'RB')
+                GROUP BY g.id
+            )
+        """
+
+        team_targets = conn.execute(team_targets_query, (*game_ids,)).fetchone()
+        if team_targets and team_targets[0] > 0 and 'wr_avg_targets' in features:
+            features['wr_target_share'] = features['wr_avg_targets'] / team_targets[0]
+
+        # Red zone targets from play_by_play
+        rz_targets_query = f"""
+            SELECT
+                COUNT(CASE WHEN yardline_100 <= 20 THEN 1 END) as rz_targets,
+                COUNT(CASE WHEN yardline_100 <= 10 THEN 1 END) as ez_targets,
+                8 as avg_air_yards,
+                4 as avg_yac
+            FROM play_by_play
+            WHERE game_id IN ({game_id_placeholders})
+            AND pass_attempt = 1
+            AND (receiver LIKE ? OR description LIKE ?)
+        """
+
+        rz_stats = conn.execute(rz_targets_query, (*game_ids, f'%{player_name.split()[0]}%', f'%{player_name.split()[0]}%')).fetchone()
+
+        if rz_stats:
+            features.update({
+                'wr_rz_targets_pg': (rz_stats[0] or 0) / len(game_ids),
+                'wr_ez_targets_pg': (rz_stats[1] or 0) / len(game_ids),
+                'wr_avg_air_yards': rz_stats[2] or 8,
+                'wr_avg_yac': rz_stats[3] or 4
+            })
+
+        # Game script features from betting odds
+        game_script = conn.execute("""
+            SELECT
+                b.over_under_line,
+                CASE
+                    WHEN ht.abbreviation = ? THEN b.home_team_spread
+                    ELSE b.away_team_spread
+                END as team_spread
+            FROM games g
+            JOIN betting_odds b ON g.id = b.game_id
+            JOIN teams ht ON g.home_team_id = ht.id
+            JOIN teams at ON g.away_team_id = at.id
+            WHERE g.season = ? AND g.week = ?
+            AND (ht.abbreviation = ? OR at.abbreviation = ?)
+        """, (team_abbr, season, week, team_abbr, team_abbr)).fetchone()
+
+        if game_script:
+            over_under = game_script[0] or 47
+            spread = game_script[1] or 0
+            implied_total = (over_under / 2.0) - (spread / 2.0)
+
+            features.update({
+                'wr_game_total': over_under,
+                'wr_team_spread': spread,
+                'wr_implied_total': implied_total,
+                'wr_shootout_game': 1 if over_under > 50 else 0,
+                'wr_pass_heavy_script': 1 if (spread > 7 or over_under > 50) else 0,
+                'wr_garbage_time_upside': 1 if (spread > 10 and over_under > 48) else 0
+            })
+
+        # Opponent pass defense - simplified query
+        opp_def = conn.execute("""
+            SELECT
+                AVG(ps.receiving_yards) as avg_yards_allowed,
+                AVG(ps.fantasy_points) as avg_fp_allowed,
+                COUNT(*) as games_played
+            FROM player_stats ps
+            JOIN games g ON ps.game_id = g.id
+            JOIN players p ON ps.player_id = p.id
+            WHERE p.position = 'WR'
+            AND g.season = ?
+            AND g.week < ?
+            AND g.week >= ?
+        """, (season, week, max(1, week - 5))).fetchone()
+
+        if opp_def and opp_def[2] > 0:  # Check we have data
+            features['wr_opp_yards_allowed'] = opp_def[0] or 65
+            features['wr_opp_fp_allowed'] = opp_def[1] or 10
+
+    except Exception as e:
+        logger.error(f"Error extracting WR features: {e}")
+
+    return features
+
+def get_te_specific_features(
+    player_id: int,
+    player_name: str,
+    team_abbr: str,
+    opponent_abbr: str,
+    season: int,
+    week: int,
+    conn: sqlite3.Connection,
+    lookback_weeks: int = 6
+) -> Dict[str, float]:
+    """Extract TE-specific features for enhanced prediction accuracy."""
+    features = {}
+    
+    try:
+        # 1. Red Zone Target Share (most predictive for TEs)
+        rz_query = """
+        SELECT 
+            COALESCE(SUM(CASE WHEN ps.targets > 0 AND ps.red_zone_targets > 0 THEN ps.red_zone_targets ELSE 0 END), 0) as player_rz_targets,
+            COALESCE(SUM(team_totals.total_rz_targets), 1) as team_rz_targets
+        FROM player_stats ps
+        JOIN games g ON ps.game_id = g.id
+        JOIN teams t ON ps.team_id = t.id
+        LEFT JOIN (
+            SELECT 
+                ps2.game_id, 
+                ps2.team_id,
+                SUM(CASE WHEN ps2.red_zone_targets > 0 THEN ps2.red_zone_targets ELSE 0 END) as total_rz_targets
+            FROM player_stats ps2 
+            GROUP BY ps2.game_id, ps2.team_id
+        ) team_totals ON ps.game_id = team_totals.game_id AND ps.team_id = team_totals.team_id
+        WHERE ps.player_id = ? AND t.team_abbr = ?
+            AND ps.season = ? AND ps.week BETWEEN ? AND ?
+        """
+        rz_params = (player_id, team_abbr, season, max(1, week-lookback_weeks), week-1)
+        rz_result = conn.execute(rz_query, rz_params).fetchone()
+        if rz_result:
+            player_rz, team_rz = rz_result
+            features['te_rz_target_share'] = player_rz / max(team_rz, 1)
+        else:
+            features['te_rz_target_share'] = 0.0
+
+        # 2. Two-TE Set Usage (formation-based opportunities)
+        formation_query = """
+        SELECT 
+            AVG(CASE WHEN ps.snaps > 0 THEN ps.snaps ELSE 0 END) as avg_snaps,
+            AVG(team_totals.te_snaps) as avg_team_te_snaps
+        FROM player_stats ps
+        JOIN games g ON ps.game_id = g.id
+        JOIN teams t ON ps.team_id = t.id
+        LEFT JOIN (
+            SELECT 
+                ps2.game_id, 
+                t2.id as team_id,
+                SUM(CASE WHEN p2.position = 'TE' AND ps2.snaps > 0 THEN ps2.snaps ELSE 0 END) as te_snaps
+            FROM player_stats ps2 
+            JOIN players p2 ON ps2.player_id = p2.id
+            JOIN teams t2 ON p2.team_id = t2.id
+            GROUP BY ps2.game_id, t2.id
+        ) team_totals ON ps.game_id = team_totals.game_id AND ps.team_id = team_totals.team_id
+        WHERE ps.player_id = ? AND t.team_abbr = ?
+            AND ps.season = ? AND ps.week BETWEEN ? AND ?
+        """
+        formation_result = conn.execute(formation_query, rz_params).fetchone()
+        if formation_result and formation_result[0] is not None:
+            player_snaps, team_te_snaps = formation_result
+            features['te_snap_share'] = player_snaps / max(team_te_snaps, 1) if team_te_snaps else 0
+            features['te_two_te_sets'] = min(team_te_snaps / 65.0, 1.0) if team_te_snaps else 0
+        else:
+            features['te_snap_share'] = 0.5
+            features['te_two_te_sets'] = 0.3
+
+        # 3. Route Concentration (slot vs wide usage)
+        route_query = """
+        SELECT 
+            AVG(CASE WHEN ps.targets > 0 THEN ps.targets ELSE 0 END) as avg_targets,
+            AVG(CASE WHEN ps.receptions > 0 THEN ps.receptions ELSE 0 END) as avg_receptions,
+            AVG(CASE WHEN ps.receiving_yards > 0 THEN ps.receiving_yards ELSE 0 END) as avg_yards,
+            COUNT(*) as games_played
+        FROM player_stats ps
+        JOIN games g ON ps.game_id = g.id
+        JOIN teams t ON ps.team_id = t.id
+        WHERE ps.player_id = ? AND t.team_abbr = ?
+            AND ps.season = ? AND ps.week BETWEEN ? AND ?
+        """
+        route_result = conn.execute(route_query, rz_params).fetchone()
+        if route_result and route_result[3] > 0:
+            avg_targets, avg_receptions, avg_yards, games = route_result
+            features['te_target_efficiency'] = avg_receptions / max(avg_targets, 1) if avg_targets else 0
+            features['te_yards_per_target'] = avg_yards / max(avg_targets, 1) if avg_targets else 0
+            features['te_route_volume'] = avg_targets
+        else:
+            features['te_target_efficiency'] = 0.6
+            features['te_yards_per_target'] = 8.5
+            features['te_route_volume'] = 4.0
+
+        # 4. Goal Line Opportunities
+        gl_query = """
+        SELECT 
+            COALESCE(SUM(CASE WHEN ps.red_zone_touches > 0 THEN ps.red_zone_touches ELSE 0 END), 0) as rz_touches,
+            COALESCE(SUM(CASE WHEN ps.touchdowns > 0 THEN ps.touchdowns ELSE 0 END), 0) as tds,
+            COUNT(*) as games
+        FROM player_stats ps
+        JOIN games g ON ps.game_id = g.id
+        JOIN teams t ON ps.team_id = t.id
+        WHERE ps.player_id = ? AND t.team_abbr = ?
+            AND ps.season = ? AND ps.week BETWEEN ? AND ?
+        """
+        gl_result = conn.execute(gl_query, rz_params).fetchone()
+        if gl_result:
+            rz_touches, tds, games = gl_result
+            features['te_rz_touch_rate'] = rz_touches / max(games, 1)
+            features['te_td_rate'] = tds / max(games, 1)
+        else:
+            features['te_rz_touch_rate'] = 0.5
+            features['te_td_rate'] = 0.15
+
+        # 5. Game Script Dependency
+        game_script_query = """
+        SELECT 
+            AVG(CASE WHEN team_totals.team_score > opp_totals.opp_score THEN ps.dk_points ELSE 0 END) as avg_winning_points,
+            AVG(CASE WHEN team_totals.team_score <= opp_totals.opp_score THEN ps.dk_points ELSE 0 END) as avg_losing_points,
+            AVG(ps.dk_points) as avg_total_points
+        FROM player_stats ps
+        JOIN games g ON ps.game_id = g.id
+        JOIN teams t ON ps.team_id = t.id
+        LEFT JOIN (
+            SELECT game_id, team_id, SUM(dk_points) as team_score
+            FROM player_stats GROUP BY game_id, team_id
+        ) team_totals ON ps.game_id = team_totals.game_id AND ps.team_id = team_totals.team_id
+        LEFT JOIN (
+            SELECT g2.id as game_id, 
+                   CASE WHEN g2.home_team_id = ps2.team_id THEN g2.away_team_id ELSE g2.home_team_id END as opp_team_id,
+                   SUM(ps2.dk_points) as opp_score
+            FROM games g2
+            JOIN player_stats ps2 ON g2.id = ps2.game_id
+            WHERE ps2.team_id != t.id
+            GROUP BY g2.id, opp_team_id
+        ) opp_totals ON ps.game_id = opp_totals.game_id
+        WHERE ps.player_id = ? AND t.team_abbr = ?
+            AND ps.season = ? AND ps.week BETWEEN ? AND ?
+        """
+        script_result = conn.execute(game_script_query, rz_params).fetchone()
+        if script_result and script_result[2]:
+            winning_avg, losing_avg, total_avg = script_result
+            features['te_winning_game_boost'] = (winning_avg or 0) / max(total_avg, 1)
+            features['te_losing_game_penalty'] = (losing_avg or 0) / max(total_avg, 1)
+        else:
+            features['te_winning_game_boost'] = 1.1
+            features['te_losing_game_penalty'] = 0.85
+
+        # 6. Opponent TE Defense Strength
+        def_query = """
+        SELECT 
+            AVG(CASE WHEN p.position = 'TE' THEN ps.dk_points ELSE 0 END) as avg_te_points_allowed,
+            COUNT(CASE WHEN p.position = 'TE' THEN 1 END) as te_games
+        FROM player_stats ps
+        JOIN players p ON ps.player_id = p.id
+        JOIN games g ON ps.game_id = g.id
+        JOIN teams opp_t ON (
+            CASE WHEN g.home_team_id = ps.team_id THEN g.away_team_id ELSE g.home_team_id END = opp_t.id
+        )
+        WHERE opp_t.team_abbr = ? 
+            AND ps.season = ? AND ps.week BETWEEN ? AND ?
+            AND p.position = 'TE'
+        """
+        def_params = (opponent_abbr, season, max(1, week-4), week-1)
+        def_result = conn.execute(def_query, def_params).fetchone()
+        if def_result and def_result[1] > 0:
+            avg_allowed, games = def_result
+            features['te_opp_def_strength'] = min(avg_allowed / 8.0, 2.0)  # Normalize around 8 points
+        else:
+            features['te_opp_def_strength'] = 1.0
+
+        # 7. Receiving Yards After Catch (YAC) Efficiency
+        yac_query = """
+        SELECT 
+            AVG(CASE WHEN ps.receptions > 0 AND ps.receiving_yards > 0 
+                     THEN ps.receiving_yards / ps.receptions ELSE 0 END) as avg_yac,
+            AVG(CASE WHEN ps.targets > 0 THEN ps.receptions / ps.targets ELSE 0 END) as catch_rate
+        FROM player_stats ps
+        JOIN games g ON ps.game_id = g.id
+        JOIN teams t ON ps.team_id = t.id
+        WHERE ps.player_id = ? AND t.team_abbr = ?
+            AND ps.season = ? AND ps.week BETWEEN ? AND ?
+            AND ps.receptions > 0
+        """
+        yac_result = conn.execute(yac_query, rz_params).fetchone()
+        if yac_result:
+            avg_yac, catch_rate = yac_result
+            features['te_yac_efficiency'] = (avg_yac or 0) / 12.0  # Normalize around 12 yards
+            features['te_catch_rate'] = catch_rate or 0.65
+        else:
+            features['te_yac_efficiency'] = 0.7
+            features['te_catch_rate'] = 0.65
+
+        # 8. Blocking Role vs Receiving Role
+        role_query = """
+        SELECT 
+            AVG(ps.targets) as avg_targets,
+            AVG(ps.snaps) as avg_snaps,
+            AVG(CASE WHEN ps.targets >= 4 THEN 1 ELSE 0 END) as receiving_game_rate
+        FROM player_stats ps
+        JOIN games g ON ps.game_id = g.id
+        JOIN teams t ON ps.team_id = t.id
+        WHERE ps.player_id = ? AND t.team_abbr = ?
+            AND ps.season = ? AND ps.week BETWEEN ? AND ?
+        """
+        role_result = conn.execute(role_query, rz_params).fetchone()
+        if role_result:
+            avg_targets, avg_snaps, receiving_rate = role_result
+            features['te_receiving_role'] = min((avg_targets or 0) / 6.0, 1.5)  # Normalize around 6 targets
+            features['te_blocking_role'] = max(1.0 - (receiving_rate or 0), 0.1)
+        else:
+            features['te_receiving_role'] = 0.6
+            features['te_blocking_role'] = 0.4
+
+        # 9. Team Passing Volume Context
+        team_pass_query = """
+        SELECT 
+            AVG(team_totals.team_targets) as avg_team_targets,
+            AVG(team_totals.team_pass_yards) as avg_team_pass_yards
+        FROM (
+            SELECT 
+                ps.game_id,
+                SUM(ps.targets) as team_targets,
+                SUM(ps.passing_yards + ps.receiving_yards) as team_pass_yards
+            FROM player_stats ps
+            JOIN teams t ON ps.team_id = t.id
+            WHERE t.team_abbr = ?
+                AND ps.season = ? AND ps.week BETWEEN ? AND ?
+            GROUP BY ps.game_id
+        ) team_totals
+        """
+        team_params = (team_abbr, season, max(1, week-lookback_weeks), week-1)
+        team_result = conn.execute(team_pass_query, team_params).fetchone()
+        if team_result:
+            team_targets, team_pass_yards = team_result
+            features['te_team_pass_volume'] = (team_targets or 0) / 35.0  # Normalize around 35 targets
+            features['te_team_pass_efficiency'] = (team_pass_yards or 0) / 300.0  # Normalize around 300 yards
+        else:
+            features['te_team_pass_volume'] = 1.0
+            features['te_team_pass_efficiency'] = 1.0
+
+        # 10. Weather Impact (TEs less affected than WRs)
+        # Simplified weather resistance feature
+        features['te_weather_resistance'] = 0.95  # TEs typically less affected by weather
+
+        # 11. Vegas Correlation Features
+        vegas_query = """
+        SELECT 
+            AVG(CASE WHEN g.total_line > 0 THEN g.total_line ELSE 45 END) as avg_total,
+            AVG(CASE WHEN g.team_implied_total > 0 THEN g.team_implied_total ELSE 22.5 END) as avg_implied
+        FROM games g
+        JOIN teams t ON (g.home_team_id = t.id OR g.away_team_id = t.id)
+        WHERE t.team_abbr = ?
+            AND g.season = ? AND g.week BETWEEN ? AND ?
+        """
+        vegas_result = conn.execute(vegas_query, team_params).fetchone()
+        if vegas_result:
+            avg_total, avg_implied = vegas_result
+            features['te_vegas_total_correlation'] = (avg_total or 45) / 50.0
+            features['te_vegas_implied_correlation'] = (avg_implied or 22.5) / 25.0
+        else:
+            features['te_vegas_total_correlation'] = 0.9
+            features['te_vegas_implied_correlation'] = 0.9
+
+        # 12. Ceiling Game Indicators (high target games)
+        ceiling_query = """
+        SELECT 
+            MAX(ps.dk_points) as max_points,
+            AVG(ps.dk_points) as avg_points,
+            COUNT(CASE WHEN ps.dk_points >= 15 THEN 1 END) as ceiling_games,
+            COUNT(*) as total_games
+        FROM player_stats ps
+        JOIN games g ON ps.game_id = g.id
+        JOIN teams t ON ps.team_id = t.id
+        WHERE ps.player_id = ? AND t.team_abbr = ?
+            AND ps.season = ? AND ps.week BETWEEN ? AND ?
+        """
+        ceiling_result = conn.execute(ceiling_query, rz_params).fetchone()
+        if ceiling_result and ceiling_result[3] > 0:
+            max_points, avg_points, ceiling_games, total_games = ceiling_result
+            features['te_ceiling_potential'] = (max_points or 0) / 25.0  # Normalize around 25 points
+            features['te_ceiling_frequency'] = ceiling_games / max(total_games, 1)
+            features['te_floor_consistency'] = min((avg_points or 0) / 6.0, 1.5)
+        else:
+            features['te_ceiling_potential'] = 0.6
+            features['te_ceiling_frequency'] = 0.2
+            features['te_floor_consistency'] = 0.7
+
+    except Exception as e:
+        logger.warning(f"Error computing TE features for {player_name}: {e}")
+        # Provide safe defaults for all features
+        default_features = {
+            'te_rz_target_share': 0.15, 'te_snap_share': 0.7, 'te_two_te_sets': 0.3,
+            'te_target_efficiency': 0.65, 'te_yards_per_target': 8.5, 'te_route_volume': 4.0,
+            'te_rz_touch_rate': 0.3, 'te_td_rate': 0.12, 'te_winning_game_boost': 1.05,
+            'te_losing_game_penalty': 0.9, 'te_opp_def_strength': 1.0, 'te_yac_efficiency': 0.7,
+            'te_catch_rate': 0.65, 'te_receiving_role': 0.6, 'te_blocking_role': 0.4,
+            'te_team_pass_volume': 1.0, 'te_team_pass_efficiency': 1.0, 'te_weather_resistance': 0.95,
+            'te_vegas_total_correlation': 0.9, 'te_vegas_implied_correlation': 0.9,
+            'te_ceiling_potential': 0.6, 'te_ceiling_frequency': 0.2, 'te_floor_consistency': 0.7
+        }
+        features.update(default_features)
+    
+    return features
+
+def get_dst_specific_features(
+    team_abbr: str,
+    opponent_abbr: str, 
+    season: int,
+    week: int,
+    conn: sqlite3.Connection,
+    lookback_weeks: int = 4
+) -> Dict[str, float]:
+    """Extract DST-specific features for enhanced prediction accuracy.
+    
+    Based on research, DST prediction requires focusing on:
+    1. Opponent offensive vulnerabilities (most predictive)
+    2. Game script factors (spread, totals, pace)
+    3. Weather impact on turnovers and scoring
+    4. Defensive component prediction (sacks, INTs, points allowed)
+    """
+    features = {}
+    
+    try:
+        # 1. Opponent Offensive Vulnerability Analysis (Most Important)
+        opp_vuln_query = """
+        SELECT 
+            AVG(CASE WHEN ds.position = 'QB' THEN ps.passing_interceptions ELSE 0 END) as avg_qb_ints,
+            AVG(CASE WHEN ds.position = 'QB' THEN ps.fumbles_lost ELSE 0 END) as avg_qb_fumbles,
+            AVG(CASE WHEN ds.position = 'QB' THEN 35.0 ELSE 0 END) as avg_pass_attempts,
+            AVG(CASE WHEN ds.position = 'QB' THEN 2.5 ELSE 0 END) as avg_sacks_taken,
+            COUNT(DISTINCT ds.game_id) as games_played
+        FROM dfs_scores ds
+        JOIN player_stats ps ON ds.player_id = ps.player_id AND ds.game_id = ps.game_id
+        JOIN teams t ON ds.team_id = t.id
+        WHERE t.team_abbr = ? AND ds.season = ? 
+            AND ds.week BETWEEN ? AND ?
+        """
+        opp_params = (opponent_abbr, season, max(1, week-lookback_weeks), week-1)
+        opp_result = conn.execute(opp_vuln_query, opp_params).fetchone()
+        
+        if opp_result and opp_result[4] > 0:  # games_played > 0
+            avg_qb_ints, avg_qb_fumbles, avg_pass_att, avg_sacks_taken, games = opp_result
+            # Opponent turnover rate (key predictor)
+            features['dst_opp_turnover_rate'] = (avg_qb_ints + avg_qb_fumbles) / max(games, 1)
+            features['dst_opp_pass_volume'] = avg_pass_att or 32.0
+            features['dst_opp_sack_rate'] = avg_sacks_taken / max(avg_pass_att, 1) if avg_pass_att else 0.08
+        else:
+            features['dst_opp_turnover_rate'] = 1.2  # League average
+            features['dst_opp_pass_volume'] = 32.0
+            features['dst_opp_sack_rate'] = 0.08
+
+        # 2. Own Defense Historical Performance
+        def_history_query = """
+        SELECT 
+            AVG(d.sacks) as avg_sacks,
+            AVG(d.interceptions) as avg_ints,
+            AVG(d.fumbles_recovered) as avg_fumbles,
+            AVG(d.defensive_tds) as avg_def_tds,
+            AVG(d.points_allowed) as avg_points_allowed,
+            AVG(d.fantasy_points) as avg_fantasy_points,
+            COUNT(*) as games
+        FROM dst_stats d
+        WHERE d.team_abbr = ? AND d.season = ?
+            AND d.week BETWEEN ? AND ?
+        """
+        def_params = (team_abbr, season, max(1, week-lookback_weeks), week-1)
+        def_result = conn.execute(def_history_query, def_params).fetchone()
+        
+        if def_result and def_result[6] > 0:  # games > 0
+            avg_sacks, avg_ints, avg_fumbles, avg_def_tds, avg_pa, avg_fp, games = def_result
+            features['dst_def_sacks_rate'] = avg_sacks or 2.0
+            features['dst_def_turnover_rate'] = (avg_ints + avg_fumbles) or 1.0
+            features['dst_def_td_rate'] = avg_def_tds or 0.1
+            features['dst_def_points_allowed'] = avg_pa or 22.0
+            features['dst_recent_performance'] = avg_fp or 6.0
+        else:
+            features['dst_def_sacks_rate'] = 2.0
+            features['dst_def_turnover_rate'] = 1.0 
+            features['dst_def_td_rate'] = 0.1
+            features['dst_def_points_allowed'] = 22.0
+            features['dst_recent_performance'] = 6.0
+
+        # 3. Game Script and Vegas Analysis (Critical for DST)
+        vegas_query = """
+        SELECT 
+            AVG(CASE WHEN bo.over_under_line > 0 THEN bo.over_under_line ELSE 45 END) as avg_total,
+            AVG(CASE WHEN t.id = g.home_team_id THEN bo.home_team_spread 
+                     ELSE bo.away_team_spread END) as avg_spread
+        FROM games g
+        JOIN betting_odds bo ON g.id = bo.game_id
+        JOIN teams t ON (g.home_team_id = t.id OR g.away_team_id = t.id)
+        WHERE t.team_abbr = ? AND g.season = ? AND g.week BETWEEN ? AND ?
+        """
+        vegas_params = (team_abbr, season, max(1, week-lookback_weeks), week-1)
+        vegas_result = conn.execute(vegas_query, vegas_params).fetchone()
+        
+        if vegas_result:
+            avg_total, avg_spread = vegas_result
+            features['dst_game_total'] = avg_total or 45.0
+            features['dst_team_spread'] = avg_spread or 0.0
+            # Opponent implied total (key predictor for points allowed)
+            features['dst_opp_implied_total'] = (avg_total or 45.0) / 2.0 - (avg_spread or 0.0) / 2.0
+        else:
+            features['dst_game_total'] = 45.0
+            features['dst_team_spread'] = 0.0
+            features['dst_opp_implied_total'] = 22.5
+
+        # 4. Component-Based Predictions
+        # Sacks prediction
+        sack_prediction = (
+            features['dst_def_sacks_rate'] * 
+            (features['dst_opp_pass_volume'] / 32.0) * 
+            (1 + features['dst_opp_sack_rate'])
+        )
+        features['dst_predicted_sacks'] = min(sack_prediction, 8.0)
+        
+        # Turnover prediction  
+        turnover_prediction = (
+            features['dst_def_turnover_rate'] * 
+            features['dst_opp_turnover_rate'] *
+            (features['dst_opp_pass_volume'] / 32.0)
+        )
+        features['dst_predicted_turnovers'] = min(turnover_prediction, 5.0)
+        
+        # Points allowed prediction (inverse relationship with DST points)
+        pa_base = features['dst_opp_implied_total']
+        pa_adjustment = features['dst_def_points_allowed'] - 22.0  # League average
+        features['dst_predicted_pa'] = max(pa_base + pa_adjustment * 0.3, 7.0)
+
+        # 5. Weather Impact on Turnovers
+        # Simplified weather impact (detailed weather data may not be available)
+        features['dst_weather_turnover_boost'] = 1.0  # Baseline, can be enhanced with actual weather
+
+        # 6. Game Pace and Pass Volume Context  
+        pace_query = """
+        SELECT AVG(team_totals.total_plays) as avg_plays
+        FROM (
+            SELECT ds.game_id, COUNT(*) as total_plays
+            FROM dfs_scores ds
+            JOIN teams t ON ds.team_id = t.id  
+            WHERE t.team_abbr = ? AND ds.season = ?
+                AND ds.week BETWEEN ? AND ?
+            GROUP BY ds.game_id
+        ) team_totals
+        """
+        pace_result = conn.execute(pace_query, vegas_params).fetchone()
+        if pace_result and pace_result[0]:
+            features['dst_expected_pace'] = pace_result[0] / 70.0  # Normalize around 70 plays
+        else:
+            features['dst_expected_pace'] = 1.0
+
+        # 7. Matchup-Specific Factors
+        # Home/Away impact (home teams typically allow fewer points)
+        features['dst_home_field_advantage'] = 0.8  # Default neutral, can be enhanced
+        
+        # Division rival familiarity (if data available)
+        features['dst_division_game'] = 0.0  # Default, can be enhanced with schedule data
+
+        # 8. Ceiling/Floor Analysis
+        ceiling_query = """
+        SELECT 
+            MAX(d.fantasy_points) as max_fp,
+            MIN(d.fantasy_points) as min_fp,
+            AVG(d.fantasy_points) as avg_fp,
+            COUNT(CASE WHEN d.fantasy_points >= 10 THEN 1 END) as ceiling_games,
+            COUNT(*) as total_games
+        FROM dst_stats d
+        WHERE d.team_abbr = ? AND d.season = ?
+            AND d.week BETWEEN ? AND ?
+        """
+        ceiling_result = conn.execute(ceiling_query, def_params).fetchone()
+        
+        if ceiling_result and ceiling_result[4] > 0:  # total_games > 0
+            max_fp, min_fp, avg_fp, ceiling_games, total_games = ceiling_result
+            features['dst_ceiling_potential'] = (max_fp or 15.0) / 20.0  # Normalize around 20
+            features['dst_floor_safety'] = (min_fp or 2.0) / 8.0  # Normalize around 8  
+            features['dst_ceiling_frequency'] = ceiling_games / max(total_games, 1)
+            features['dst_consistency'] = 1.0 - ((max_fp or 15.0) - (min_fp or 2.0)) / 15.0  # Consistency score
+        else:
+            features['dst_ceiling_potential'] = 0.75
+            features['dst_floor_safety'] = 0.4
+            features['dst_ceiling_frequency'] = 0.2
+            features['dst_consistency'] = 0.6
+
+        # 9. Advanced Component Scores
+        # Pressure score (combine sacks + pass rush effectiveness)
+        features['dst_pressure_score'] = (
+            features['dst_predicted_sacks'] * 1.0 + 
+            features['dst_opp_sack_rate'] * 5.0
+        )
+        
+        # Turnover generation score
+        features['dst_turnover_score'] = (
+            features['dst_predicted_turnovers'] * 2.0 +
+            features['dst_opp_turnover_rate'] * 3.0
+        )
+        
+        # Points allowed tier score (DST scoring tiers)
+        pa_predicted = features['dst_predicted_pa']
+        if pa_predicted <= 6:
+            features['dst_pa_tier_score'] = 5.0  # Shutout/Elite
+        elif pa_predicted <= 13:
+            features['dst_pa_tier_score'] = 4.0  # Very good
+        elif pa_predicted <= 20:
+            features['dst_pa_tier_score'] = 3.0  # Average
+        elif pa_predicted <= 27:
+            features['dst_pa_tier_score'] = 2.0  # Below average
+        elif pa_predicted <= 34:
+            features['dst_pa_tier_score'] = 1.0  # Poor
+        else:
+            features['dst_pa_tier_score'] = 0.0  # Terrible
+
+        # 10. Composite DST Score (combining all factors)
+        features['dst_composite_score'] = (
+            features['dst_pressure_score'] * 0.25 +
+            features['dst_turnover_score'] * 0.35 +  # Most important
+            features['dst_pa_tier_score'] * 0.25 +
+            features['dst_ceiling_potential'] * 0.15
+        )
+
+    except Exception as e:
+        logger.warning(f"Error computing DST features for {team_abbr} vs {opponent_abbr}: {e}")
+        # Provide safe defaults
+        default_features = {
+            'dst_opp_turnover_rate': 1.2, 'dst_opp_pass_volume': 32.0, 'dst_opp_sack_rate': 0.08,
+            'dst_def_sacks_rate': 2.0, 'dst_def_turnover_rate': 1.0, 'dst_def_td_rate': 0.1,
+            'dst_def_points_allowed': 22.0, 'dst_recent_performance': 6.0, 'dst_game_total': 45.0,
+            'dst_team_spread': 0.0, 'dst_opp_implied_total': 22.5, 'dst_predicted_sacks': 2.0,
+            'dst_predicted_turnovers': 1.0, 'dst_predicted_pa': 22.0, 'dst_weather_turnover_boost': 1.0,
+            'dst_expected_pace': 1.0, 'dst_home_field_advantage': 0.8, 'dst_division_game': 0.0,
+            'dst_ceiling_potential': 0.75, 'dst_floor_safety': 0.4, 'dst_ceiling_frequency': 0.2,
+            'dst_consistency': 0.6, 'dst_pressure_score': 2.4, 'dst_turnover_score': 5.6,
+            'dst_pa_tier_score': 3.0, 'dst_composite_score': 3.8
+        }
+        features.update(default_features)
+    
+    return features
+
 def compute_weekly_odds_z_scores(df: pd.DataFrame, season: int, week: int) -> pd.DataFrame:
     """Compute weekly z-scores for odds features."""
     weekly_mask = (df['season'] == season) & (df['week'] == week)
@@ -2688,19 +3525,57 @@ def get_dst_training_data(
         X_list = []
         y_list = []
 
-        # FIXED: New feature names (no current-game data leakage)
+        # Enhanced feature names (11 base + 31 DST-specific features)
         feature_names = [
+            # Base features (11)
             'avg_recent_fantasy_points', 'avg_recent_points_allowed', 'avg_recent_sacks',
             'avg_recent_interceptions', 'avg_recent_fumbles', 'avg_recent_def_tds',
             'season_avg_fantasy_points', 'season_avg_points_allowed',
-            'is_home', 'week', 'season_normalized'
+            'is_home', 'week', 'season_normalized',
+            # DST-specific features (31)
+            'opp_implied_total', 'game_total_ou', 'spread_signed', 'is_favorite',
+            'spread_magnitude', 'opp_pass_attempts_l3', 'opp_pass_yards_l3', 
+            'opp_turnover_rate_l3', 'opp_sack_rate_l3', 'opp_scoring_rate_l3',
+            'opp_explosive_play_rate_l3', 'def_sacks_per_game_l3', 'def_turnovers_per_game_l3',
+            'def_points_allowed_l3', 'def_fantasy_points_l3', 'def_pressure_rate_l3',
+            'wind_speed', 'precipitation', 'temperature', 'is_dome_game',
+            'qb_int_rate_roll', 'ol_sack_rate_allowed_roll', 'weather_turnover_boost',
+            'game_script_dst_value', 'sack_component', 'turnover_component', 'td_component',
+            'sack_expectation', 'turnover_expectation', 'pa_tier_prediction', 'td_probability'
         ]
 
         for row in rows:
             # Skip rows where we don't have sufficient historical data
             if row[4] is None or row[11] is None:  # avg_recent_fantasy_points or season_avg
                 continue
+            
+            team_abbr = row[0]
+            season = row[1] 
+            week = row[2]
+            
+            # Determine opponent team
+            is_home = row[12] == team_abbr if row[12] else True
+            if is_home:
+                # If we're home, opponent is away team
+                away_team_query = "SELECT t.team_abbr FROM teams t JOIN games g ON g.away_team_id = t.id WHERE g.home_team_id = (SELECT id FROM teams WHERE team_abbr = ?) AND g.season = ? AND g.week = ?"
+                opp_result = conn.execute(away_team_query, (team_abbr, season, week)).fetchone()
+                opponent_abbr = opp_result[0] if opp_result else "UNK"
+            else:
+                # If we're away, opponent is home team
+                home_team_query = "SELECT t.team_abbr FROM teams t JOIN games g ON g.home_team_id = t.id WHERE g.away_team_id = (SELECT id FROM teams WHERE team_abbr = ?) AND g.season = ? AND g.week = ?"
+                opp_result = conn.execute(home_team_query, (team_abbr, season, week)).fetchone()
+                opponent_abbr = opp_result[0] if opp_result else "UNK"
+            
+            # Get DST-specific features
+            try:
+                dst_specific_features = get_dst_specific_features(
+                    team_abbr, opponent_abbr, season, week, conn
+                )
+            except Exception as e:
+                logger.warning(f"Error getting DST features for {team_abbr} vs {opponent_abbr}: {e}")
+                dst_specific_features = {}
 
+            # Base features
             features = [
                 row[4] or 0,    # avg_recent_fantasy_points
                 row[5] or 20,   # avg_recent_points_allowed (default to league avg)
@@ -2714,6 +3589,42 @@ def get_dst_training_data(
                 row[2],         # week
                 (row[1] - 2022) / 5.0  # season_normalized (center around 2022, scale by 5)
             ]
+            
+            # Add DST-specific features (27 features from enhancement)
+            dst_feature_order = [
+                'opp_implied_total', 'game_total_ou', 'spread_signed', 'is_favorite',
+                'spread_magnitude', 'opp_pass_attempts_l3', 'opp_pass_yards_l3', 
+                'opp_turnover_rate_l3', 'opp_sack_rate_l3', 'opp_scoring_rate_l3',
+                'opp_explosive_play_rate_l3', 'def_sacks_per_game_l3', 'def_turnovers_per_game_l3',
+                'def_points_allowed_l3', 'def_fantasy_points_l3', 'def_pressure_rate_l3',
+                'wind_speed', 'precipitation', 'temperature', 'is_dome_game',
+                'qb_int_rate_roll', 'ol_sack_rate_allowed_roll', 'weather_turnover_boost',
+                'game_script_dst_value', 'sack_component', 'turnover_component', 'td_component'
+            ]
+            
+            for feature_name in dst_feature_order:
+                features.append(dst_specific_features.get(feature_name, 0.0))
+            
+            # Final component predictions - these are the most predictive
+            if 'sack_expectation' in dst_specific_features:
+                features.append(dst_specific_features['sack_expectation'])
+            else:
+                features.append(2.0)  # League average sacks
+                
+            if 'turnover_expectation' in dst_specific_features:
+                features.append(dst_specific_features['turnover_expectation'])  
+            else:
+                features.append(1.3)  # League average turnovers
+                
+            if 'pa_tier_prediction' in dst_specific_features:
+                features.append(dst_specific_features['pa_tier_prediction'])
+            else:
+                features.append(3.0)  # Middle tier PA
+                
+            if 'td_probability' in dst_specific_features:
+                features.append(dst_specific_features['td_probability'])
+            else:
+                features.append(0.15)  # 15% chance baseline
 
             target = row[3]  # fantasy_points (current week - this is what we're predicting)
 
@@ -3197,6 +4108,20 @@ def get_training_data(
 
                 # Enhanced RB-specific features for better prediction
                 elif position == 'RB':
+                    # Get all RB-specific features
+                    rb_features = get_rb_specific_features(
+                        player_id, player_name, team_abbr, opponent_abbr,
+                        season, week, conn
+                    )
+                    features.update(rb_features)
+
+                    # Set default projections based on volume
+                    if 'rb_avg_touches' in features:
+                        # More realistic baseline: 0.6 pts per touch + TD upside
+                        base_projection = features['rb_avg_touches'] * 0.6
+                        td_projection = features.get('rb_avg_total_tds', 0.5) * 6
+                        features['baseline_projection'] = base_projection + td_projection
+
                     # Use recent averages to compute advanced RB metrics
                     avg_rush_att = features.get('avg_rush_attempts', 15)
                     avg_rush_yds = features.get('avg_rushing_yards', 75)
@@ -3330,11 +4255,33 @@ def get_training_data(
 
                 # Enhanced TE-specific features for better prediction
                 elif position == 'TE':
-                    # TE dual-role metrics
+                    # First get TE-specific features
+                    te_specific = get_te_specific_features(
+                        player_id, player_name="Unknown", team_abbr=team_abbr,
+                        opponent_abbr=opponent_abbr, season=season, week=week, conn=conn
+                    )
+                    features.update(te_specific)
+                    
+                    # TE dual-role metrics (keep existing for compatibility)
                     avg_targets = features.get('avg_targets', 3)
                     avg_rec_yds = features.get('avg_receiving_yards', 35)
                     avg_rec_tds = features.get('avg_rec_tds', 0.25)
                     avg_receptions = features.get('avg_receptions', 2.5)
+                    
+                    # Enhanced with TE-specific projections
+                    base_projection = (
+                        te_specific.get('te_route_volume', 4.0) * te_specific.get('te_catch_rate', 0.65) * 
+                        te_specific.get('te_yards_per_target', 8.5) / 10.0 + 
+                        te_specific.get('te_td_rate', 0.12) * 6.0
+                    )
+                    
+                    # Apply game script multipliers
+                    script_multiplier = (
+                        te_specific.get('te_winning_game_boost', 1.05) if team_spread < -3 
+                        else te_specific.get('te_losing_game_penalty', 0.9) if team_spread > 3 
+                        else 1.0
+                    )
+                    te_projection = base_projection * script_multiplier
 
                     # TE-specific efficiency
                     te_target_rate = avg_targets / max(15, 1)  # Normalize against team average
@@ -3378,6 +4325,21 @@ def get_training_data(
 
                 # Enhanced WR-specific features for better prediction
                 elif position == 'WR':
+                    # Get all WR-specific features
+                    wr_features = get_wr_specific_features(
+                        player_id, player_name, team_abbr, opponent_abbr,
+                        season, week, conn
+                    )
+                    features.update(wr_features)
+
+                    # Set default projections based on targets and game script
+                    if 'wr_avg_targets' in features and 'wr_implied_total' in features:
+                        # Base: 1 point per target + game script bonus + TD upside
+                        base_projection = features['wr_avg_targets'] * 1.0
+                        script_bonus = (features['wr_implied_total'] - 20) * 0.2  # Higher totals = more points
+                        td_projection = features.get('wr_avg_rec_tds', 0.3) * 6
+                        features['baseline_projection'] = base_projection + script_bonus + td_projection
+
                     # Advanced WR efficiency metrics
                     avg_targets = features.get('avg_targets', 5)
                     avg_rec_yds = features.get('avg_receiving_yards', 60)
