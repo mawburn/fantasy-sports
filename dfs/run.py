@@ -121,7 +121,7 @@ def train_models(seasons: List[int] = None, positions: List[str] = None):
 
             # Create and train model (use ensemble for QB and RB)
             config = ModelConfig(position=position, features=feature_names)
-            use_ensemble = (position in ['QB', 'WR', 'TE', 'DST'])  # Enable ensemble for QB, WR, TE, and DST (RB neural-only performs better)
+            use_ensemble = (position in ['QB', 'WR', 'TE'])  # Enable ensemble for QB, WR, TE (RB neural-only, DST CatBoost-only perform better)
             model = create_model(position, config, use_ensemble=use_ensemble)
 
             # Split data (80/20)
@@ -286,8 +286,8 @@ def predict_players_optimized(contest_id: str = None, output_file: str = None, i
                 X_sample, _, feature_names = get_training_data(position, available_seasons, DEFAULT_DB_PATH)
                 if len(X_sample) > 0:
                     config = ModelConfig(position=position, features=feature_names)
-                    # Use ensemble for QB, WR, TE, and DST (matches training configuration, RB neural-only)
-                    use_ensemble = (position in ['QB', 'WR', 'TE', 'DST'])
+                    # Use ensemble for QB, WR, TE (matches training configuration, RB neural-only, DST CatBoost-only)
+                    use_ensemble = (position in ['QB', 'WR', 'TE'])
                     model = create_model(position, config, use_ensemble=use_ensemble)
                     # Let load_model determine the input size from the saved model
                     model.load_model(str(model_path))
@@ -396,16 +396,17 @@ def predict_players_optimized(contest_id: str = None, output_file: str = None, i
                     try:
                         X_pred = np.array(batch_features, dtype=np.float32)
 
-                        # Check if we need to pad features to match model's expected input size
+                        # FORCE exact input size to match model expectations
                         if hasattr(model, 'input_size') and model.input_size and X_pred.shape[1] != model.input_size:
-                            logger.debug(f"Padding features for {position}: {X_pred.shape[1]} -> {model.input_size}")
+                            logger.warning(f"Feature mismatch for {position}: {X_pred.shape[1]} -> {model.input_size} (fixing)")
                             # Pad with zeros if we have fewer features than expected
                             if X_pred.shape[1] < model.input_size:
                                 padding = np.zeros((X_pred.shape[0], model.input_size - X_pred.shape[1]), dtype=np.float32)
                                 X_pred = np.concatenate([X_pred, padding], axis=1)
-                            # Truncate if we have more features than expected (shouldn't happen but just in case)
+                            # Truncate if we have more features than expected
                             elif X_pred.shape[1] > model.input_size:
                                 X_pred = X_pred[:, :model.input_size]
+                            logger.info(f"Fixed feature dimensions for {position}: {X_pred.shape[1]} features")
 
                         prediction_result = model.predict(X_pred)
 
@@ -612,9 +613,25 @@ def optimize_lineups(
         logger.debug(traceback.format_exc())
         return
 
+    # Add sample odds data for testing (in production, this would come from odds API)
+    def get_sample_odds_for_team(team_abbr: str) -> dict:
+        """Get sample betting odds for testing stacking improvements."""
+        # Sample data - in production this would be real odds
+        sample_odds = {
+            'CIN': {'implied_total': 24.5, 'game_total': 47.5, 'spread': -3.0},
+            'SEA': {'implied_total': 21.5, 'game_total': 44.0, 'spread': 2.5},
+            'SF': {'implied_total': 26.0, 'game_total': 49.0, 'spread': -6.5},
+            'NYJ': {'implied_total': 19.5, 'game_total': 42.5, 'spread': 4.5},
+            'WAS': {'implied_total': 23.0, 'game_total': 46.0, 'spread': -1.5},
+            'LV': {'implied_total': 20.0, 'game_total': 43.0, 'spread': 3.0},
+            'NE': {'implied_total': 18.5, 'game_total': 41.0, 'spread': 5.5},
+        }
+        return sample_odds.get(team_abbr, {'implied_total': 21.0, 'game_total': 44.0, 'spread': 0.0})
+
     # Convert to Player objects
     player_pool = []
     for pred in predictions:
+        odds_data = get_sample_odds_for_team(pred['team'])
         player = Player(
             player_id=pred['player_id'],
             name=pred['name'],
@@ -625,7 +642,11 @@ def optimize_lineups(
             ceiling=pred['ceiling'],
             team_abbr=pred['team'],
             roster_position=pred.get('roster_position', ''),
-            injury_status=pred.get('injury_status')
+            injury_status=pred.get('injury_status'),
+            # Add odds data for stacking optimization
+            implied_team_total=odds_data['implied_total'],
+            game_total=odds_data['game_total'],
+            spread=odds_data['spread']
         )
         player_pool.append(player)
 

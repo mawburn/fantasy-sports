@@ -53,9 +53,38 @@ class Player:
     roster_position: str = ""  # DraftKings roster eligibility (e.g., "RB/FLEX")
     injury_status: Optional[str] = None
 
+    # Betting odds data for stacking optimization
+    implied_team_total: float = 0.0  # Team's implied points from odds
+    game_total: float = 0.0  # Total game points O/U
+    spread: float = 0.0  # Point spread (negative = favorite)
+    moneyline: float = 0.0  # Moneyline odds
+
     def __post_init__(self):
         """Calculate derived metrics."""
         self.value = self.projected_points / (self.salary / 1000) if self.salary > 0 else 0
+
+        # Calculate game environment score for stacking (higher = better for cash games)
+        self.game_environment_score = self._calculate_game_environment_score()
+
+    def _calculate_game_environment_score(self) -> float:
+        """Calculate game environment score based on odds for cash game optimization."""
+        score = 0.0
+
+        # Higher implied team total = better (more scoring opportunities)
+        if self.implied_team_total > 0:
+            score += min(self.implied_team_total / 30.0, 1.0) * 0.4  # Cap at 30 points, 40% weight
+
+        # Higher game total = better (more pace/plays)
+        if self.game_total > 0:
+            score += min((self.game_total - 40) / 15.0, 1.0) * 0.3  # 40-55 range, 30% weight
+
+        # Moderate favorites preferred for cash (more predictable)
+        if self.spread != 0:
+            abs_spread = abs(self.spread)
+            if abs_spread <= 7:  # Sweet spot for cash games
+                score += (7 - abs_spread) / 7.0 * 0.3  # 30% weight
+
+        return max(0.0, min(score, 1.0))  # Clamp between 0-1
 
 
 @dataclass
@@ -912,12 +941,13 @@ def export_lineup_to_csv(lineup: OptimizationResult, filename: str = None) -> st
 # Convenience functions for common use cases
 def optimize_cash_game_lineup(
     player_pool: List[Player],
-    salary_cap: int = DEFAULT_SALARY_CAP
+    salary_cap: int = DEFAULT_SALARY_CAP,
+    enable_stacking: bool = True
 ) -> OptimizationResult:
-    """Optimize lineup for cash games (high floor, consistent scoring)."""
+    """Optimize lineup for cash games (high floor, consistent scoring with stacking)."""
     constraints = LineupConstraints(salary_cap=salary_cap)
 
-    # For cash games, use floor instead of projection for safer plays
+    # For cash games, use floor-focused projections but less conservative
     cash_pool = []
     for player in player_pool:
         cash_player = Player(
@@ -925,7 +955,7 @@ def optimize_cash_game_lineup(
             name=player.name,
             position=player.position,
             salary=player.salary,
-            projected_points=max(player.floor, player.projected_points * 0.8),  # Conservative
+            projected_points=max(player.floor, player.projected_points * 0.9),  # Less conservative
             floor=player.floor,
             ceiling=player.ceiling,
             team_abbr=player.team_abbr,
@@ -933,6 +963,27 @@ def optimize_cash_game_lineup(
             injury_status=player.injury_status
         )
         cash_pool.append(cash_player)
+
+    if enable_stacking:
+        # Find teams with good stacking potential (odds + floor focused for cash)
+        team_qbs = {}
+        for player in cash_pool:
+            if player.position == "QB":
+                team_qbs[player.team_abbr] = player
+
+        # Stack with QBs from best game environments + high floors for cash games
+        qb_stack_teams = sorted(
+            team_qbs.keys(),
+            key=lambda team: (
+                team_qbs[team].game_environment_score * 0.6 +  # Prioritize good game spots
+                (team_qbs[team].floor / 25.0) * 0.4  # Add floor safety (normalize to ~25 pt max)
+            ),
+            reverse=True
+        )[:2]  # Top 2 QB teams by combined game environment + floor
+
+        return build_stacking_lineup(
+            cash_pool, constraints, qb_stack_teams=qb_stack_teams, force_stacking=False
+        )
 
     return build_linear_programming_lineup(cash_pool, constraints)
 

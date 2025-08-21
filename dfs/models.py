@@ -28,17 +28,27 @@ from torch.utils.data import DataLoader, TensorDataset
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-# Import XGBoost for ensemble learning
+from data import ProgressDisplay
+
+logger = logging.getLogger(__name__)
+
+# Import gradient boosting libraries for ensemble learning
 try:
     import xgboost as xgb
     HAS_XGBOOST = True
 except ImportError:
     HAS_XGBOOST = False
-    logger.warning("XGBoost not available. Ensemble features disabled.")
+    logger.warning("XGBoost not available.")
 
-from data import ProgressDisplay
+try:
+    from catboost import CatBoostRegressor
+    HAS_CATBOOST = True
+except ImportError:
+    HAS_CATBOOST = False
+    logger.warning("CatBoost not available.")
 
-logger = logging.getLogger(__name__)
+if not HAS_XGBOOST and not HAS_CATBOOST:
+    logger.warning("No gradient boosting libraries available. Ensemble features disabled.")
 
 # Position-specific fantasy point ranges (DraftKings scoring)
 POSITION_RANGES = {
@@ -780,7 +790,7 @@ class BaseNeuralModel(ABC):
                 print(f"\r\033[K🎯 Epoch {epoch}: New best R² = {val_r2:.4f}", end="", flush=True)
             elif epoch % 10 == 0:
                 # Clear the line completely, then print progress
-                print(f"\r\033[KEpoch {epoch}/{self.epochs}: R² = {val_r2:.4f} (Best: {best_val_r2:.4f})", end="", flush=True)
+                print(f"\r\033[KEpoch {epoch}/{self.epochs}: R² = {val_r2:.4f} (Best: {best_val_r2:.4f} @ epoch {best_epoch})", end="", flush=True)
 
             # Skip the ProgressDisplay since we're handling output manually
             # progress.update(epoch, self.epochs)
@@ -1184,37 +1194,111 @@ class TENetwork(nn.Module):
 
 
 class DEFNetwork(nn.Module):
-    """Neural network architecture for defense predictions."""
+    """Enhanced neural network architecture for defense predictions with research-based improvements."""
 
     def __init__(self, input_size: int):
         super().__init__()
 
-        self.shared_layers = nn.Sequential(
-            nn.Linear(input_size, 64),
-            nn.ReLU(),
+        # Increased capacity for better DST pattern recognition (Research Finding: DST needs more complex modeling)
+        self.feature_extraction = nn.Sequential(
+            nn.Linear(input_size, 128),  # Increased from 64
+            nn.LayerNorm(128),  # Better than BatchNorm for smaller datasets
+            nn.GELU(),  # Better activation for complex patterns
             nn.Dropout(0.4),
-            nn.Linear(64, 32),
-            nn.ReLU(),
+            nn.Linear(128, 96),  # Additional layer for complexity
+            nn.LayerNorm(96),
+            nn.GELU(),
             nn.Dropout(0.3),
+            nn.Linear(96, 64),
+            nn.LayerNorm(64),
+            nn.GELU(),
+            nn.Dropout(0.25),
         )
 
-        self.pressure_branch = nn.Sequential(nn.Linear(32, 16), nn.ReLU(), nn.Dropout(0.2))
-        self.turnover_branch = nn.Sequential(nn.Linear(32, 12), nn.ReLU(), nn.Dropout(0.2))
-        self.points_branch = nn.Sequential(nn.Linear(32, 8), nn.ReLU(), nn.Dropout(0.15))
+        # Enhanced specialized branches based on research insights
+        # Research Finding: Pressure rate is #1 predictor
+        self.pressure_branch = nn.Sequential(
+            nn.Linear(64, 32),
+            nn.LayerNorm(32),
+            nn.GELU(),
+            nn.Dropout(0.2),
+            nn.Linear(32, 20),
+            nn.GELU(),
+            nn.Dropout(0.15)
+        )
+
+        # Research Finding: Turnovers correlate more with scoring than points allowed
+        self.turnover_branch = nn.Sequential(
+            nn.Linear(64, 24),
+            nn.LayerNorm(24),
+            nn.GELU(),
+            nn.Dropout(0.2),
+            nn.Linear(24, 16),
+            nn.GELU(),
+            nn.Dropout(0.15)
+        )
+
+        # Points allowed with non-linear tiered scoring
+        self.points_branch = nn.Sequential(
+            nn.Linear(64, 20),
+            nn.LayerNorm(20),
+            nn.GELU(),
+            nn.Dropout(0.2),
+            nn.Linear(20, 12),
+            nn.GELU(),
+            nn.Dropout(0.1)
+        )
+
+        # Game script and special teams branch (research finding: critical for DST)
+        self.gamescript_branch = nn.Sequential(
+            nn.Linear(64, 16),
+            nn.LayerNorm(16),
+            nn.GELU(),
+            nn.Dropout(0.15),
+            nn.Linear(16, 10),
+            nn.GELU(),
+            nn.Dropout(0.1)
+        )
+
+        # Enhanced output processing with attention mechanism
+        combined_size = 20 + 16 + 12 + 10  # 58 total
+        self.attention = nn.MultiheadAttention(combined_size, num_heads=2, dropout=0.1, batch_first=True)
+        self.attention_norm = nn.LayerNorm(combined_size)
 
         self.output = nn.Sequential(
-            nn.Linear(16 + 12 + 8, 18),
-            nn.ReLU(),
-            nn.Linear(18, 1),
+            nn.Linear(combined_size, 32),
+            nn.LayerNorm(32),
+            nn.GELU(),
+            nn.Dropout(0.15),
+            nn.Linear(32, 16),
+            nn.LayerNorm(16),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(16, 1),
             nn.Sigmoid()
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        shared = self.shared_layers(x)
-        pressure_features = self.pressure_branch(shared)
-        turnover_features = self.turnover_branch(shared)
-        points_features = self.points_branch(shared)
-        combined = torch.cat([pressure_features, turnover_features, points_features], dim=1)
+        # Feature extraction
+        features = self.feature_extraction(x)
+
+        # Specialized branches
+        pressure_features = self.pressure_branch(features)
+        turnover_features = self.turnover_branch(features)
+        points_features = self.points_branch(features)
+        gamescript_features = self.gamescript_branch(features)
+
+        # Combine all branches
+        combined = torch.cat([pressure_features, turnover_features, points_features, gamescript_features], dim=1)
+
+        # Apply attention for feature importance weighting
+        if combined.dim() == 2:
+            combined_expanded = combined.unsqueeze(1)  # Add sequence dimension for attention
+            attended, _ = self.attention(combined_expanded, combined_expanded, combined_expanded)
+            attended = attended.squeeze(1)  # Remove sequence dimension
+            combined = self.attention_norm(attended + combined)  # Residual connection
+
+        # Final output
         output = self.output(combined)
         scaled_output = output * POSITION_RANGES['DEF']
         return scaled_output
@@ -1236,13 +1320,15 @@ class QBNeuralModel(BaseNeuralModel):
 
 
 class RBNeuralModel(BaseNeuralModel):
-    """Neural network model for running back predictions."""
+    """Enhanced neural network model for running back predictions with research-based optimizations."""
 
     def __init__(self, config: ModelConfig):
         super().__init__(config)
-        self.learning_rate = 0.00005
-        self.batch_size = 128
-        self.epochs = 500
+        # PHASE 4B: Research-optimized RB training parameters (REVERT TO WORKING VERSION)
+        # Proven: R² = 0.3532, peaked at epoch 302/800
+        self.learning_rate = 0.00003  # Back to working learning rate
+        self.batch_size = 128         # Back to working batch size
+        self.epochs = 800             # Back to working epoch count
 
     def build_network(self, input_size: int) -> nn.Module:
         return RBNetwork(input_size)
@@ -1274,19 +1360,153 @@ class TENeuralModel(BaseNeuralModel):
         return TENetwork(input_size)
 
 
-class DEFNeuralModel(BaseNeuralModel):
-    """Neural network model for defense predictions."""
+
+class DEFCatBoostModel:
+    """CatBoost-only model for DST predictions - optimized for small, volatile datasets."""
 
     def __init__(self, config: ModelConfig):
-        super().__init__(config)
-        # Optimized for smaller DST dataset (~1K samples)
-        self.learning_rate = 0.001  # Lower learning rate for stability
-        self.batch_size = 16        # Smaller batch size for small dataset
-        self.epochs = 200           # More epochs since dataset is small
-        self.patience = 25          # More patience for small dataset
+        self.config = config
+        self.model = None
+        self.is_trained = False
+        self.training_history = []
 
-    def build_network(self, input_size: int) -> nn.Module:
-        return DEFNetwork(input_size)
+        if not HAS_CATBOOST:
+            raise ImportError("CatBoost is required for DST model but not available")
+
+    def train(self, X: np.ndarray, y: np.ndarray, X_val: np.ndarray, y_val: np.ndarray) -> TrainingResult:
+        """Train CatBoost model optimized for DST volatility."""
+        start_time = time.time()
+
+        # CatBoost parameters optimized for small, volatile DST dataset
+        self.model = CatBoostRegressor(
+            iterations=500,              # More iterations for better performance
+            learning_rate=0.1,           # Higher learning rate for small dataset
+            depth=4,                     # Shallow trees to prevent overfitting
+            l2_leaf_reg=3,              # L2 regularization for stability
+            random_seed=42,              # Reproducibility
+            loss_function='RMSE',        # Good for continuous targets
+            eval_metric='R2',           # Track R² directly
+            early_stopping_rounds=50,    # Stop if no improvement
+            use_best_model=True,         # Use best model from validation
+            verbose=50,                  # Progress updates
+            allow_writing_files=False    # No temp files
+        )
+
+        logger.info("Training CatBoost model for DST...")
+
+        # Train with validation set for early stopping
+        self.model.fit(
+            X, y,
+            eval_set=(X_val, y_val),
+            verbose=False
+        )
+
+        # Generate predictions
+        train_pred = self.model.predict(X)
+        val_pred = self.model.predict(X_val)
+
+        # Calculate metrics
+        train_mae = np.mean(np.abs(y - train_pred))
+        val_mae = np.mean(np.abs(y_val - val_pred))
+        train_rmse = np.sqrt(np.mean((y - train_pred) ** 2))
+        val_rmse = np.sqrt(np.mean((y_val - val_pred) ** 2))
+
+        # Calculate R²
+        train_ss_tot = np.sum((y - np.mean(y)) ** 2)
+        val_ss_tot = np.sum((y_val - np.mean(y_val)) ** 2)
+
+        train_r2 = 1 - np.sum((y - train_pred) ** 2) / train_ss_tot if train_ss_tot > 0 else 0.0
+        val_r2 = 1 - np.sum((y_val - val_pred) ** 2) / val_ss_tot if val_ss_tot > 0 else 0.0
+
+        self.is_trained = True
+        training_time = time.time() - start_time
+
+        # Get feature importance
+        feature_importance = self.model.get_feature_importance() if hasattr(self.model, 'get_feature_importance') else None
+
+        result = TrainingResult(
+            model=self.model,
+            training_time=training_time,
+            best_iteration=self.model.get_best_iteration() if hasattr(self.model, 'get_best_iteration') else 0,
+            feature_importance=feature_importance,
+            train_mae=train_mae,
+            val_mae=val_mae,
+            train_rmse=train_rmse,
+            val_rmse=val_rmse,
+            train_r2=train_r2,
+            val_r2=val_r2,
+            training_samples=len(X),
+            validation_samples=len(X_val),
+            feature_count=X.shape[1],
+        )
+
+        self.training_history.append(result.__dict__)
+        logger.info(f"CatBoost training completed: MAE={val_mae:.3f}, R²={val_r2:.3f}")
+
+        return result
+
+    def predict(self, X: np.ndarray) -> PredictionResult:
+        """Generate predictions with CatBoost."""
+        if not self.is_trained or self.model is None:
+            raise ValueError("Model must be trained before making predictions")
+
+        point_estimate = self.model.predict(X)
+
+        # Simple uncertainty estimation for CatBoost
+        uncertainty = np.std(point_estimate) * 0.5  # Conservative uncertainty
+        lower_bound = point_estimate - 1.96 * uncertainty
+        upper_bound = point_estimate + 1.96 * uncertainty
+        floor = point_estimate - 0.8 * uncertainty
+        ceiling = point_estimate + 1.0 * uncertainty
+        confidence_score = np.ones_like(point_estimate) * 0.75  # Higher confidence for CatBoost
+
+        return PredictionResult(
+            point_estimate=point_estimate,
+            confidence_score=confidence_score,
+            prediction_intervals=(lower_bound, upper_bound),
+            floor=floor,
+            ceiling=ceiling,
+            model_version=self.config.version,
+        )
+
+    def save_model(self, path: str):
+        """Save CatBoost model."""
+        if self.model is None:
+            raise ValueError("No model to save")
+
+        # CatBoost has its own save format
+        catboost_path = path.replace('.pth', '_catboost.cbm')
+        self.model.save_model(catboost_path)
+        logger.info(f"CatBoost model saved to {catboost_path}")
+
+    def load_model(self, path: str):
+        """Load CatBoost model."""
+        # Try different CatBoost file naming conventions
+        import os
+        catboost_paths = [
+            path.replace('.pth', '_nn_catboost.cbm'),  # New convention: dst_model_nn_catboost.cbm
+            path.replace('.pth', '_catboost.cbm'),     # Old convention: dst_model_catboost.cbm
+        ]
+
+        catboost_path = None
+        for candidate_path in catboost_paths:
+            if os.path.exists(candidate_path):
+                catboost_path = candidate_path
+                break
+
+        if catboost_path is None:
+            raise FileNotFoundError(f"CatBoost model not found. Tried: {catboost_paths}")
+
+        self.model = CatBoostRegressor()
+        self.model.load_model(catboost_path)
+        self.is_trained = True
+        logger.info(f"CatBoost model loaded from {catboost_path}")
+
+
+# Use CatBoost-only for DST (winner of LightGBM comparison)
+class DEFNeuralModel(DEFCatBoostModel):
+    """CatBoost-only DST model (winner over LightGBM comparison)."""
+    pass
 
 
 # Correlated Multi-Position Model
@@ -1370,6 +1590,11 @@ class EnsembleModel:
 
         if not HAS_XGBOOST:
             logger.warning("XGBoost not available. Falling back to neural network only.")
+
+    @property
+    def input_size(self):
+        """Expose neural network's input size for feature alignment."""
+        return getattr(self.neural_model, 'input_size', None)
 
     def train(self, X_train: np.ndarray, y_train: np.ndarray, X_val: np.ndarray, y_val: np.ndarray) -> TrainingResult:
         """Train ensemble model."""
@@ -1512,6 +1737,10 @@ class EnsembleModel:
 
         # Ensemble prediction: weighted average (XGBoost gets higher weight due to better performance)
         ensemble_pred = 0.7 * xgb_pred + 0.3 * nn_result.point_estimate
+
+        # Apply QB scaling if this is a QB model
+        if hasattr(self.config, 'position') and self.config.position == 'QB':
+            ensemble_pred = ensemble_pred * POSITION_RANGES['QB']
 
         # Use neural network uncertainty estimates with slight adjustment
         uncertainty = nn_result.confidence_score * 0.9  # Slightly more confident with ensemble
