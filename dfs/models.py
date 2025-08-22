@@ -1610,7 +1610,7 @@ class BaseNeuralModel(ABC):
 
         # Optimize DataLoader settings for Apple Silicon
         num_workers = 0 if self.device.type == "mps" else min(4, os.cpu_count() // 2)
-        pin_memory = self.device.type == "cuda"  # Only useful for CUDA
+        pin_memory = False  # Disabled since tensors are already moved to device
 
         train_loader = DataLoader(
             train_dataset,
