@@ -558,8 +558,8 @@ try:
             lr_config = search_ranges.get('learning_rate', {})
             lr = trial.suggest_float(
                 'learning_rate',
-                lr_config.get('min', 1e-4),
-                lr_config.get('max', 5e-2),
+                float(lr_config.get('min', 1e-4)),
+                float(lr_config.get('max', 5e-2)),
                 log=lr_config.get('log_scale', True)
             )
 
@@ -570,9 +570,9 @@ try:
             elif 'step' in batch_config:
                 batch_size = trial.suggest_int(
                     'batch_size',
-                    batch_config.get('min', 16),
-                    batch_config.get('max', 256),
-                    step=batch_config['step']
+                    int(batch_config.get('min', 16)),
+                    int(batch_config.get('max', 256)),
+                    step=int(batch_config['step'])
                 )
             else:
                 batch_size = trial.suggest_categorical('batch_size', [16, 32, 64, 128, 256])
@@ -584,9 +584,9 @@ try:
             elif 'step' in hidden_config:
                 hidden_size = trial.suggest_int(
                     'hidden_size',
-                    hidden_config.get('min', 64),
-                    hidden_config.get('max', 512),
-                    step=hidden_config['step']
+                    int(hidden_config.get('min', 64)),
+                    int(hidden_config.get('max', 512)),
+                    step=int(hidden_config['step'])
                 )
             else:
                 hidden_size = trial.suggest_categorical('hidden_size', [64, 128, 256, 512])
@@ -595,16 +595,16 @@ try:
             dropout_config = search_ranges.get('dropout_rate', {})
             dropout_rate = trial.suggest_float(
                 'dropout_rate',
-                dropout_config.get('min', 0.1),
-                dropout_config.get('max', 0.5)
+                float(dropout_config.get('min', 0.1)),
+                float(dropout_config.get('max', 0.5))
             )
 
             # Number of layers
             layers_config = search_ranges.get('num_layers', {})
             num_layers = trial.suggest_int(
                 'num_layers',
-                layers_config.get('min', 1),
-                layers_config.get('max', 4)
+                int(layers_config.get('min', 1)),
+                int(layers_config.get('max', 4))
             )
 
             # Handle DST position (uses CatBoost instead of neural network)
@@ -3332,7 +3332,8 @@ class DEFCatBoostModel:
 
     def tune_hyperparameters(self, X_train: np.ndarray, y_train: np.ndarray,
                             X_val: np.ndarray, y_val: np.ndarray,
-                            n_trials: int = 20, timeout: int = 3600) -> Dict[str, Any]:
+                            n_trials: int = 20, timeout: int = 3600,
+                            epochs: int = 100) -> Dict[str, Any]:
         """Perform real hyperparameter optimization for CatBoost DST model using Optuna.
 
         Args:
@@ -3780,7 +3781,8 @@ class EnsembleModel:
 
     def tune_hyperparameters(self, X_train: np.ndarray, y_train: np.ndarray,
                             X_val: np.ndarray, y_val: np.ndarray,
-                            n_trials: int = 20, timeout: int = 3600) -> Dict[str, Any]:
+                            n_trials: int = 20, timeout: int = 3600,
+                            epochs: int = 100) -> Dict[str, Any]:
         """Perform hyperparameter optimization for ensemble model.
 
         First tunes the neural network, then uses default XGBoost parameters.
@@ -3801,7 +3803,7 @@ class EnsembleModel:
         # First tune the neural network component
         if hasattr(self.neural_model, 'tune_hyperparameters'):
             nn_params = self.neural_model.tune_hyperparameters(
-                X_train, y_train, X_val, y_val, n_trials, timeout
+                X_train, y_train, X_val, y_val, n_trials, timeout, epochs
             )
             logger.info(f"Neural network hyperparameters tuned: {nn_params}")
         else:
