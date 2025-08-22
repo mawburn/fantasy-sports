@@ -10,12 +10,11 @@ Provides:
 Designed to replace direct SQL queries in data.py with optimized batch operations.
 """
 
-import sqlite3
-import pandas as pd
-import numpy as np
-from typing import Dict, List, Optional, Tuple, Any
-from functools import lru_cache
 import logging
+import sqlite3
+from typing import Dict, List, Tuple
+
+import pandas as pd
 
 from data import ProgressDisplay
 
@@ -51,39 +50,31 @@ class DatabaseManager:
             "CREATE INDEX IF NOT EXISTS idx_player_stats_player_game ON player_stats(player_id, game_id)",
             "CREATE INDEX IF NOT EXISTS idx_player_stats_game_id ON player_stats(game_id)",
             "CREATE INDEX IF NOT EXISTS idx_player_stats_player_id ON player_stats(player_id)",
-
             # Game queries
             "CREATE INDEX IF NOT EXISTS idx_games_season_week ON games(season, week)",
             "CREATE INDEX IF NOT EXISTS idx_games_date ON games(game_date)",
             "CREATE INDEX IF NOT EXISTS idx_games_home_away ON games(home_team_id, away_team_id)",
-
             # Play by play queries
             "CREATE INDEX IF NOT EXISTS idx_pbp_game ON play_by_play(game_id)",
             "CREATE INDEX IF NOT EXISTS idx_pbp_season_week ON play_by_play(season, week)",
             "CREATE INDEX IF NOT EXISTS idx_pbp_posteam ON play_by_play(posteam, play_type)",
-
             # DraftKings queries
             "CREATE INDEX IF NOT EXISTS idx_dk_contest ON draftkings_salaries(contest_id)",
             "CREATE INDEX IF NOT EXISTS idx_dk_player_contest ON draftkings_salaries(player_id, contest_id)",
-
             # DST queries
             "CREATE INDEX IF NOT EXISTS idx_dst_stats_team_game ON dst_stats(team_abbr, game_id)",
             "CREATE INDEX IF NOT EXISTS idx_dst_stats_season_week ON dst_stats(season, week)",
-
             # Weather queries (new)
             "CREATE INDEX IF NOT EXISTS idx_weather_game_id ON weather(game_id)",
-
             # Betting odds queries (new)
             "CREATE INDEX IF NOT EXISTS idx_betting_odds_game_id ON betting_odds(game_id)",
-
             # Player queries with injury status (new)
             "CREATE INDEX IF NOT EXISTS idx_players_injury_status ON players(injury_status, team_id)",
             "CREATE INDEX IF NOT EXISTS idx_players_name_team ON players(player_name, team_id)",
             "CREATE INDEX IF NOT EXISTS idx_players_display_name ON players(display_name)",
             "CREATE INDEX IF NOT EXISTS idx_players_gsis_id ON players(gsis_id)",
-
             # Team lookup optimization
-            "CREATE INDEX IF NOT EXISTS idx_teams_abbr ON teams(team_abbr)"
+            "CREATE INDEX IF NOT EXISTS idx_teams_abbr ON teams(team_abbr)",
         ]
 
         index_progress = ProgressDisplay("Creating indexes")
@@ -108,7 +99,9 @@ class DatabaseManager:
 
     # ==================== BULK LOADING METHODS ====================
 
-    def bulk_load_player_stats(self, season: int, weeks: List[int] = None) -> pd.DataFrame:
+    def bulk_load_player_stats(
+        self, season: int, weeks: List[int] = None
+    ) -> pd.DataFrame:
         """Load all player stats for a season in one query."""
         if weeks:
             week_filter = f"AND g.week IN ({','.join(map(str, weeks))})"
@@ -146,11 +139,13 @@ class DatabaseManager:
 
         return pd.read_sql(query, self.conn, params=[season])
 
-    def bulk_load_training_data(self, position: str, seasons: List[int]) -> pd.DataFrame:
+    def bulk_load_training_data(
+        self, position: str, seasons: List[int]
+    ) -> pd.DataFrame:
         """Load all training data for a position in one optimized query."""
 
         # Position-specific optimized queries
-        if position == 'QB':
+        if position == "QB":
             query = """
             SELECT
                 ps.player_id, ps.game_id, ps.fantasy_points,
@@ -178,9 +173,9 @@ class DatabaseManager:
             AND g.game_finished = 1
             AND ps.fantasy_points IS NOT NULL
             ORDER BY g.game_date
-            """.format(','.join('?' * len(seasons)))
+            """.format(",".join("?" * len(seasons)))
 
-        elif position in ['RB', 'WR', 'TE']:
+        elif position in ["RB", "WR", "TE"]:
             query = """
             SELECT
                 ps.player_id, ps.game_id, ps.fantasy_points,
@@ -217,7 +212,7 @@ class DatabaseManager:
             AND g.game_finished = 1
             AND ps.fantasy_points IS NOT NULL
             ORDER BY g.game_date
-            """.format(','.join('?' * len(seasons)))
+            """.format(",".join("?" * len(seasons)))
 
         else:  # DST
             query = """
@@ -244,9 +239,9 @@ class DatabaseManager:
             WHERE g.season IN ({})
             AND ds.fantasy_points IS NOT NULL
             ORDER BY g.game_date
-            """.format(','.join('?' * len(seasons)))
+            """.format(",".join("?" * len(seasons)))
 
-        params = [position] + seasons if position != 'DST' else seasons
+        params = [position] + seasons if position != "DST" else seasons
 
         df = pd.read_sql(query, self.conn, params=params)
         logger.info(f"Bulk loaded {len(df)} rows for {position} training data")
@@ -296,7 +291,7 @@ class DatabaseManager:
         if not game_ids:
             return pd.DataFrame()
 
-        placeholders = ','.join('?' * len(game_ids))
+        placeholders = ",".join("?" * len(game_ids))
         query = f"""
         SELECT w.*, g.game_date, g.stadium
         FROM weather w
@@ -311,7 +306,7 @@ class DatabaseManager:
         if not game_ids:
             return pd.DataFrame()
 
-        placeholders = ','.join('?' * len(game_ids))
+        placeholders = ",".join("?" * len(game_ids))
         query = f"""
         SELECT bo.*, g.game_date
         FROM betting_odds bo
@@ -323,9 +318,12 @@ class DatabaseManager:
 
     # ==================== CACHED QUERIES ====================
 
-    @lru_cache(maxsize=128)
     def get_team_stats_cached(self, team_abbr: str, season: int) -> Dict:
         """Cached team statistics."""
+        cache_key = f"team_stats_{team_abbr}_{season}"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
         query = """
         SELECT
             AVG(CASE WHEN home_team_id = t.id THEN home_score
@@ -341,15 +339,22 @@ class DatabaseManager:
         """
 
         result = self.conn.execute(query, [team_abbr, season]).fetchone()
-        return {
-            'avg_points_for': result[0] or 0,
-            'avg_points_against': result[1] or 0,
-            'games_played': result[2] or 0
+        data = {
+            "avg_points_for": result[0] or 0,
+            "avg_points_against": result[1] or 0,
+            "games_played": result[2] or 0,
         }
+        self._cache[cache_key] = data
+        return data
 
-    @lru_cache(maxsize=256)
-    def get_player_recent_performance(self, player_id: int, num_games: int = 5) -> pd.DataFrame:
+    def get_player_recent_performance(
+        self, player_id: int, num_games: int = 5
+    ) -> pd.DataFrame:
         """Cached recent player performance."""
+        cache_key = f"player_performance_{player_id}_{num_games}"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
         query = """
         SELECT ps.*, g.game_date, g.season, g.week
         FROM player_stats ps
@@ -359,11 +364,18 @@ class DatabaseManager:
         LIMIT ?
         """
 
-        return pd.read_sql(query, self.conn, params=[player_id, num_games])
+        data = pd.read_sql(query, self.conn, params=[player_id, num_games])
+        self._cache[cache_key] = data
+        return data
 
-    @lru_cache(maxsize=128)
-    def get_defensive_matchup_cached(self, opponent_abbr: str, season: int, week: int) -> Dict:
+    def get_defensive_matchup_cached(
+        self, opponent_abbr: str, season: int, week: int
+    ) -> Dict:
         """Cached defensive statistics for matchup analysis."""
+        cache_key = f"defensive_matchup_{opponent_abbr}_{season}_{week}"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
         query = """
         SELECT
             AVG(ds.points_allowed) as avg_points_allowed,
@@ -378,24 +390,31 @@ class DatabaseManager:
         AND ds.week >= ?
         """
 
-        result = self.conn.execute(query, [opponent_abbr, season, week, max(1, week - 4)]).fetchone()
-        return {
-            'avg_points_allowed': result[0] or 24.0,
-            'avg_sacks': result[1] or 2.0,
-            'avg_interceptions': result[2] or 1.0,
-            'avg_fumbles_recovered': result[3] or 1.0,
-            'avg_fantasy_points': result[4] or 5.0
+        result = self.conn.execute(
+            query, [opponent_abbr, season, week, max(1, week - 4)]
+        ).fetchone()
+        data = {
+            "avg_points_allowed": result[0] or 24.0,
+            "avg_sacks": result[1] or 2.0,
+            "avg_interceptions": result[2] or 1.0,
+            "avg_fumbles_recovered": result[3] or 1.0,
+            "avg_fantasy_points": result[4] or 5.0,
         }
+        self._cache[cache_key] = data
+        return data
 
     # ==================== BATCH OPERATIONS ====================
 
     def batch_insert_player_stats(self, stats_df: pd.DataFrame) -> None:
         """Efficiently insert multiple player stats records."""
-        stats_df.to_sql('player_stats', self.conn, if_exists='append',
-                        index=False, method='multi')
+        stats_df.to_sql(
+            "player_stats", self.conn, if_exists="append", index=False, method="multi"
+        )
         logger.info(f"Batch inserted {len(stats_df)} player stats records")
 
-    def batch_update_fantasy_points(self, updates: List[Tuple[float, int, str]]) -> None:
+    def batch_update_fantasy_points(
+        self, updates: List[Tuple[float, int, str]]
+    ) -> None:
         """Batch update fantasy points."""
         query = """
         UPDATE player_stats
@@ -435,9 +454,17 @@ class DatabaseManager:
 
     def get_database_stats(self) -> Dict[str, int]:
         """Get statistics about the database."""
-        tables = ['games', 'teams', 'players', 'player_stats',
-                  'draftkings_salaries', 'dst_stats', 'play_by_play',
-                  'weather', 'betting_odds']
+        tables = [
+            "games",
+            "teams",
+            "players",
+            "player_stats",
+            "draftkings_salaries",
+            "dst_stats",
+            "play_by_play",
+            "weather",
+            "betting_odds",
+        ]
 
         stats = {}
         for table in tables:

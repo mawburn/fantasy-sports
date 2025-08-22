@@ -28,8 +28,8 @@ def setup_logging(level: str = "INFO", log_file: Optional[str] = None) -> None:
 
     # Create formatter
     formatter = logging.Formatter(
-        fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+        fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
 
     # Configure root logger
@@ -57,8 +57,8 @@ def setup_logging(level: str = "INFO", log_file: Optional[str] = None) -> None:
         root_logger.addHandler(file_handler)
 
     # Silence noisy loggers
-    logging.getLogger('urllib3').setLevel(logging.WARNING)
-    logging.getLogger('requests').setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("requests").setLevel(logging.WARNING)
 
 
 def load_config(config_path: str = "config.json") -> Dict[str, Any]:
@@ -72,33 +72,25 @@ def load_config(config_path: str = "config.json") -> Dict[str, Any]:
     """
     # Default configuration
     default_config = {
-        "database": {
-            "path": "data/nfl_dfs.db"
-        },
+        "database": {"path": "data/nfl_dfs.db"},
         "models": {
             "directory": "models",
             "training_seasons": 3,
-            "validation_split": 0.2
+            "validation_split": 0.2,
         },
         "optimization": {
             "salary_cap": 50000,
             "lineup_count": 5,
-            "default_strategy": "balanced"
+            "default_strategy": "balanced",
         },
-        "data_collection": {
-            "seasons": [2022, 2023, 2024],
-            "lookback_weeks": 4
-        },
-        "logging": {
-            "level": "INFO",
-            "file": None
-        }
+        "data_collection": {"seasons": [2022, 2023, 2024], "lookback_weeks": 4},
+        "logging": {"level": "INFO", "file": None},
     }
 
     # Try to load user config
     if os.path.exists(config_path):
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path, "r") as f:
                 user_config = json.load(f)
 
             # Merge with defaults (user config overwrites defaults)
@@ -122,7 +114,7 @@ def save_config(config: Dict[str, Any], config_path: str = "config.json") -> Non
         config_path: Path to save configuration
     """
     try:
-        with open(config_path, 'w') as f:
+        with open(config_path, "w") as f:
             json.dump(config, f, indent=2)
         logging.info(f"Configuration saved to {config_path}")
     except Exception as e:
@@ -247,7 +239,7 @@ def validate_position(position: str) -> bool:
     Returns:
         True if valid position
     """
-    valid_positions = {'QB', 'RB', 'WR', 'TE', 'DEF', 'DST', 'K'}
+    valid_positions = {"QB", "RB", "WR", "TE", "DEF", "DST", "K"}
     return position.upper() in valid_positions
 
 
@@ -261,10 +253,38 @@ def validate_team_abbr(team_abbr: str) -> bool:
         True if valid team
     """
     valid_teams = {
-        'ARI', 'ATL', 'BAL', 'BUF', 'CAR', 'CHI', 'CIN', 'CLE',
-        'DAL', 'DEN', 'DET', 'GB', 'HOU', 'IND', 'JAX', 'KC',
-        'LV', 'LAC', 'LAR', 'MIA', 'MIN', 'NE', 'NO', 'NYG',
-        'NYJ', 'PHI', 'PIT', 'SF', 'SEA', 'TB', 'TEN', 'WAS'
+        "ARI",
+        "ATL",
+        "BAL",
+        "BUF",
+        "CAR",
+        "CHI",
+        "CIN",
+        "CLE",
+        "DAL",
+        "DEN",
+        "DET",
+        "GB",
+        "HOU",
+        "IND",
+        "JAX",
+        "KC",
+        "LV",
+        "LAC",
+        "LAR",
+        "MIA",
+        "MIN",
+        "NE",
+        "NO",
+        "NYG",
+        "NYJ",
+        "PHI",
+        "PIT",
+        "SF",
+        "SEA",
+        "TB",
+        "TEN",
+        "WAS",
     }
     return team_abbr.upper() in valid_teams
 
@@ -294,7 +314,7 @@ def get_week_from_date(date_str: str) -> int:
         Estimated NFL week (1-18)
     """
     try:
-        date_obj = datetime.strptime(date_str[:10], '%Y-%m-%d')
+        date_obj = datetime.strptime(date_str[:10], "%Y-%m-%d")
 
         # NFL season typically starts first week of September
         season_start = datetime(date_obj.year, 9, 1)
@@ -339,7 +359,7 @@ def chunk_list(lst: list, chunk_size: int) -> list:
     Returns:
         List of chunks
     """
-    return [lst[i:i + chunk_size] for i in range(0, len(lst), chunk_size)]
+    return [lst[i : i + chunk_size] for i in range(0, len(lst), chunk_size)]
 
 
 def get_environment() -> str:
@@ -348,7 +368,7 @@ def get_environment() -> str:
     Returns:
         Environment string
     """
-    return os.getenv('ENVIRONMENT', 'dev').lower()
+    return os.getenv("ENVIRONMENT", "dev").lower()
 
 
 def is_debug_mode() -> bool:
@@ -357,11 +377,12 @@ def is_debug_mode() -> bool:
     Returns:
         True if debug mode enabled
     """
-    return os.getenv('DEBUG', 'false').lower() in ('true', '1', 'yes')
+    return os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
 
 
 # Configuration singleton
 _config = None
+
 
 def get_config() -> Dict[str, Any]:
     """Get global configuration (singleton pattern).
@@ -383,7 +404,7 @@ def set_config_value(key_path: str, value: Any) -> None:
         value: Value to set
     """
     config = get_config()
-    keys = key_path.split('.')
+    keys = key_path.split(".")
 
     # Navigate to parent dictionary
     current = config
@@ -407,7 +428,7 @@ def get_config_value(key_path: str, default: Any = None) -> Any:
         Configuration value
     """
     config = get_config()
-    keys = key_path.split('.')
+    keys = key_path.split(".")
 
     current = config
     for key in keys:
@@ -453,6 +474,7 @@ def health_check() -> Dict[str, Any]:
         Health check results
     """
     import sqlite3
+
     import torch
 
     checks = {
@@ -461,7 +483,7 @@ def health_check() -> Dict[str, Any]:
         "torch_available": True,
         "sqlite_available": True,
         "config_loaded": _config is not None,
-        "errors": []
+        "errors": [],
     }
 
     # Check PyTorch
@@ -505,5 +527,5 @@ def get_version_info() -> Dict[str, str]:
         "version": __version__,
         "author": __author__,
         "python_version": sys.version,
-        "build_date": datetime.now().isoformat()
+        "build_date": datetime.now().isoformat(),
     }

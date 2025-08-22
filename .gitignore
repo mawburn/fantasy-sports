@@ -44,3 +44,4 @@ temp/
 # Security
 *.pem
 *.key
+uv.lock

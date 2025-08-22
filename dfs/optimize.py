@@ -12,9 +12,8 @@ No complex classes or abstractions - just functions that build optimal lineups.
 
 import logging
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Any, Dict, List, Optional
 
-import numpy as np
 import pandas as pd
 
 try:
@@ -27,12 +26,12 @@ logger = logging.getLogger(__name__)
 
 # DraftKings NFL lineup requirements
 DEFAULT_POSITIONS = {
-    "QB": 1,    # Quarterback
-    "RB": 2,    # Running Backs
-    "WR": 3,    # Wide Receivers
-    "TE": 1,    # Tight End
+    "QB": 1,  # Quarterback
+    "RB": 2,  # Running Backs
+    "WR": 3,  # Wide Receivers
+    "TE": 1,  # Tight End
     "FLEX": 1,  # Flex position (RB/WR/TE)
-    "DST": 1,   # Defense/Special Teams
+    "DST": 1,  # Defense/Special Teams
 }
 
 DEFAULT_SALARY_CAP = 50000
@@ -41,6 +40,7 @@ DEFAULT_SALARY_CAP = 50000
 @dataclass
 class Player:
     """Simple player data structure for optimization."""
+
     player_id: int
     name: str
     position: str
@@ -61,7 +61,9 @@ class Player:
 
     def __post_init__(self):
         """Calculate derived metrics."""
-        self.value = self.projected_points / (self.salary / 1000) if self.salary > 0 else 0
+        self.value = (
+            self.projected_points / (self.salary / 1000) if self.salary > 0 else 0
+        )
 
         # Calculate game environment score for stacking (higher = better for cash games)
         self.game_environment_score = self._calculate_game_environment_score()
@@ -72,11 +74,15 @@ class Player:
 
         # Higher implied team total = better (more scoring opportunities)
         if self.implied_team_total > 0:
-            score += min(self.implied_team_total / 30.0, 1.0) * 0.4  # Cap at 30 points, 40% weight
+            score += (
+                min(self.implied_team_total / 30.0, 1.0) * 0.4
+            )  # Cap at 30 points, 40% weight
 
         # Higher game total = better (more pace/plays)
         if self.game_total > 0:
-            score += min((self.game_total - 40) / 15.0, 1.0) * 0.3  # 40-55 range, 30% weight
+            score += (
+                min((self.game_total - 40) / 15.0, 1.0) * 0.3
+            )  # 40-55 range, 30% weight
 
         # Moderate favorites preferred for cash (more predictable)
         if self.spread != 0:
@@ -90,6 +96,7 @@ class Player:
 @dataclass
 class LineupConstraints:
     """Constraints for lineup optimization."""
+
     salary_cap: int = DEFAULT_SALARY_CAP
     positions: Dict[str, int] = None
     min_salary: int = 0
@@ -98,7 +105,9 @@ class LineupConstraints:
     # Stacking constraints
     allow_qb_stack: bool = True
     allow_rb_def_stack: bool = True
-    min_qb_stack_count: int = 2  # Minimum pass catchers to stack with QB (2 for tournaments)
+    min_qb_stack_count: int = (
+        2  # Minimum pass catchers to stack with QB (2 for tournaments)
+    )
 
     # Exposure constraints (for multi-lineup generation)
     max_exposure: Dict[int, float] = None
@@ -112,6 +121,7 @@ class LineupConstraints:
 @dataclass
 class OptimizationResult:
     """Result from lineup optimization."""
+
     lineup: List[Player]
     total_salary: int
     projected_points: float
@@ -128,21 +138,21 @@ class OptimizationResult:
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for easy export."""
         return {
-            'players': [
+            "players": [
                 {
-                    'name': p.name,
-                    'position': p.position,
-                    'salary': p.salary,
-                    'projected_points': p.projected_points,
-                    'team': p.team_abbr
+                    "name": p.name,
+                    "position": p.position,
+                    "salary": p.salary,
+                    "projected_points": p.projected_points,
+                    "team": p.team_abbr,
                 }
                 for p in self.lineup
             ],
-            'total_salary': self.total_salary,
-            'projected_points': self.projected_points,
-            'lineup_value': self.lineup_value,
-            'is_valid': self.is_valid,
-            'stacking_info': self.stacking_info
+            "total_salary": self.total_salary,
+            "projected_points": self.projected_points,
+            "lineup_value": self.lineup_value,
+            "is_valid": self.is_valid,
+            "stacking_info": self.stacking_info,
         }
 
 
@@ -157,10 +167,14 @@ def validate_lineup(lineup: List[Player], constraints: LineupConstraints) -> Lis
     # Check salary constraints
     total_salary = sum(p.salary for p in lineup)
     if total_salary > constraints.salary_cap:
-        violations.append(f"Salary cap exceeded: ${total_salary} > ${constraints.salary_cap}")
+        violations.append(
+            f"Salary cap exceeded: ${total_salary} > ${constraints.salary_cap}"
+        )
 
     if total_salary < constraints.min_salary:
-        violations.append(f"Salary too low: ${total_salary} < ${constraints.min_salary}")
+        violations.append(
+            f"Salary too low: ${total_salary} < ${constraints.min_salary}"
+        )
 
     # Check position constraints
     position_counts = {}
@@ -173,22 +187,26 @@ def validate_lineup(lineup: List[Player], constraints: LineupConstraints) -> Lis
         if pos == "FLEX":
             # FLEX can be RB, WR, or TE
             flex_count = (
-                position_counts.get("RB", 0) +
-                position_counts.get("WR", 0) +
-                position_counts.get("TE", 0)
+                position_counts.get("RB", 0)
+                + position_counts.get("WR", 0)
+                + position_counts.get("TE", 0)
             )
             total_flex_required = (
-                required_count +
-                constraints.positions.get("RB", 0) +
-                constraints.positions.get("WR", 0) +
-                constraints.positions.get("TE", 0)
+                required_count
+                + constraints.positions.get("RB", 0)
+                + constraints.positions.get("WR", 0)
+                + constraints.positions.get("TE", 0)
             )
             if flex_count < total_flex_required:
-                violations.append(f"Not enough FLEX eligible players: {flex_count} < {total_flex_required}")
+                violations.append(
+                    f"Not enough FLEX eligible players: {flex_count} < {total_flex_required}"
+                )
         else:
             actual_count = position_counts.get(pos, 0)
             if actual_count < required_count:
-                violations.append(f"Not enough {pos}: {actual_count} < {required_count}")
+                violations.append(
+                    f"Not enough {pos}: {actual_count} < {required_count}"
+                )
 
     # Check for duplicate players
     player_ids = [p.player_id for p in lineup]
@@ -204,14 +222,17 @@ def validate_lineup(lineup: List[Player], constraints: LineupConstraints) -> Lis
 
 
 def build_greedy_lineup(
-    player_pool: List[Player],
-    constraints: LineupConstraints
+    player_pool: List[Player], constraints: LineupConstraints
 ) -> OptimizationResult:
     """Build lineup using simple greedy algorithm (sorts by value)."""
     if not player_pool:
         return OptimizationResult(
-            lineup=[], total_salary=0, projected_points=0.0, lineup_value=0.0,
-            constraint_violations=["No players available"], optimization_status="infeasible"
+            lineup=[],
+            total_salary=0,
+            projected_points=0.0,
+            lineup_value=0.0,
+            constraint_violations=["No players available"],
+            optimization_status="infeasible",
         )
 
     # Sort players by value (points per $1000 salary)
@@ -274,8 +295,7 @@ def build_greedy_lineup(
 
 
 def build_linear_programming_lineup(
-    player_pool: List[Player],
-    constraints: LineupConstraints
+    player_pool: List[Player], constraints: LineupConstraints
 ) -> OptimizationResult:
     """Build lineup using linear programming optimization (guaranteed optimal)."""
     if lp is None:
@@ -284,8 +304,12 @@ def build_linear_programming_lineup(
 
     if not player_pool:
         return OptimizationResult(
-            lineup=[], total_salary=0, projected_points=0.0, lineup_value=0.0,
-            constraint_violations=["No players available"], optimization_status="infeasible"
+            lineup=[],
+            total_salary=0,
+            projected_points=0.0,
+            lineup_value=0.0,
+            constraint_violations=["No players available"],
+            optimization_status="infeasible",
         )
 
     # Create the LP problem
@@ -298,16 +322,20 @@ def build_linear_programming_lineup(
         player_vars[player.player_id] = lp.LpVariable(var_name, cat="Binary")
 
     # Objective function: maximize projected points
-    prob += lp.lpSum([
-        player.projected_points * player_vars[player.player_id]
-        for player in player_pool
-    ])
+    prob += lp.lpSum(
+        [
+            player.projected_points * player_vars[player.player_id]
+            for player in player_pool
+        ]
+    )
 
     # Salary constraint
-    prob += lp.lpSum([
-        player.salary * player_vars[player.player_id]
-        for player in player_pool
-    ]) <= constraints.salary_cap
+    prob += (
+        lp.lpSum(
+            [player.salary * player_vars[player.player_id] for player in player_pool]
+        )
+        <= constraints.salary_cap
+    )
 
     # Position constraints
     position_groups = {}
@@ -328,36 +356,50 @@ def build_linear_programming_lineup(
     # First, enforce base position requirements (minimum)
     for pos, required_count in constraints.positions.items():
         if pos != "FLEX" and position_groups.get(pos):
-            prob += lp.lpSum([
-                player_vars[pid] for pid in position_groups[pos]
-            ]) >= required_count
+            prob += (
+                lp.lpSum([player_vars[pid] for pid in position_groups[pos]])
+                >= required_count
+            )
 
     # Total RB+WR+TE must equal their base requirements + 1 for FLEX
     if "FLEX" in constraints.positions:
         total_flex_positions = (
-            constraints.positions.get("RB", 0) +
-            constraints.positions.get("WR", 0) +
-            constraints.positions.get("TE", 0) +
-            constraints.positions.get("FLEX", 0)  # Should be 1
+            constraints.positions.get("RB", 0)
+            + constraints.positions.get("WR", 0)
+            + constraints.positions.get("TE", 0)
+            + constraints.positions.get("FLEX", 0)  # Should be 1
         )
 
         # Get all RB/WR/TE players who are FLEX-eligible
         flex_eligible_by_position = {
-            "RB": [pid for pid in position_groups.get("RB", []) if pid in flex_eligible_players],
-            "WR": [pid for pid in position_groups.get("WR", []) if pid in flex_eligible_players],
-            "TE": [pid for pid in position_groups.get("TE", []) if pid in flex_eligible_players],
+            "RB": [
+                pid
+                for pid in position_groups.get("RB", [])
+                if pid in flex_eligible_players
+            ],
+            "WR": [
+                pid
+                for pid in position_groups.get("WR", [])
+                if pid in flex_eligible_players
+            ],
+            "TE": [
+                pid
+                for pid in position_groups.get("TE", [])
+                if pid in flex_eligible_players
+            ],
         }
 
         all_flex_eligible = (
-            flex_eligible_by_position["RB"] +
-            flex_eligible_by_position["WR"] +
-            flex_eligible_by_position["TE"]
+            flex_eligible_by_position["RB"]
+            + flex_eligible_by_position["WR"]
+            + flex_eligible_by_position["TE"]
         )
 
         if all_flex_eligible:
-            prob += lp.lpSum([
-                player_vars[pid] for pid in all_flex_eligible
-            ]) == total_flex_positions
+            prob += (
+                lp.lpSum([player_vars[pid] for pid in all_flex_eligible])
+                == total_flex_positions
+            )
 
     # Total lineup size constraint
     total_positions = sum(constraints.positions.values())
@@ -371,9 +413,12 @@ def build_linear_programming_lineup(
 
         if status != "Optimal":
             return OptimizationResult(
-                lineup=[], total_salary=0, projected_points=0.0, lineup_value=0.0,
+                lineup=[],
+                total_salary=0,
+                projected_points=0.0,
+                lineup_value=0.0,
                 constraint_violations=[f"LP solver status: {status}"],
-                optimization_status="infeasible"
+                optimization_status="infeasible",
             )
 
         # Extract the solution
@@ -388,7 +433,9 @@ def build_linear_programming_lineup(
         # Calculate metrics
         total_salary = sum(p.salary for p in selected_players)
         projected_points = sum(p.projected_points for p in selected_players)
-        lineup_value = projected_points / (total_salary / 1000) if total_salary > 0 else 0
+        lineup_value = (
+            projected_points / (total_salary / 1000) if total_salary > 0 else 0
+        )
 
         return OptimizationResult(
             lineup=selected_players,
@@ -396,15 +443,18 @@ def build_linear_programming_lineup(
             projected_points=projected_points,
             lineup_value=lineup_value,
             constraint_violations=violations,
-            optimization_status="optimal"
+            optimization_status="optimal",
         )
 
     except Exception as e:
         logger.exception("Linear programming optimization failed")
         return OptimizationResult(
-            lineup=[], total_salary=0, projected_points=0.0, lineup_value=0.0,
+            lineup=[],
+            total_salary=0,
+            projected_points=0.0,
+            lineup_value=0.0,
             constraint_violations=[f"Optimization error: {str(e)}"],
-            optimization_status="error"
+            optimization_status="error",
         )
 
 
@@ -414,7 +464,11 @@ def analyze_stacking(lineup: List[Player]) -> Dict[str, Any]:
     for player in lineup:
         if player.team_abbr not in teams_in_lineup:
             teams_in_lineup[player.team_abbr] = {
-                "QB": [], "WR": [], "TE": [], "RB": [], "DST": []
+                "QB": [],
+                "WR": [],
+                "TE": [],
+                "RB": [],
+                "DST": [],
             }
         teams_in_lineup[player.team_abbr][player.position].append(player)
 
@@ -425,23 +479,23 @@ def analyze_stacking(lineup: List[Player]) -> Dict[str, Any]:
         if positions["QB"] and (positions["WR"] or positions["TE"]):
             qb = positions["QB"][0]
             pass_catchers = positions["WR"] + positions["TE"]
-            stacks["qb_stacks"].append({
-                "team": team,
-                "qb": qb.name,
-                "pass_catchers": [p.name for p in pass_catchers],
-                "stack_size": len(pass_catchers) + 1,
-            })
+            stacks["qb_stacks"].append(
+                {
+                    "team": team,
+                    "qb": qb.name,
+                    "pass_catchers": [p.name for p in pass_catchers],
+                    "stack_size": len(pass_catchers) + 1,
+                }
+            )
             stacks["total_stacks"] += 1
 
         # Check RB-DEF stacks
         if positions["RB"] and positions["DST"]:
             rb = positions["RB"][0]
             defense = positions["DST"][0]
-            stacks["rb_def_stacks"].append({
-                "team": team,
-                "rb": rb.name,
-                "defense": defense.name
-            })
+            stacks["rb_def_stacks"].append(
+                {"team": team, "rb": rb.name, "defense": defense.name}
+            )
             stacks["total_stacks"] += 1
 
     return stacks
@@ -452,7 +506,7 @@ def build_stacking_lineup(
     constraints: LineupConstraints,
     qb_stack_teams: List[str] = None,
     rb_def_stack_teams: List[str] = None,
-    force_stacking: bool = False
+    force_stacking: bool = False,
 ) -> OptimizationResult:
     """Build lineup with stacking constraints using linear programming."""
     if lp is None:
@@ -461,8 +515,12 @@ def build_stacking_lineup(
 
     if not player_pool:
         return OptimizationResult(
-            lineup=[], total_salary=0, projected_points=0.0, lineup_value=0.0,
-            constraint_violations=["No players available"], optimization_status="infeasible"
+            lineup=[],
+            total_salary=0,
+            projected_points=0.0,
+            lineup_value=0.0,
+            constraint_violations=["No players available"],
+            optimization_status="infeasible",
         )
 
     # Create the LP problem with stacking constraints
@@ -475,16 +533,20 @@ def build_stacking_lineup(
         player_vars[player.player_id] = lp.LpVariable(var_name, cat="Binary")
 
     # Objective function: maximize projected points
-    prob += lp.lpSum([
-        player.projected_points * player_vars[player.player_id]
-        for player in player_pool
-    ])
+    prob += lp.lpSum(
+        [
+            player.projected_points * player_vars[player.player_id]
+            for player in player_pool
+        ]
+    )
 
     # Standard constraints (salary, positions, lineup size)
-    prob += lp.lpSum([
-        player.salary * player_vars[player.player_id]
-        for player in player_pool
-    ]) <= constraints.salary_cap
+    prob += (
+        lp.lpSum(
+            [player.salary * player_vars[player.player_id] for player in player_pool]
+        )
+        <= constraints.salary_cap
+    )
 
     # Position constraints (same as linear programming)
     position_groups = {}
@@ -503,35 +565,49 @@ def build_stacking_lineup(
     # Add standard position constraints
     for pos, required_count in constraints.positions.items():
         if pos != "FLEX" and position_groups.get(pos):
-            prob += lp.lpSum([
-                player_vars[pid] for pid in position_groups[pos]
-            ]) >= required_count
+            prob += (
+                lp.lpSum([player_vars[pid] for pid in position_groups[pos]])
+                >= required_count
+            )
 
     # FLEX constraint
     if "FLEX" in constraints.positions:
         total_flex_positions = (
-            constraints.positions.get("RB", 0) +
-            constraints.positions.get("WR", 0) +
-            constraints.positions.get("TE", 0) +
-            constraints.positions.get("FLEX", 0)
+            constraints.positions.get("RB", 0)
+            + constraints.positions.get("WR", 0)
+            + constraints.positions.get("TE", 0)
+            + constraints.positions.get("FLEX", 0)
         )
 
         flex_eligible_by_position = {
-            "RB": [pid for pid in position_groups.get("RB", []) if pid in flex_eligible_players],
-            "WR": [pid for pid in position_groups.get("WR", []) if pid in flex_eligible_players],
-            "TE": [pid for pid in position_groups.get("TE", []) if pid in flex_eligible_players],
+            "RB": [
+                pid
+                for pid in position_groups.get("RB", [])
+                if pid in flex_eligible_players
+            ],
+            "WR": [
+                pid
+                for pid in position_groups.get("WR", [])
+                if pid in flex_eligible_players
+            ],
+            "TE": [
+                pid
+                for pid in position_groups.get("TE", [])
+                if pid in flex_eligible_players
+            ],
         }
 
         all_flex_eligible = (
-            flex_eligible_by_position["RB"] +
-            flex_eligible_by_position["WR"] +
-            flex_eligible_by_position["TE"]
+            flex_eligible_by_position["RB"]
+            + flex_eligible_by_position["WR"]
+            + flex_eligible_by_position["TE"]
         )
 
         if all_flex_eligible:
-            prob += lp.lpSum([
-                player_vars[pid] for pid in all_flex_eligible
-            ]) == total_flex_positions
+            prob += (
+                lp.lpSum([player_vars[pid] for pid in all_flex_eligible])
+                == total_flex_positions
+            )
 
     # Total lineup size constraint
     total_positions = sum(constraints.positions.values())
@@ -543,7 +619,11 @@ def build_stacking_lineup(
     for player in player_pool:
         if player.team_abbr not in teams_players:
             teams_players[player.team_abbr] = {
-                "QB": [], "WR": [], "TE": [], "RB": [], "DST": []
+                "QB": [],
+                "WR": [],
+                "TE": [],
+                "RB": [],
+                "DST": [],
             }
         if player.position in teams_players[player.team_abbr]:
             teams_players[player.team_abbr][player.position].append(player.player_id)
@@ -557,18 +637,19 @@ def build_stacking_lineup(
 
                 if qb_players and pass_catchers:
                     qb_selected = lp.lpSum([player_vars[pid] for pid in qb_players])
-                    catchers_selected = lp.lpSum([player_vars[pid] for pid in pass_catchers])
-                    
-                    # Weight pass catchers by their projections to prefer higher-projected players
-                    weighted_catchers = lp.lpSum([
-                        player_vars[pid] * player_projections[pid] 
-                        for pid in pass_catchers
-                    ])
+                    catchers_selected = lp.lpSum(
+                        [player_vars[pid] for pid in pass_catchers]
+                    )
+
+                    # Note: Pass catcher selection is optimized by the main objective function
 
                     if force_stacking:
                         # Force stacking: if QB selected, must have pass catchers
-                        prob += catchers_selected >= constraints.min_qb_stack_count * qb_selected
-                        
+                        prob += (
+                            catchers_selected
+                            >= constraints.min_qb_stack_count * qb_selected
+                        )
+
                         # Soft constraint: prefer higher-projected pass catchers when stacking
                         # This is achieved by the objective function maximizing total projections
 
@@ -596,15 +677,24 @@ def build_stacking_lineup(
         if status != "Optimal":
             # If stacking constraints made it infeasible, try without forced stacking
             if force_stacking:
-                logger.warning("Forced stacking made problem infeasible, trying without")
+                logger.warning(
+                    "Forced stacking made problem infeasible, trying without"
+                )
                 return build_stacking_lineup(
-                    player_pool, constraints, qb_stack_teams, rb_def_stack_teams, force_stacking=False
+                    player_pool,
+                    constraints,
+                    qb_stack_teams,
+                    rb_def_stack_teams,
+                    force_stacking=False,
                 )
 
             return OptimizationResult(
-                lineup=[], total_salary=0, projected_points=0.0, lineup_value=0.0,
+                lineup=[],
+                total_salary=0,
+                projected_points=0.0,
+                lineup_value=0.0,
                 constraint_violations=[f"LP solver status: {status}"],
-                optimization_status="infeasible"
+                optimization_status="infeasible",
             )
 
         # Extract the solution
@@ -620,7 +710,9 @@ def build_stacking_lineup(
         # Calculate metrics
         total_salary = sum(p.salary for p in selected_players)
         projected_points = sum(p.projected_points for p in selected_players)
-        lineup_value = projected_points / (total_salary / 1000) if total_salary > 0 else 0
+        lineup_value = (
+            projected_points / (total_salary / 1000) if total_salary > 0 else 0
+        )
 
         return OptimizationResult(
             lineup=selected_players,
@@ -629,15 +721,18 @@ def build_stacking_lineup(
             lineup_value=lineup_value,
             constraint_violations=violations,
             optimization_status="optimal",
-            stacking_info=stacking_info
+            stacking_info=stacking_info,
         )
 
     except Exception as e:
         logger.exception("Stacking optimization failed")
         return OptimizationResult(
-            lineup=[], total_salary=0, projected_points=0.0, lineup_value=0.0,
+            lineup=[],
+            total_salary=0,
+            projected_points=0.0,
+            lineup_value=0.0,
             constraint_violations=[f"Optimization error: {str(e)}"],
-            optimization_status="error"
+            optimization_status="error",
         )
 
 
@@ -645,13 +740,17 @@ def build_tournament_lineup(
     player_pool: List[Player],
     constraints: LineupConstraints,
     ceiling_weight: float = 0.3,
-    min_ceiling_threshold: float = 25.0
+    min_ceiling_threshold: float = 25.0,
 ) -> OptimizationResult:
     """Build lineup optimized for tournaments (GPPs) using ceiling projections."""
     if not player_pool:
         return OptimizationResult(
-            lineup=[], total_salary=0, projected_points=0.0, lineup_value=0.0,
-            constraint_violations=["No players available"], optimization_status="infeasible"
+            lineup=[],
+            total_salary=0,
+            projected_points=0.0,
+            lineup_value=0.0,
+            constraint_violations=["No players available"],
+            optimization_status="infeasible",
         )
 
     # Filter players with sufficient ceiling potential
@@ -670,14 +769,11 @@ def build_tournament_lineup(
                 ownership_projection=player.ownership_projection,
                 team_abbr=player.team_abbr,
                 roster_position=player.roster_position,
-                injury_status=player.injury_status
+                injury_status=player.injury_status,
             )
 
             # Blend projection with ceiling for tournament optimization (60% ceiling focus)
-            tournament_score = (
-                player.projected_points * 0.4 +
-                player.ceiling * 0.6
-            )
+            tournament_score = player.projected_points * 0.4 + player.ceiling * 0.6
             tournament_player.projected_points = tournament_score
             tournament_pool.append(tournament_player)
 
@@ -691,13 +787,17 @@ def build_tournament_lineup(
 def build_contrarian_lineup(
     player_pool: List[Player],
     constraints: LineupConstraints,
-    ownership_weight: float = 0.3
+    ownership_weight: float = 0.3,
 ) -> OptimizationResult:
     """Build lineup that avoids high-owned players for contrarian strategy."""
     if not player_pool:
         return OptimizationResult(
-            lineup=[], total_salary=0, projected_points=0.0, lineup_value=0.0,
-            constraint_violations=["No players available"], optimization_status="infeasible"
+            lineup=[],
+            total_salary=0,
+            projected_points=0.0,
+            lineup_value=0.0,
+            constraint_violations=["No players available"],
+            optimization_status="infeasible",
         )
 
     # Adjust projections based on ownership (penalize high ownership)
@@ -714,13 +814,13 @@ def build_contrarian_lineup(
             ownership_projection=player.ownership_projection,
             team_abbr=player.team_abbr,
             roster_position=player.roster_position,
-            injury_status=player.injury_status
+            injury_status=player.injury_status,
         )
 
         # Penalty for high ownership
         if player.ownership_projection > 0:
             ownership_penalty = (player.ownership_projection / 100) * ownership_weight
-            contrarian_player.projected_points *= (1 - ownership_penalty)
+            contrarian_player.projected_points *= 1 - ownership_penalty
 
         contrarian_pool.append(contrarian_player)
 
@@ -732,7 +832,7 @@ def generate_multiple_lineups(
     constraints: LineupConstraints,
     num_lineups: int = 5,
     diversity_factor: float = 0.3,
-    strategy: str = "balanced"  # "balanced", "tournament", "contrarian"
+    strategy: str = "balanced",  # "balanced", "tournament", "contrarian"
 ) -> List[OptimizationResult]:
     """Generate multiple diverse lineups."""
     lineups = []
@@ -754,12 +854,12 @@ def generate_multiple_lineups(
                     ownership_projection=player.ownership_projection,
                     team_abbr=player.team_abbr,
                     roster_position=player.roster_position,
-                    injury_status=player.injury_status
+                    injury_status=player.injury_status,
                 )
 
                 # Reduce value if already used
                 if player.player_id in used_players:
-                    modified_player.projected_points *= (1 - diversity_factor)
+                    modified_player.projected_points *= 1 - diversity_factor
 
                 modified_pool.append(modified_player)
 
@@ -781,7 +881,9 @@ def generate_multiple_lineups(
             for player in result.lineup:
                 used_players.add(player.player_id)
         else:
-            logger.warning(f"Generated invalid lineup {i + 1}: {result.constraint_violations}")
+            logger.warning(
+                f"Generated invalid lineup {i + 1}: {result.constraint_violations}"
+            )
 
     # Sort lineups by projected points
     lineups.sort(key=lambda x: x.projected_points, reverse=True)
@@ -822,13 +924,17 @@ def format_lineup_display(result: OptimizationResult) -> str:
     assigned_ids = {player.player_id for _, player in assigned_players}
 
     for player in result.lineup:
-        if player.player_id not in assigned_ids and player.position in ['RB', 'WR', 'TE']:
+        if player.player_id not in assigned_ids and player.position in [
+            "RB",
+            "WR",
+            "TE",
+        ]:
             flex_player = player
             break
 
     # Build display
     display_lines = []
-    display_lines.append(f"=== OPTIMAL LINEUP ===")
+    display_lines.append("=== OPTIMAL LINEUP ===")
     display_lines.append(f"Total Salary: ${result.total_salary:,}")
     display_lines.append(f"Projected Points: {result.projected_points:.1f}")
     display_lines.append("")
@@ -847,21 +953,32 @@ def format_lineup_display(result: OptimizationResult) -> str:
     for slot in lineup_order:
         if slot == "FLEX":
             if flex_player:
-                injury_indicator = f" ({flex_player.injury_status})" if flex_player.injury_status else ""
-                display_lines.append(f"FLEX ({flex_player.position}):  {flex_player.name}{injury_indicator} - ${flex_player.salary} - {flex_player.projected_points:.1f} pts")
+                injury_indicator = (
+                    f" ({flex_player.injury_status})"
+                    if flex_player.injury_status
+                    else ""
+                )
+                display_lines.append(
+                    f"FLEX ({flex_player.position}):  {flex_player.name}{injury_indicator} - ${flex_player.salary} - {flex_player.projected_points:.1f} pts"
+                )
             else:
                 display_lines.append("FLEX: (not assigned)")
         else:
             pos_players = assigned_by_pos.get(slot, [])
             if position_counters[slot] < len(pos_players):
                 player = pos_players[position_counters[slot]]
-                injury_indicator = f" ({player.injury_status})" if player.injury_status else ""
-                display_lines.append(f"{slot}:   {player.name}{injury_indicator} - ${player.salary} - {player.projected_points:.1f} pts")
+                injury_indicator = (
+                    f" ({player.injury_status})" if player.injury_status else ""
+                )
+                display_lines.append(
+                    f"{slot}:   {player.name}{injury_indicator} - ${player.salary} - {player.projected_points:.1f} pts"
+                )
                 position_counters[slot] += 1
             else:
                 display_lines.append(f"{slot}: (not assigned)")
 
     return "\n".join(display_lines)
+
 
 def export_lineup_to_csv(lineup: OptimizationResult, filename: str = None) -> str:
     """Export lineup to DraftKings CSV format."""
@@ -895,7 +1012,11 @@ def export_lineup_to_csv(lineup: OptimizationResult, filename: str = None) -> st
     # Find FLEX player
     assigned_ids = {player.player_id for _, player in assigned_players}
     for player in lineup.lineup:
-        if player.player_id not in assigned_ids and player.position in ['RB', 'WR', 'TE']:
+        if player.player_id not in assigned_ids and player.position in [
+            "RB",
+            "WR",
+            "TE",
+        ]:
             flex_player = player
             break
 
@@ -931,14 +1052,16 @@ def export_lineup_to_csv(lineup: OptimizationResult, filename: str = None) -> st
             if player.injury_status:
                 display_name += f" ({player.injury_status})"
 
-            lineup_data.append({
-                "Position": display_position,
-                "Name": display_name,
-                "Salary": player.salary,
-                "Projected": player.projected_points,
-                "Team": player.team_abbr,
-                "Injury": player.injury_status or ""
-            })
+            lineup_data.append(
+                {
+                    "Position": display_position,
+                    "Name": display_name,
+                    "Salary": player.salary,
+                    "Projected": player.projected_points,
+                    "Team": player.team_abbr,
+                    "Injury": player.injury_status or "",
+                }
+            )
 
     df = pd.DataFrame(lineup_data)
     df.to_csv(filename, index=False)
@@ -951,7 +1074,7 @@ def export_lineup_to_csv(lineup: OptimizationResult, filename: str = None) -> st
 def optimize_cash_game_lineup(
     player_pool: List[Player],
     salary_cap: int = DEFAULT_SALARY_CAP,
-    enable_stacking: bool = True
+    enable_stacking: bool = True,
 ) -> OptimizationResult:
     """Optimize lineup for cash games (high floor, consistent scoring with stacking)."""
     constraints = LineupConstraints(salary_cap=salary_cap)
@@ -964,12 +1087,13 @@ def optimize_cash_game_lineup(
             name=player.name,
             position=player.position,
             salary=player.salary,
-            projected_points=(player.floor + player.projected_points) / 2,  # Average floor and projection for cash games
+            projected_points=(player.floor + player.projected_points)
+            / 2,  # Average floor and projection for cash games
             floor=player.floor,
             ceiling=player.ceiling,
             team_abbr=player.team_abbr,
             roster_position=player.roster_position,
-            injury_status=player.injury_status
+            injury_status=player.injury_status,
         )
         cash_pool.append(cash_player)
 
@@ -984,10 +1108,12 @@ def optimize_cash_game_lineup(
         qb_stack_teams = sorted(
             team_qbs.keys(),
             key=lambda team: (
-                team_qbs[team].game_environment_score * 0.6 +  # Prioritize good game spots
-                (team_qbs[team].floor / 25.0) * 0.4  # Add floor safety (normalize to ~25 pt max)
+                team_qbs[team].game_environment_score
+                * 0.6  # Prioritize good game spots
+                + (team_qbs[team].floor / 25.0)
+                * 0.4  # Add floor safety (normalize to ~25 pt max)
             ),
-            reverse=True
+            reverse=True,
         )[:2]  # Top 2 QB teams by combined game environment + floor
 
         return build_stacking_lineup(
@@ -1000,7 +1126,7 @@ def optimize_cash_game_lineup(
 def optimize_tournament_lineup(
     player_pool: List[Player],
     salary_cap: int = DEFAULT_SALARY_CAP,
-    enable_stacking: bool = True
+    enable_stacking: bool = True,
 ) -> OptimizationResult:
     """Optimize lineup for tournaments (high ceiling, upside focused)."""
     constraints = LineupConstraints(salary_cap=salary_cap)
@@ -1014,13 +1140,14 @@ def optimize_tournament_lineup(
 
         # Suggest stacking for top QB teams
         qb_stack_teams = sorted(
-            team_qbs.keys(),
-            key=lambda team: team_qbs[team].ceiling,
-            reverse=True
+            team_qbs.keys(), key=lambda team: team_qbs[team].ceiling, reverse=True
         )[:3]  # Top 3 QB teams for stacking
 
         return build_stacking_lineup(
-            player_pool, constraints, qb_stack_teams=qb_stack_teams, force_stacking=False
+            player_pool,
+            constraints,
+            qb_stack_teams=qb_stack_teams,
+            force_stacking=False,
         )
     else:
         return build_tournament_lineup(player_pool, constraints)
@@ -1031,11 +1158,63 @@ def test_optimization():
     """Test optimization functions with sample data."""
     # Create sample players
     sample_players = [
-        Player(1, "Josh Allen", "QB", 8500, 22.5, 18.0, 28.0, team_abbr="BUF", roster_position="QB"),
-        Player(2, "Christian McCaffrey", "RB", 9000, 20.8, 15.5, 26.0, team_abbr="SF", roster_position="RB/FLEX", injury_status="Q"),
-        Player(3, "Stefon Diggs", "WR", 7800, 16.2, 12.0, 22.0, team_abbr="BUF", roster_position="WR/FLEX"),
-        Player(4, "Travis Kelce", "TE", 7200, 14.5, 10.0, 20.0, team_abbr="KC", roster_position="TE/FLEX", injury_status="D"),
-        Player(5, "Buffalo Bills", "DST", 2800, 8.5, 5.0, 15.0, team_abbr="BUF", roster_position="DST"),
+        Player(
+            1,
+            "Josh Allen",
+            "QB",
+            8500,
+            22.5,
+            18.0,
+            28.0,
+            team_abbr="BUF",
+            roster_position="QB",
+        ),
+        Player(
+            2,
+            "Christian McCaffrey",
+            "RB",
+            9000,
+            20.8,
+            15.5,
+            26.0,
+            team_abbr="SF",
+            roster_position="RB/FLEX",
+            injury_status="Q",
+        ),
+        Player(
+            3,
+            "Stefon Diggs",
+            "WR",
+            7800,
+            16.2,
+            12.0,
+            22.0,
+            team_abbr="BUF",
+            roster_position="WR/FLEX",
+        ),
+        Player(
+            4,
+            "Travis Kelce",
+            "TE",
+            7200,
+            14.5,
+            10.0,
+            20.0,
+            team_abbr="KC",
+            roster_position="TE/FLEX",
+            injury_status="D",
+        ),
+        Player(
+            5,
+            "Buffalo Bills",
+            "DST",
+            2800,
+            8.5,
+            5.0,
+            15.0,
+            team_abbr="BUF",
+            roster_position="DST",
+        ),
         # Add more players to make valid lineups...
     ]
 
@@ -1043,12 +1222,16 @@ def test_optimization():
 
     # Test greedy algorithm
     result = build_greedy_lineup(sample_players, constraints)
-    print(f"Greedy result: {result.optimization_status}, Points: {result.projected_points}")
+    print(
+        f"Greedy result: {result.optimization_status}, Points: {result.projected_points}"
+    )
 
     # Test linear programming
     if lp is not None:
         result = build_linear_programming_lineup(sample_players, constraints)
-        print(f"LP result: {result.optimization_status}, Points: {result.projected_points}")
+        print(
+            f"LP result: {result.optimization_status}, Points: {result.projected_points}"
+        )
 
     return result
 

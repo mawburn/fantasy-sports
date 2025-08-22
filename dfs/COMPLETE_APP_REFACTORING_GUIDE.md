@@ -44,7 +44,7 @@ dfs/
 │   │   ├── optimize.py        # Lineup optimization commands
 │   │   └── backtest.py        # Backtesting commands
 │   └── utils.py               # CLI utilities
-├── data/                       # Data management (split data.py)
+├── data-utils/                # Data management (split data.py)
 │   ├── __init__.py
 │   ├── collectors/            # Data collection (1200 lines from data.py)
 │   │   ├── __init__.py
@@ -141,16 +141,6 @@ dfs/
 │   ├── math.py                # Mathematical utilities
 │   ├── datetime.py            # Date/time helpers
 │   └── io.py                  # File I/O utilities
-└── tests/                      # Comprehensive test suite
-    ├── __init__.py
-    ├── unit/                  # Unit tests by module
-    │   ├── test_data/
-    │   ├── test_models/
-    │   ├── test_optimization/
-    │   └── test_backtesting/
-    ├── integration/           # Integration tests
-    ├── e2e/                   # End-to-end tests
-    └── fixtures/              # Test data and fixtures
 ```
 
 ## Key Benefits of Modular Structure
