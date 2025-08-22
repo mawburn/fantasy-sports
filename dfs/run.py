@@ -149,6 +149,8 @@ def train_models(seasons: List[int] = None, positions: List[str] = None,
                 logger.info(f"Running full hyperparameter optimization for {position} ({trials} trials)...")
                 best_params = model.tune_hyperparameters(X_train, y_train, X_val, y_val, n_trials=trials, epochs=epochs)
                 logger.info(f"Best hyperparameters for {position}: {best_params}")
+                logger.info(f"Hyperparameter tuning complete for {position}. Run training without --tune-all to train with optimized hyperparameters.")
+                continue  # Skip training and saving when tuning
             else:
                 # Apply individual tuning options
                 if tune_lr:

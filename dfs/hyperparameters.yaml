@@ -14,39 +14,41 @@ defaults:
 positions:
   DST:
     batch_size: 64
-    best_validation_r2: 0.0417885281510314
-    best_validation_mae: null
-    best_validation_spearman: null
-    catboost_bagging_temperature: 0.40841695608322587
-    catboost_border_count: 52
-    catboost_depth: 8
-    catboost_iterations: 4500
-    catboost_l2_leaf_reg: 8.948434493860997
-    catboost_learning_rate: 0.0341454805901834
-    catboost_min_data_in_leaf: 5
-    catboost_random_strength: 3.594586253137858
+    best_validation_r2: 0.05782438766373965
+    best_validation_mae: 3.708309687192491
+    best_validation_spearman: 0.2516166274255649
+    best_validation_ndcg_at_k: null
+    catboost_bagging_temperature: 0.2779397711994165
+    catboost_border_count: 185
+    catboost_depth: 5
+    catboost_iterations: 3500
+    catboost_l2_leaf_reg: 7.224595318740729
+    catboost_learning_rate: 0.07951773559697924
+    catboost_min_data_in_leaf: 7
+    catboost_random_strength: 0.7760668449262453
     dropout_rate: 0.2
-    epochs: 4500
+    epochs: 3500
     hidden_size: 128
-    last_tuned: "2025-08-21T20:13:00.262748"
-    learning_rate: 0.0341454805901834
+    last_tuned: '2025-08-22T11:10:00.161164'
+    learning_rate: 0.07951773559697924
     num_layers: 2
-    tuning_trials: 100
-    weight_decay: 8.948434493860997
+    tuning_trials: 500
+    weight_decay: 7.224595318740729
     xgb_colsample_bytree: 0.8
     xgb_learning_rate: 0.1
     xgb_max_depth: 5
     xgb_subsample: 0.8
   QB:
-    batch_size: 16
-    best_validation_r2: 0.2919396162033081
-    best_validation_mae: null
-    best_validation_spearman: null
-    dropout_rate: 0.3832290311184182
+    batch_size: 48
+    best_validation_r2: -1.679262638092041
+    best_validation_mae: 5.804365634918213
+    best_validation_spearman: -0.22998978666799066
+    best_validation_ndcg_at_k: 0.40902902007533365
+    dropout_rate: 0.2465447373174767
     epochs: 500
-    hidden_size: 256
-    last_tuned: "2025-08-22T07:22:35.062277"
-    learning_rate: 0.0010253509690168491
+    hidden_size: 192
+    last_tuned: '2025-08-22T14:56:27.023650'
+    learning_rate: 0.0044809759182149545
     num_layers: 2
     tuning_trials: 5
     weight_decay: 0.001
@@ -55,16 +57,17 @@ positions:
     xgb_max_depth: 7
     xgb_subsample: 0.8
   RB:
-    batch_size: 16
-    best_validation_r2: null
-    best_validation_mae: null
-    best_validation_spearman: null
-    dropout_rate: 0.11031655633456552
+    batch_size: 48
+    best_validation_r2: -0.2713441848754883
+    best_validation_mae: 5.998381614685059
+    best_validation_spearman: 0.4137932637859814
+    best_validation_ndcg_at_k: 0.594992834076214
+    dropout_rate: 0.2465447373174767
     epochs: 500
-    hidden_size: 256
-    last_tuned: "2025-08-21T20:48:36.107796"
-    learning_rate: 0.03639264345367794
-    num_layers: 3
+    hidden_size: 192
+    last_tuned: '2025-08-22T14:59:24.573004'
+    learning_rate: 0.0044809759182149545
+    num_layers: 2
     tuning_trials: 5
     weight_decay: 0.001
     xgb_colsample_bytree: 0.8
@@ -76,6 +79,7 @@ positions:
     best_validation_r2: null
     best_validation_mae: null
     best_validation_spearman: null
+    best_validation_ndcg_at_k: null
     dropout_rate: 0.25
     epochs: 400
     hidden_size: 128
@@ -89,17 +93,18 @@ positions:
     xgb_max_depth: 5
     xgb_subsample: 0.8
   WR:
-    batch_size: 16
-    best_validation_r2: null
-    best_validation_mae: null
-    best_validation_spearman: null
-    dropout_rate: 0.31242177333881366
+    batch_size: 48
+    best_validation_r2: -0.041590332984924316
+    best_validation_mae: 5.8081254959106445
+    best_validation_spearman: 0.3483362669033034
+    best_validation_ndcg_at_k: 0.42747798431386264
+    dropout_rate: 0.2465447373174767
     epochs: 500
-    hidden_size: 128
-    last_tuned: "2025-08-21T18:43:33.878957"
-    learning_rate: 0.0010253509690168491
+    hidden_size: 192
+    last_tuned: '2025-08-22T15:04:54.013486'
+    learning_rate: 0.0044809759182149545
     num_layers: 2
-    tuning_trials: 1
+    tuning_trials: 5
     weight_decay: 0.001
     xgb_colsample_bytree: 0.8
     xgb_learning_rate: 0.08

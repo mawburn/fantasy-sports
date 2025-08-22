@@ -118,7 +118,8 @@ class HyperparameterManager:
 
     def update_hyperparameters(self, position: str, new_params: Dict[str, Any],
                              validation_r2: float = None, validation_mae: float = None,
-                             validation_spearman: float = None, trials: int = None):
+                             validation_spearman: float = None, validation_ndcg: float = None,
+                             trials: int = None):
         """Update hyperparameters for a position.
 
         Args:
@@ -127,6 +128,7 @@ class HyperparameterManager:
             validation_r2: Best validation R² achieved
             validation_mae: Best validation MAE achieved
             validation_spearman: Best validation Spearman correlation achieved
+            validation_ndcg: Best validation NDCG@20 achieved
             trials: Number of trials used in optimization
         """
         position = position.upper()
@@ -138,10 +140,41 @@ class HyperparameterManager:
         if position not in self.config['positions']:
             self.config['positions'][position] = {}
 
-        # Check if we should update based on MAE (preferred) or R² (fallback)
+        # Check if we should update based on position-specific optimization metric
         should_update = True
-        
-        if validation_mae is not None:
+
+        # For neural network positions (QB, RB, WR, TE), prioritize NDCG@20 if available
+        if position in ['QB', 'RB', 'WR', 'TE'] and validation_ndcg is not None:
+            current_best = self.config['positions'][position].get('best_validation_ndcg_at_k')
+            if current_best is not None:
+                try:
+                    current_best_float = float(current_best)
+                    validation_ndcg_float = float(validation_ndcg)
+                    if validation_ndcg_float < current_best_float:  # Lower NDCG is worse
+                        should_update = False
+                        logger.warning(f"Not updating {position} hyperparameters: "
+                                     f"new NDCG@20 ({validation_ndcg_float:.4f}) is worse than "
+                                     f"current best ({current_best_float:.4f})")
+                except (TypeError, ValueError):
+                    logger.warning(f"Could not compare NDCG@20 values for {position}, updating anyway")
+            else:
+                # No existing NDCG@20 value, so any valid NDCG@20 is an improvement
+                logger.info(f"No existing NDCG@20 for {position}, updating with new NDCG@20: {validation_ndcg:.4f}")
+        # For DST, prioritize Spearman correlation if available
+        elif position == 'DST' and validation_spearman is not None:
+            current_best = self.config['positions'][position].get('best_validation_spearman')
+            if current_best is not None:
+                try:
+                    current_best_float = float(current_best)
+                    validation_spearman_float = float(validation_spearman)
+                    if validation_spearman_float < current_best_float:  # Lower Spearman is worse
+                        should_update = False
+                        logger.warning(f"Not updating {position} hyperparameters: "
+                                     f"new Spearman ({validation_spearman_float:.4f}) is worse than "
+                                     f"current best ({current_best_float:.4f})")
+                except (TypeError, ValueError):
+                    logger.warning(f"Could not compare Spearman values for {position}, updating anyway")
+        elif validation_mae is not None:
             current_best = self.config['positions'][position].get('best_validation_mae')
             if current_best is not None:
                 try:
@@ -175,7 +208,7 @@ class HyperparameterManager:
 
             # Update metadata
             self.config['positions'][position]['last_tuned'] = datetime.now().isoformat()
-            
+
             # Store all metrics as floats to avoid numpy serialization issues
             if validation_r2 is not None:
                 self.config['positions'][position]['best_validation_r2'] = float(validation_r2)
@@ -183,11 +216,13 @@ class HyperparameterManager:
                 self.config['positions'][position]['best_validation_mae'] = float(validation_mae)
             if validation_spearman is not None:
                 self.config['positions'][position]['best_validation_spearman'] = float(validation_spearman)
+            if validation_ndcg is not None:
+                self.config['positions'][position]['best_validation_ndcg_at_k'] = float(validation_ndcg)
             if trials is not None:
                 self.config['positions'][position]['tuning_trials'] = trials
 
             logger.info(f"Updated hyperparameters for {position} with {len(new_params)} parameters")
-            
+
             # Log all available metrics
             metrics_log = []
             if validation_mae is not None:
@@ -196,7 +231,9 @@ class HyperparameterManager:
                 metrics_log.append(f"Spearman: {validation_spearman:.4f}")
             if validation_r2 is not None:
                 metrics_log.append(f"R²: {validation_r2:.4f}")
-            
+            if validation_ndcg is not None:
+                metrics_log.append(f"NDCG@20: {validation_ndcg:.4f}")
+
             if metrics_log:
                 logger.info(f"Best metrics for {position}: {', '.join(metrics_log)}")
 

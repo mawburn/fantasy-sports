@@ -510,6 +510,84 @@ try:
     from optuna.trial import Trial
     HAS_OPTUNA = True
 
+    def ndcg_at_k(y_true: np.ndarray, y_pred: np.ndarray, k: int = 20) -> float:
+        """Calculate NDCG@k (Normalized Discounted Cumulative Gain at k).
+
+        This metric is ideal for ranking problems where we care about the relative
+        ordering of predictions, especially for the top-k items.
+
+        Args:
+            y_true: True target values (actual fantasy points)
+            y_pred: Predicted values (predicted fantasy points)
+            k: Number of top items to consider (default: 20)
+
+        Returns:
+            NDCG@k score between 0 and 1, where 1 is perfect ranking
+        """
+        import numpy as np
+
+        # Handle edge cases
+        if len(y_true) == 0 or len(y_pred) == 0:
+            return 0.0
+
+        if len(y_true) != len(y_pred):
+            raise ValueError(f"Length mismatch: y_true={len(y_true)}, y_pred={len(y_pred)}")
+
+        # Ensure we have valid arrays
+        y_true = np.asarray(y_true).flatten()
+        y_pred = np.asarray(y_pred).flatten()
+
+        # Handle NaN values by setting them to minimum
+        if np.any(np.isnan(y_true)) or np.any(np.isnan(y_pred)):
+            y_true = np.nan_to_num(y_true, nan=np.nanmin(y_true) if not np.all(np.isnan(y_true)) else 0.0)
+            y_pred = np.nan_to_num(y_pred, nan=np.nanmin(y_pred) if not np.all(np.isnan(y_pred)) else 0.0)
+
+        # Limit k to the number of available items
+        n_items = len(y_true)
+        k = min(k, n_items)
+
+        if k <= 0:
+            return 0.0
+
+        # Handle negative fantasy points by shifting to make minimum = 0
+        # This ensures relevance scores are non-negative as required by NDCG
+        min_true = np.min(y_true)
+        if min_true < 0:
+            y_true_shifted = y_true - min_true
+        else:
+            y_true_shifted = y_true.copy()
+
+        # Sort indices by predicted values (descending order)
+        predicted_order = np.argsort(y_pred)[::-1]
+
+        # Get the top-k predictions and their true relevance scores
+        top_k_indices = predicted_order[:k]
+        top_k_true_scores = y_true_shifted[top_k_indices]
+
+        # Calculate DCG@k (Discounted Cumulative Gain)
+        # DCG = sum(rel_i / log2(i + 2)) for i in range(k)
+        dcg = 0.0
+        for i, relevance in enumerate(top_k_true_scores):
+            dcg += relevance / np.log2(i + 2)
+
+        # Calculate ideal DCG@k (sort by true relevance scores)
+        ideal_order = np.argsort(y_true_shifted)[::-1]
+        ideal_top_k = y_true_shifted[ideal_order][:k]
+
+        idcg = 0.0
+        for i, relevance in enumerate(ideal_top_k):
+            idcg += relevance / np.log2(i + 2)
+
+        # Calculate NDCG@k
+        if idcg == 0.0:
+            # If all relevance scores are 0, return 0
+            return 0.0
+
+        ndcg = dcg / idcg
+
+        # Ensure result is in valid range [0, 1]
+        return max(0.0, min(1.0, ndcg))
+
     class HyperparameterTuner:
         """Joint hyperparameter optimization using Optuna."""
 
@@ -543,11 +621,14 @@ try:
         def objective(self, trial: Trial) -> float:
             """Optuna objective function.
 
+            Maximizes average NDCG@20 with MAE guardrail < 6.0.
+            Also computes and logs Spearman correlation and R² for monitoring.
+
             Args:
                 trial: Optuna trial
 
             Returns:
-                Combined score (MAE + Spearman correlation) to maximize
+                Average NDCG@20 to maximize (with MAE guardrail)
             """
             # Get search ranges from hyperparameter manager
             from hyperparameter_manager import get_hyperparameter_manager
@@ -607,6 +688,9 @@ try:
                 int(layers_config.get('max', 4))
             )
 
+            # MAE guardrail threshold
+            mae_guardrail = 6.0
+
             # Handle DST position (uses CatBoost instead of neural network)
             position = self.model_config.position.upper()
             if position == 'DST':
@@ -633,26 +717,40 @@ try:
                              early_stopping_rounds=50,
                              verbose=False)
 
-                    # Evaluate using MAE and Spearman correlation
-                    from sklearn.metrics import mean_absolute_error
+                    # Evaluate using MAE, NDCG@k, Spearman correlation, and R²
+                    from sklearn.metrics import mean_absolute_error, r2_score
                     from scipy.stats import spearmanr
+                    import numpy as np
+
                     val_pred = model.predict(self.X_val)
 
                     mae = mean_absolute_error(self.y_val, val_pred)
+                    ndcg_score = ndcg_at_k(self.y_val, val_pred, k=20)
                     spearman_corr, _ = spearmanr(self.y_val, val_pred)
+                    r2 = r2_score(self.y_val, val_pred)
 
-                    # Combined score: normalize and combine metrics
-                    # Lower MAE is better, higher Spearman is better
-                    # Scale MAE to 0-1 range (assuming max reasonable MAE ~20 for fantasy points)
-                    mae_score = max(0, 1 - (mae / 20))
-                    spearman_score = max(0, spearman_corr) if not np.isnan(spearman_corr) else 0
+                    # Handle NaN values (treat as 0.0)
+                    if spearman_corr is None or np.isnan(spearman_corr):
+                        spearman_corr = 0.0
+                    if np.isnan(ndcg_score):
+                        ndcg_score = 0.0
+                    if np.isnan(r2):
+                        r2 = 0.0
 
-                    # Weighted combination: 50% MAE, 50% Spearman
-                    combined_score = 0.5 * mae_score + 0.5 * spearman_score
+                    # Store metrics in trial attributes
+                    trial.set_user_attr("mae", float(mae))
+                    trial.set_user_attr("ndcg_at_k", float(ndcg_score))
+                    trial.set_user_attr("spearman", float(spearman_corr))
+                    trial.set_user_attr("r2", float(r2))
 
-                    return combined_score
+                    # Apply MAE guardrail
+                    if mae >= mae_guardrail:
+                        raise optuna.TrialPruned(f"MAE guardrail failed: {mae:.3f} >= {mae_guardrail}")
+
+                    # Return NDCG@k for maximization
+                    return float(ndcg_score)
                 else:
-                    return 0.0
+                    return -1.0  # Penalize when CatBoost unavailable
 
             # Create model with suggested hyperparameters
             model = self.model_class(self.model_config)
@@ -670,43 +768,83 @@ try:
             # Train for specified epochs
             model.epochs = self.epochs
 
+            # Add separation before trial starts
+            print(f"\n--- Trial {trial.number + 1} ---")
+
             try:
                 # Train model
                 result = model.train(self.X_train, self.y_train, self.X_val, self.y_val)
 
-                # Calculate predictions for evaluation
-                model.network.eval()
-                with torch.no_grad():
-                    X_val_tensor = torch.tensor(self.X_val, dtype=torch.float32).to(model.device)
-                    val_pred_tensor = model.network(X_val_tensor)
-
-                    # Handle different output formats
-                    if isinstance(val_pred_tensor, dict):
-                        val_pred_tensor = val_pred_tensor['mean']
-                    elif val_pred_tensor.dim() > 1 and val_pred_tensor.size(1) == 1:
-                        val_pred_tensor = val_pred_tensor.squeeze(1)
-
-                    val_pred = val_pred_tensor.cpu().numpy()
-
-                # Evaluate using MAE and Spearman correlation
-                from sklearn.metrics import mean_absolute_error
+                # Calculate ALL metrics from the current model state (should be best checkpoint after training)
                 from scipy.stats import spearmanr
+                from sklearn.metrics import r2_score
+                import torch
                 import numpy as np
 
-                mae = mean_absolute_error(self.y_val, val_pred)
+                model.network.eval()
+                with torch.no_grad():
+                    X_val_tensor = torch.tensor(self.X_val, dtype=torch.float32)
+                    if hasattr(model, 'device'):
+                        X_val_tensor = X_val_tensor.to(model.device)
+
+                    val_pred = model.network(X_val_tensor)
+                    if isinstance(val_pred, dict):
+                        val_pred = val_pred['mean']
+                    val_pred = val_pred.detach().cpu().numpy().squeeze()
+
+                # Use MAE from training result (calculated from best checkpoint)
+                mae = result.val_mae
+                ndcg_score = ndcg_at_k(self.y_val, val_pred, k=20)
                 spearman_corr, _ = spearmanr(self.y_val, val_pred)
+                r2 = r2_score(self.y_val, val_pred)
 
-                # Store the best model if this is the best MAE so far
-                if not hasattr(self, 'best_mae') or mae < self.best_mae:
-                    self.best_mae = mae
+                # Debug: Check if model actually has best checkpoint loaded
+                logger.info(f"Trial {trial.number + 1}: Using MAE={mae:.3f} from training result")
+
+                # Handle NaN values (treat as 0.0)
+                if spearman_corr is None or np.isnan(spearman_corr):
+                    spearman_corr = 0.0
+                if np.isnan(ndcg_score):
+                    ndcg_score = 0.0
+                if np.isnan(r2):
+                    r2 = 0.0
+
+                # Store metrics in trial attributes for inspection
+                trial.set_user_attr("mae", float(mae))
+                trial.set_user_attr("ndcg_at_k", float(ndcg_score))
+                trial.set_user_attr("r2", float(r2))
+                trial.set_user_attr("spearman", float(spearman_corr))
+
+                # Store the best model if this is the best NDCG@k so far AND MAE < guardrail
+                if mae < mae_guardrail and (not hasattr(self, 'best_ndcg') or ndcg_score > self.best_ndcg):
+                    self.best_ndcg = ndcg_score
                     self.best_model = model
+                    # Store best metrics for later use (only for valid trials)
+                    self.best_metrics = {
+                        'mae': float(mae),
+                        'ndcg_at_k': float(ndcg_score),
+                        'r2': float(r2),
+                        'spearman': float(spearman_corr)
+                    }
+                    logger.info(f"Trial {trial.number + 1}: New best valid trial stored (MAE={mae:.3f}, NDCG={ndcg_score:.4f})")
 
-                # Optimize on MAE (lower is better)
-                return mae
+                # Apply MAE guardrail - prune if MAE too high
+                if mae >= mae_guardrail:
+                    logger.info(f"Trial {trial.number + 1}: MAE guardrail failed: {mae:.3f} >= {mae_guardrail}")
+                    raise optuna.TrialPruned(f"MAE guardrail failed: {mae:.3f} >= {mae_guardrail}")
 
+                # Add newline to separate from training progress, then log trial progress
+                print()  # Ensure newline after training progress
+                logger.info(f"Trial {trial.number + 1}: NDCG@20={ndcg_score:.4f}, MAE={mae:.4f}, Spearman={spearman_corr:.4f}, R²={r2:.4f}")
+
+                # Return NDCG@k for maximization
+                return float(ndcg_score)
+
+            except optuna.TrialPruned:
+                raise  # Re-raise pruned trials
             except Exception as e:
                 logger.warning(f"Trial failed: {e}")
-                return -1.0  # Return bad score for failed trials
+                return -1.0  # Return poor correlation for failed trials
 
         def optimize(self, n_trials: int = 20, timeout: int = 3600) -> Dict[str, Any]:
             """Run hyperparameter optimization.
@@ -720,7 +858,7 @@ try:
             """
             # Create study
             study = optuna.create_study(
-                direction='minimize',  # Minimize MAE
+                direction='maximize',  # Maximize NDCG@20
                 sampler=optuna.samplers.TPESampler(seed=42),
                 pruner=optuna.pruners.MedianPruner(n_startup_trials=5)
             )
@@ -729,19 +867,21 @@ try:
             self.best_model = None
 
             # Optimize
+            logger.info(f"Starting hyperparameter optimization with {n_trials} trials (optimizing NDCG@20)...")
             study.optimize(
                 self.objective,
                 n_trials=n_trials,
                 timeout=timeout,
-                show_progress_bar=True
+                show_progress_bar=False  # Disable progress bar for cleaner logging
             )
+            logger.info("Hyperparameter optimization completed.")
 
             # Store best results
             self.best_params = study.best_params
             self.best_score = study.best_value
 
             logger.info(f"Best hyperparameters: {self.best_params}")
-            logger.info(f"Best MAE: {self.best_score:.4f}")
+            logger.info(f"Best NDCG@20: {self.best_score:.4f}")
 
             return self.best_params
 
@@ -1645,10 +1785,14 @@ class BaseNeuralModel(ABC):
         logger.info(f"Applied best hyperparameters for {self.config.position}: {best_params}")
 
         # Save the optimized hyperparameters to YAML config
-        # Extract all validation metrics if available
-        validation_r2 = getattr(self, '_last_validation_r2', None)
-        validation_mae = getattr(self, '_last_mae', None)  # Best MAE from tuning
-        validation_spearman = getattr(self, '_last_validation_spearman', None)
+        # Use metrics from the best trial stored by the tuner
+        best_metrics = getattr(tuner, 'best_metrics', {})
+        logger.info(f"Best trial metrics: {best_metrics}")
+        validation_mae = best_metrics.get('mae', getattr(self, '_last_validation_mae', None))
+        validation_r2 = best_metrics.get('r2', getattr(self, '_last_validation_r2', None))
+        validation_spearman = best_metrics.get('spearman', getattr(self, '_last_validation_spearman', None))
+        validation_ndcg = best_metrics.get('ndcg_at_k', getattr(self, '_last_validation_ndcg', None))
+        logger.info(f"Extracted metrics - MAE: {validation_mae}, R²: {validation_r2}, Spearman: {validation_spearman}, NDCG: {validation_ndcg}")
 
         # Save to hyperparameter manager if available
         if HAS_HYPERPARAMETER_MANAGER:
@@ -1659,6 +1803,7 @@ class BaseNeuralModel(ABC):
                 validation_r2=validation_r2,
                 validation_mae=validation_mae,
                 validation_spearman=validation_spearman,
+                validation_ndcg=validation_ndcg,
                 trials=n_trials
             )
 
@@ -1902,6 +2047,33 @@ class BaseNeuralModel(ABC):
         mae = np.mean(np.abs(y_val - predictions))
         return mae
 
+    def _compute_validation_ndcg(self, val_loader: DataLoader, y_val: np.ndarray, k: int = 20) -> float:
+        """Compute NDCG@k score on validation data."""
+        self.network.eval()
+        predictions = []
+
+        with torch.no_grad():
+            for batch_X, _ in val_loader:
+                pred = self.network(batch_X)
+
+                # Handle QB model's dictionary output
+                if isinstance(pred, dict):
+                    pred = pred['mean']
+                elif pred.dim() > 1 and pred.size(1) == 1:
+                    pred = pred.squeeze(1)
+
+                predictions.extend(pred.cpu().numpy())
+
+        predictions = np.array(predictions)
+
+        # Handle NaN predictions
+        if np.isnan(predictions).any():
+            return 0.0  # Low NDCG for failed predictions
+
+        # Compute NDCG@k
+        ndcg_score = ndcg_at_k(y_val, predictions, k=k)
+        return float(ndcg_score)
+
     def validate_predictions(self, predictions: np.ndarray, position: str = None) -> bool:
         """Ensure predictions are realistic per optimization guide validation."""
 
@@ -2001,7 +2173,7 @@ class BaseNeuralModel(ABC):
         )
 
         best_val_loss = float("inf")
-        best_val_mae = float("inf")  # Track best MAE score (lower is better)
+        best_val_ndcg = 0.0  # Track best NDCG@K score (higher is better)
         best_epoch = 0
 
         logger.info(f"Starting neural network training for {self.config.position}")
@@ -2012,40 +2184,46 @@ class BaseNeuralModel(ABC):
             val_loss = self._validate_epoch(val_loader)
             self.scheduler.step(val_loss)  # ReduceLROnPlateau takes loss as input
 
-            # Compute validation MAE every epoch for precise checkpointing
-            val_mae = self._compute_validation_mae(val_loader, y_val)
-            # Also compute R² for logging/tracking
+            # Compute validation NDCG@K every epoch for precise checkpointing
+            val_ndcg = self._compute_validation_ndcg(val_loader, y_val, k=20)
+            # Also compute R² and MAE for logging/tracking
             val_r2 = self._compute_validation_r2(val_loader, y_val)
+            val_mae = self._compute_validation_mae(val_loader, y_val)
 
             self.train_losses.append(train_loss)
             self.val_losses.append(val_loss)
 
-            # Snapshot best model based on MAE score (lower is better)
+            # Snapshot best model based on NDCG@K score (higher is better) AND MAE < 6.0
             improved = False
-            if val_mae < best_val_mae:
-                best_val_mae = val_mae
+            if val_ndcg > best_val_ndcg and val_mae < 6.0:
+                best_val_ndcg = val_ndcg
                 best_val_loss = val_loss
                 best_epoch = epoch
-                self.best_state_dict = self.network.state_dict().copy()
+                import copy
+                self.best_state_dict = copy.deepcopy(self.network.state_dict())
                 improved = True
-            elif val_mae == best_val_mae and val_loss < best_val_loss:
-                # Same MAE, but better loss - still an improvement
+            elif val_ndcg == best_val_ndcg and val_loss < best_val_loss and val_mae < 6.0:
+                # Same NDCG@K, but better loss - still an improvement if MAE is good
                 best_val_loss = val_loss
                 best_epoch = epoch
-                self.best_state_dict = self.network.state_dict().copy()
+                import copy
+                self.best_state_dict = copy.deepcopy(self.network.state_dict())
                 improved = True
 
             # Progress reporting - show improvements and periodic updates
             if improved:
-                print(f"\r\033[K🎯 Epoch {epoch}: New best MAE = {val_mae:.4f}", end="", flush=True)
+                print(f"\r\033[K🎯 Epoch {epoch}: New best NDCG@20 = {val_ndcg:.4f} (MAE={val_mae:.3f})", end="", flush=True)
             elif epoch % 50 == 0:
-                print(f"\r\033[KEpoch {epoch}/{self.epochs}: MAE = {val_mae:.4f} (Best: {best_val_mae:.4f} @ epoch {best_epoch})", end="", flush=True)
+                print(f"\r\033[KEpoch {epoch}/{self.epochs}: NDCG@20 = {val_ndcg:.4f} (Best: {best_val_ndcg:.4f} @ epoch {best_epoch})", end="", flush=True)
 
         # Training completed - always run full epochs and use best checkpoint
-        print(f"\nTraining completed ({self.epochs} epochs, Best MAE: {best_val_mae:.4f} at epoch {best_epoch})")
+        print(f"\nTraining completed ({self.epochs} epochs, Best NDCG@20: {best_val_ndcg:.4f} at epoch {best_epoch})")
 
-        if hasattr(self, "best_state_dict"):
+        if hasattr(self, "best_state_dict") and self.best_state_dict is not None:
+            logger.info(f"Loading best checkpoint from epoch {best_epoch}")
             self.network.load_state_dict(self.best_state_dict)
+        else:
+            logger.warning(f"No best checkpoint available - using final epoch state (this will likely have high MAE)")
 
         # Calculate final metrics
         self.network.eval()
@@ -2073,14 +2251,16 @@ class BaseNeuralModel(ABC):
         # Check for NaN predictions and handle gracefully
         if np.isnan(train_pred).any() or np.isnan(val_pred).any():
             logger.error("NaN predictions detected after training!")
-            train_mae = val_mae = float('nan')
+            train_mae = float('nan')
+            val_mae = float('nan')  # Set validation MAE to NaN
             train_rmse = val_rmse = float('nan')
             train_r2 = float('nan')
-            # Calculate final R² from the best MAE model
+            # Calculate final R² from the best NDCG@K model
             val_ss_tot = np.sum((y_val - np.mean(y_val)) ** 2)
             val_r2 = 1 - np.sum((y_val - val_pred) ** 2) / val_ss_tot if val_ss_tot != 0 else 0
         else:
             train_mae = np.mean(np.abs(y_train - train_pred))
+            # Calculate final validation MAE from best NDCG@K model
             val_mae = np.mean(np.abs(y_val - val_pred))
             train_rmse = np.sqrt(np.mean((y_train - train_pred) ** 2))
             val_rmse = np.sqrt(np.mean((y_val - val_pred) ** 2))
@@ -2107,7 +2287,7 @@ class BaseNeuralModel(ABC):
             best_iteration=best_epoch,
             feature_importance=None,
             train_mae=train_mae,
-            val_mae=val_mae,
+            val_mae=val_mae,  # Final MAE from the best NDCG@K model
             train_rmse=train_rmse,
             val_rmse=val_rmse,
             train_r2=train_r2,
@@ -2118,7 +2298,7 @@ class BaseNeuralModel(ABC):
         )
 
         self.training_history.append(result.__dict__)
-        logger.info(f"Training completed: MAE={val_mae:.3f}, R�={val_r2:.3f}")
+        logger.info(f"Training completed: NDCG@20={best_val_ndcg:.3f}, R²={val_r2:.3f}")
 
         return result
 
@@ -3528,14 +3708,22 @@ class DEFCatBoostModel:
             # Calculate Spearman correlation
             from scipy.stats import spearmanr
             spearman_corr, _ = spearmanr(y_val, val_pred)
-            spearman_corr = spearman_corr if not np.isnan(spearman_corr) else 0
 
-            # Log progress every 5 trials
-            if trial.number % 5 == 0:
-                logger.info(f"Trial {trial.number}: MAE={val_mae:.3f}, Spearman={spearman_corr:.3f}")
+            # Use Spearman if valid, otherwise fall back to R²
+            if not np.isnan(spearman_corr):
+                metric_value = spearman_corr
+                metric_name = "Spearman"
+            else:
+                from sklearn.metrics import r2_score
+                r2 = r2_score(y_val, val_pred)
+                metric_value = r2 if not np.isnan(r2) else -1.0
+                metric_name = "R²"
 
-            # Optimize on MAE (lower is better)
-            return val_mae
+            # Log trial progress
+            logger.info(f"Trial {trial.number + 1}: MAE={val_mae:.4f}, {metric_name}={metric_value:.4f}")
+
+            # Optimize on Spearman/R² (higher is better, so return negative)
+            return -metric_value
 
         # Create study and optimize
         study = optuna.create_study(direction='minimize', study_name='dst_catboost_tuning')
