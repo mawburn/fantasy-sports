@@ -26,7 +26,7 @@ positions:
     dropout_rate: 0.2
     epochs: 4500
     hidden_size: 128
-    last_tuned: '2025-08-21T20:13:00.262748'
+    last_tuned: "2025-08-21T20:13:00.262748"
     learning_rate: 0.0341454805901834
     num_layers: 2
     tuning_trials: 100
@@ -36,15 +36,15 @@ positions:
     xgb_max_depth: 5
     xgb_subsample: 0.8
   QB:
-    batch_size: 32
-    best_validation_r2: null
-    dropout_rate: 0.3
+    batch_size: 16
+    best_validation_r2: 0.2919396162033081
+    dropout_rate: 0.3832290311184182
     epochs: 500
     hidden_size: 256
-    last_tuned: null
-    learning_rate: 0.001
-    num_layers: 3
-    tuning_trials: 0
+    last_tuned: "2025-08-22T07:22:35.062277"
+    learning_rate: 0.0010253509690168491
+    num_layers: 2
+    tuning_trials: 5
     weight_decay: 0.001
     xgb_colsample_bytree: 0.8
     xgb_learning_rate: 0.05
@@ -56,7 +56,7 @@ positions:
     dropout_rate: 0.11031655633456552
     epochs: 500
     hidden_size: 256
-    last_tuned: '2025-08-21T20:48:36.107796'
+    last_tuned: "2025-08-21T20:48:36.107796"
     learning_rate: 0.03639264345367794
     num_layers: 3
     tuning_trials: 5
@@ -86,7 +86,7 @@ positions:
     dropout_rate: 0.31242177333881366
     epochs: 500
     hidden_size: 128
-    last_tuned: '2025-08-21T18:43:33.878957'
+    last_tuned: "2025-08-21T18:43:33.878957"
     learning_rate: 0.0010253509690168491
     num_layers: 2
     tuning_trials: 1
@@ -97,29 +97,24 @@ positions:
     xgb_subsample: 0.8
 search_ranges:
   batch_size:
-    choices:
-    - 16
-    - 32
-    - 64
-    - 128
-    - 256
+    min: 16
+    max: 256
+    step: 16
   dropout_rate:
-    max: 0.5
     min: 0.1
+    max: 0.5
   hidden_size:
-    choices:
-    - 64
-    - 128
-    - 256
-    - 512
+    min: 64
+    max: 512
+    step: 32
   learning_rate:
-    log_scale: true
-    max: 5e-2
     min: 1e-4
-  num_layers:
-    max: 4
-    min: 1
-  weight_decay:
+    max: 5e-2
     log_scale: true
-    max: 1e-2
+  num_layers:
+    min: 1
+    max: 4
+  weight_decay:
     min: 1e-5
+    max: 1e-2
+    log_scale: true

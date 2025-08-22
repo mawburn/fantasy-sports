@@ -515,7 +515,8 @@ try:
 
         def __init__(self, model_class, model_config: ModelConfig,
                      X_train: np.ndarray, y_train: np.ndarray,
-                     X_val: np.ndarray, y_val: np.ndarray):
+                     X_val: np.ndarray, y_val: np.ndarray,
+                     epochs: int = 100):
             """Initialize hyperparameter tuner.
 
             Args:
@@ -525,6 +526,7 @@ try:
                 y_train: Training targets
                 X_val: Validation features
                 y_val: Validation targets
+                epochs: Number of epochs to train each trial
             """
             self.model_class = model_class
             self.model_config = model_config
@@ -532,6 +534,7 @@ try:
             self.y_train = y_train
             self.X_val = X_val
             self.y_val = y_val
+            self.epochs = epochs
 
             # Store best results
             self.best_params = None
@@ -546,26 +549,67 @@ try:
             Returns:
                 Validation R² score (to maximize)
             """
-            # Suggest hyperparameters
-            lr = trial.suggest_float('learning_rate', 1e-4, 5e-2, log=True)  # Better range: 0.0001 to 0.05
-            batch_size = trial.suggest_categorical('batch_size', [16, 32, 64, 128, 256])
+            # Get search ranges from hyperparameter manager
+            from hyperparameter_manager import get_hyperparameter_manager
+            hyperparameter_manager = get_hyperparameter_manager()
+            search_ranges = hyperparameter_manager.get_search_ranges()
 
-            # Position-specific hyperparameter ranges
+            # Suggest hyperparameters using YAML configuration
+            lr_config = search_ranges.get('learning_rate', {})
+            lr = trial.suggest_float(
+                'learning_rate',
+                lr_config.get('min', 1e-4),
+                lr_config.get('max', 5e-2),
+                log=lr_config.get('log_scale', True)
+            )
+
+            # Batch size
+            batch_config = search_ranges.get('batch_size', {})
+            if 'choices' in batch_config:
+                batch_size = trial.suggest_categorical('batch_size', batch_config['choices'])
+            elif 'step' in batch_config:
+                batch_size = trial.suggest_int(
+                    'batch_size',
+                    batch_config.get('min', 16),
+                    batch_config.get('max', 256),
+                    step=batch_config['step']
+                )
+            else:
+                batch_size = trial.suggest_categorical('batch_size', [16, 32, 64, 128, 256])
+
+            # Hidden size
+            hidden_config = search_ranges.get('hidden_size', {})
+            if 'choices' in hidden_config:
+                hidden_size = trial.suggest_categorical('hidden_size', hidden_config['choices'])
+            elif 'step' in hidden_config:
+                hidden_size = trial.suggest_int(
+                    'hidden_size',
+                    hidden_config.get('min', 64),
+                    hidden_config.get('max', 512),
+                    step=hidden_config['step']
+                )
+            else:
+                hidden_size = trial.suggest_categorical('hidden_size', [64, 128, 256, 512])
+
+            # Dropout rate
+            dropout_config = search_ranges.get('dropout_rate', {})
+            dropout_rate = trial.suggest_float(
+                'dropout_rate',
+                dropout_config.get('min', 0.1),
+                dropout_config.get('max', 0.5)
+            )
+
+            # Number of layers
+            layers_config = search_ranges.get('num_layers', {})
+            num_layers = trial.suggest_int(
+                'num_layers',
+                layers_config.get('min', 1),
+                layers_config.get('max', 4)
+            )
+
+            # Handle DST position (uses CatBoost instead of neural network)
             position = self.model_config.position.upper()
-
-            if position == 'QB':
-                hidden_size = trial.suggest_categorical('hidden_size', [128, 256, 512])
-                dropout_rate = trial.suggest_float('dropout_rate', 0.1, 0.5)
-                num_layers = trial.suggest_int('num_layers', 2, 4)
-            elif position in ['RB', 'WR']:
-                hidden_size = trial.suggest_categorical('hidden_size', [64, 128, 256])
-                dropout_rate = trial.suggest_float('dropout_rate', 0.1, 0.4)
-                num_layers = trial.suggest_int('num_layers', 2, 3)
-            elif position == 'TE':
-                hidden_size = trial.suggest_categorical('hidden_size', [32, 64, 128])
-                dropout_rate = trial.suggest_float('dropout_rate', 0.1, 0.3)
-                num_layers = trial.suggest_int('num_layers', 1, 3)
-            else:  # DST
+            if position == 'DST':
                 # DST uses CatBoost, different hyperparameters
                 if HAS_CATBOOST:
                     learning_rate = trial.suggest_float('learning_rate', 0.01, 0.3, log=True)
@@ -611,8 +655,8 @@ try:
             if hasattr(model, 'num_layers'):
                 model.num_layers = num_layers
 
-            # Train for limited epochs (100 for speed)
-            model.epochs = 100
+            # Train for specified epochs
+            model.epochs = self.epochs
 
             try:
                 # Train model
@@ -1469,7 +1513,8 @@ class BaseNeuralModel(ABC):
 
     def tune_hyperparameters(self, X_train: np.ndarray, y_train: np.ndarray,
                             X_val: np.ndarray, y_val: np.ndarray,
-                            n_trials: int = 20, timeout: int = 3600) -> Dict[str, Any]:
+                            n_trials: int = 20, timeout: int = 3600,
+                            epochs: int = 100) -> Dict[str, Any]:
         """Perform joint hyperparameter optimization using Optuna.
 
         Args:
@@ -1479,6 +1524,7 @@ class BaseNeuralModel(ABC):
             y_val: Validation targets
             n_trials: Number of optimization trials
             timeout: Maximum time in seconds
+            epochs: Number of epochs to train each trial
 
         Returns:
             Dictionary with best hyperparameters
@@ -1493,7 +1539,8 @@ class BaseNeuralModel(ABC):
         # Create hyperparameter tuner
         tuner = HyperparameterTuner(
             self.__class__, self.config,
-            X_train, y_train, X_val, y_val
+            X_train, y_train, X_val, y_val,
+            epochs=epochs
         )
 
         # Run optimization
@@ -1916,26 +1963,24 @@ class BaseNeuralModel(ABC):
             logger.error("NaN predictions detected after training!")
             train_mae = val_mae = float('nan')
             train_rmse = val_rmse = float('nan')
-            train_r2 = val_r2 = float('nan')
+            train_r2 = float('nan')
+            val_r2 = best_val_r2  # Still use best R² even if final predictions have NaN
         else:
             train_mae = np.mean(np.abs(y_train - train_pred))
             val_mae = np.mean(np.abs(y_val - val_pred))
             train_rmse = np.sqrt(np.mean((y_train - train_pred) ** 2))
             val_rmse = np.sqrt(np.mean((y_val - val_pred) ** 2))
 
-            # Calculate R² with safeguards against division by zero
+            # Calculate training R² with safeguards against division by zero
             train_ss_tot = np.sum((y_train - np.mean(y_train)) ** 2)
-            val_ss_tot = np.sum((y_val - np.mean(y_val)) ** 2)
 
             if train_ss_tot == 0:
                 train_r2 = 0.0  # If no variance in target, R² is undefined, set to 0
             else:
                 train_r2 = 1 - np.sum((y_train - train_pred) ** 2) / train_ss_tot
 
-            if val_ss_tot == 0:
-                val_r2 = 0.0  # If no variance in target, R² is undefined, set to 0
-            else:
-                val_r2 = 1 - np.sum((y_val - val_pred) ** 2) / val_ss_tot
+            # Use the best validation R² from training (already computed during checkpointing)
+            val_r2 = best_val_r2
 
         self._residual_std = np.std(y_val - val_pred)
         self.is_trained = True

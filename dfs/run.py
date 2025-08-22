@@ -85,7 +85,7 @@ def get_position_specific_seasons(position: str, available_seasons: List[int]) -
 
 def train_models(seasons: List[int] = None, positions: List[str] = None,
                 tune_lr: bool = False, tune_batch_size: bool = False,
-                tune_all: bool = False, trials: int = 20,
+                tune_all: bool = False, trials: int = 20, epochs: int = 100,
                 override_lr: float = None, override_batch_size: int = None):
     """Train prediction models for specified positions using position-specific seasons.
 
@@ -96,6 +96,7 @@ def train_models(seasons: List[int] = None, positions: List[str] = None,
         tune_batch_size: Whether to find optimal batch size
         tune_all: Whether to perform full hyperparameter optimization
         trials: Number of trials for hyperparameter optimization
+        epochs: Number of epochs for hyperparameter tuning trials
         override_lr: Override learning rate (if not tuning)
         override_batch_size: Override batch size (if not tuning)
     """
@@ -146,7 +147,7 @@ def train_models(seasons: List[int] = None, positions: List[str] = None,
             # Apply hyperparameter tuning if requested
             if tune_all:
                 logger.info(f"Running full hyperparameter optimization for {position} ({trials} trials)...")
-                best_params = model.tune_hyperparameters(X_train, y_train, X_val, y_val, n_trials=trials)
+                best_params = model.tune_hyperparameters(X_train, y_train, X_val, y_val, n_trials=trials, epochs=epochs)
                 logger.info(f"Best hyperparameters for {position}: {best_params}")
             else:
                 # Apply individual tuning options
@@ -155,18 +156,18 @@ def train_models(seasons: List[int] = None, positions: List[str] = None,
                     optimal_lr = model.find_optimal_lr(X_train, y_train)
                     model.learning_rate = optimal_lr
                     logger.info(f"Using optimal LR for {position}: {optimal_lr:.2e}")
-                
+
                 if tune_batch_size:
                     logger.info(f"Finding optimal batch size for {position}...")
                     optimal_batch_size = model.optimize_batch_size(X_train, y_train, X_val, y_val)
                     model.batch_size = optimal_batch_size
                     logger.info(f"Using optimal batch size for {position}: {optimal_batch_size}")
-                
+
                 # Apply manual overrides
                 if override_lr is not None:
                     model.learning_rate = override_lr
                     logger.info(f"Using override LR for {position}: {override_lr:.2e}")
-                
+
                 if override_batch_size is not None:
                     model.batch_size = override_batch_size
                     logger.info(f"Using override batch size for {position}: {override_batch_size}")
@@ -940,6 +941,12 @@ def main():
         help="Number of trials for hyperparameter optimization (default: 20)"
     )
     train_parser.add_argument(
+        "--epochs",
+        type=int,
+        default=100,
+        help="Number of epochs for hyperparameter tuning trials (default: 100)"
+    )
+    train_parser.add_argument(
         "--lr",
         type=float,
         help="Override learning rate (if not tuning)"
@@ -1100,6 +1107,7 @@ def main():
             tune_batch_size=args.tune_batch_size,
             tune_all=args.tune_all,
             trials=args.trials,
+            epochs=args.epochs,
             override_lr=args.lr,
             override_batch_size=args.batch_size
         )
