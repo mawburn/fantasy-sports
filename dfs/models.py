@@ -30,6 +30,14 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from data import ProgressDisplay
 
+# Import hyperparameter manager with error handling
+try:
+    from hyperparameter_manager import get_hyperparameter_manager
+    HAS_HYPERPARAMETER_MANAGER = True
+except ImportError:
+    HAS_HYPERPARAMETER_MANAGER = False
+    logger.warning("Hyperparameter manager not available. Using default hyperparameters.")
+
 logger = logging.getLogger(__name__)
 
 # Import gradient boosting libraries for ensemble learning
@@ -539,7 +547,7 @@ try:
                 Validation R² score (to maximize)
             """
             # Suggest hyperparameters
-            lr = trial.suggest_float('learning_rate', 1e-6, 1e-2, log=True)
+            lr = trial.suggest_float('learning_rate', 1e-4, 5e-2, log=True)  # Better range: 0.0001 to 0.05
             batch_size = trial.suggest_categorical('batch_size', [16, 32, 64, 128, 256])
 
             # Position-specific hyperparameter ranges
@@ -1278,14 +1286,35 @@ class BaseNeuralModel(ABC):
         self.optimizer: optim.Optimizer = None
         self.scheduler: optim.lr_scheduler._LRScheduler = None
         self.criterion = nn.HuberLoss(delta=1.0)  # Even more robust to outliers
-        self.quantile_criterion = self._quantile_loss  # Custom quantile loss function
+        # quantile_criterion will be set as a lambda after _quantile_loss is defined
+        self.quantile_criterion = None  # Set properly after methods are defined
         self.mse_criterion = nn.MSELoss()  # For fallback if Huber fails
         self.dfs_criterion = DFSLoss()  # DFS-optimized loss function
 
-        # Training parameters
-        self.batch_size = 32
-        self.learning_rate = 0.0001
-        self.epochs = 500  # Increased since no early stopping
+        # Load hyperparameters from YAML config or use defaults
+        if HAS_HYPERPARAMETER_MANAGER:
+            hyperparams = get_hyperparameter_manager().get_hyperparameters(config.position)
+            # Training parameters from config
+            self.batch_size = hyperparams.get('batch_size', 32)
+            self.learning_rate = hyperparams.get('learning_rate', 0.001)
+            self.epochs = hyperparams.get('epochs', 500)
+            self.weight_decay = hyperparams.get('weight_decay', 0.001)
+            self.patience = hyperparams.get('patience', 50)
+
+            # Architecture parameters from config
+            self.hidden_size = hyperparams.get('hidden_size', 256)
+            self.num_layers = hyperparams.get('num_layers', 3)
+            self.dropout_rate = hyperparams.get('dropout_rate', 0.3)
+        else:
+            # Fallback to hardcoded defaults
+            self.batch_size = 32
+            self.learning_rate = 0.001
+            self.epochs = 500
+            self.weight_decay = 0.001
+            self.patience = 50
+            self.hidden_size = 256
+            self.num_layers = 3
+            self.dropout_rate = 0.3
 
         # Training history
         self.train_losses: List[float] = []
@@ -1337,112 +1366,12 @@ class BaseNeuralModel(ABC):
         """Denormalize predictions back to original scale."""
         return pred * self.y_std + self.y_mean
 
-class DFSLoss(nn.Module):
-    """Custom DFS loss function with ranking and salary weighting as per optimization guide."""
-
-    def __init__(self, alpha: float = 0.2, beta: float = 0.3, gamma: float = 0.2):
-        """
-        Args:
-            alpha: Weight for range penalty term
-            beta: Weight for ranking loss term
-            gamma: Weight for salary-weighted accuracy term
-        """
-        super().__init__()
-        self.alpha = alpha
-        self.beta = beta
-        self.gamma = gamma
-
-    def forward(self, predictions: Dict[str, torch.Tensor], targets: torch.Tensor,
-                salaries: torch.Tensor = None) -> torch.Tensor:
-        """
-        DFS-optimized loss function.
-
-        Args:
-            predictions: Dict with 'mean', 'floor', 'ceiling' tensors
-            targets: Actual fantasy points
-            salaries: Player salaries (optional, uses uniform weights if None)
-        """
-        mean_pred = predictions['mean']
-        floor_pred = predictions.get('floor', mean_pred - 5)
-        ceiling_pred = predictions.get('ceiling', mean_pred + 5)
-
-        # Main prediction loss (weighted MSE)
-        point_loss = F.mse_loss(mean_pred, targets)
-
-        # Range penalty - penalize unrealistic predictions
-        range_penalty = torch.mean(torch.relu(5 - (ceiling_pred - floor_pred)))
-
-        # Ranking loss (Spearman correlation approximation)
-        rank_loss = self._ranking_loss(mean_pred, targets)
-
-        # Salary-weighted accuracy (more important to get expensive players right)
-        if salaries is not None:
-            salary_weights = salaries / salaries.mean()
-            weighted_loss = F.mse_loss(mean_pred * salary_weights, targets * salary_weights)
-        else:
-            weighted_loss = torch.tensor(0.0, device=targets.device)
-
-        # Combined loss as per optimization guide formula
-        total_loss = (point_loss +
-                     self.alpha * range_penalty +
-                     self.beta * rank_loss +
-                     self.gamma * weighted_loss)
-
-        return total_loss
-
-    def _ranking_loss(self, predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        """Compute ranking loss to encourage correct player ordering."""
-        # Compute pairwise differences
-        n = predictions.size(0)
-        if n < 2:
-            return torch.tensor(0.0, device=predictions.device)
-
-        # Use a simplified ranking loss based on order consistency
-        pred_ranks = torch.argsort(torch.argsort(predictions))
-        target_ranks = torch.argsort(torch.argsort(targets))
-
-        # L2 loss between rank positions (normalized)
-        rank_diff = (pred_ranks.float() - target_ranks.float()) / n
-        return torch.mean(rank_diff ** 2)
-
-
-class BaseNeuralModel(ABC):
-    """Base class for PyTorch neural network models."""
-
-    def __init__(self, config: ModelConfig):
-        """Initialize neural network base model."""
-        self.config = config
-        self.device = OPTIMAL_DEVICE  # Use Apple Silicon optimized device
-        self.network: nn.Module = None
-        self.optimizer: optim.Optimizer = None
-        self.scheduler: optim.lr_scheduler._LRScheduler = None
-        self.criterion = nn.HuberLoss(delta=1.0)  # Even more robust to outliers
-        self.quantile_criterion = self._quantile_loss  # Custom quantile loss function
-        self.mse_criterion = nn.MSELoss()  # For fallback if Huber fails
-        self.dfs_criterion = DFSLoss()  # DFS-optimized loss function
-
-        # Training state
-        self.train_losses = []
-        self.val_losses = []
-        self.best_state_dict = None
-        self.is_trained = False
-        self.training_history = []  # For compatibility
-
-        # Feature scaling parameters
-        self.X_mean = None
-        self.X_std = None
-        self.y_mean = None
-        self.y_std = None
-
-        # Default hyperparameters (can be overridden by tuning)
-        self.batch_size = 32
-        self.learning_rate = 0.0001
-        self.epochs = 500
-
     @abstractmethod
     def build_network(self, input_size: int) -> nn.Module:
         """Build position-specific neural network architecture."""
         pass
+
+    # BaseNeuralModel methods continue below
 
     def find_optimal_lr(self, X_train: np.ndarray, y_train: np.ndarray,
                        start_lr: float = 1e-8, end_lr: float = 1.0,
@@ -1583,6 +1512,23 @@ class BaseNeuralModel(ABC):
             self.num_layers = best_params['num_layers']
 
         logger.info(f"Applied best hyperparameters for {self.config.position}: {best_params}")
+
+        # Save the optimized hyperparameters to YAML config
+        # Extract validation R² from training results if available
+        validation_r2 = None
+        if hasattr(self, '_last_validation_r2'):
+            validation_r2 = self._last_validation_r2
+
+        # Save to hyperparameter manager if available
+        if HAS_HYPERPARAMETER_MANAGER:
+            hyperparameter_manager = get_hyperparameter_manager()
+            hyperparameter_manager.update_hyperparameters(
+                position=self.config.position,
+                new_params=best_params,
+                validation_r2=validation_r2,
+                trials=n_trials
+            )
+
         return best_params
 
     def _train_epochs(self, train_loader: DataLoader, val_loader: DataLoader,
@@ -1829,6 +1775,10 @@ class BaseNeuralModel(ABC):
     ) -> TrainingResult:
         """Train the neural network model."""
         start_time = time.time()
+
+        # Set up quantile_criterion if not already set
+        if self.quantile_criterion is None:
+            self.quantile_criterion = self._quantile_loss
 
         self._validate_inputs(X_train, y_train)
         self._validate_inputs(X_val, y_val)
@@ -2107,6 +2057,76 @@ class BaseNeuralModel(ABC):
         self.is_trained = True
         logger.info(f"Model loaded from {path} with input_size={input_size} to device: {self.device}")
 
+# End of BaseNeuralModel class
+
+class DFSLoss(nn.Module):
+    """Custom DFS loss function with ranking and salary weighting as per optimization guide."""
+
+    def __init__(self, alpha: float = 0.2, beta: float = 0.3, gamma: float = 0.2):
+        """
+        Args:
+            alpha: Weight for range penalty term
+            beta: Weight for ranking loss term
+            gamma: Weight for salary-weighted accuracy term
+        """
+        super().__init__()
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
+
+    def forward(self, predictions: Dict[str, torch.Tensor], targets: torch.Tensor,
+                salaries: torch.Tensor = None) -> torch.Tensor:
+        """
+        DFS-optimized loss function.
+
+        Args:
+            predictions: Dict with 'mean', 'floor', 'ceiling' tensors
+            targets: Actual fantasy points
+            salaries: Player salaries (optional, uses uniform weights if None)
+        """
+        mean_pred = predictions['mean']
+        floor_pred = predictions.get('floor', mean_pred - 5)
+        ceiling_pred = predictions.get('ceiling', mean_pred + 5)
+
+        # Main prediction loss (weighted MSE)
+        point_loss = F.mse_loss(mean_pred, targets)
+
+        # Range penalty - penalize unrealistic predictions
+        range_penalty = torch.mean(torch.relu(5 - (ceiling_pred - floor_pred)))
+
+        # Ranking loss (Spearman correlation approximation)
+        rank_loss = self._ranking_loss(mean_pred, targets)
+
+        # Salary-weighted accuracy (more important to get expensive players right)
+        if salaries is not None:
+            salary_weights = salaries / salaries.mean()
+            weighted_loss = F.mse_loss(mean_pred * salary_weights, targets * salary_weights)
+        else:
+            weighted_loss = torch.tensor(0.0, device=targets.device)
+
+        # Combined loss as per optimization guide formula
+        total_loss = (point_loss +
+                     self.alpha * range_penalty +
+                     self.beta * rank_loss +
+                     self.gamma * weighted_loss)
+
+        return total_loss
+
+    def _ranking_loss(self, predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """Compute ranking loss to encourage correct player ordering."""
+        # Compute pairwise differences
+        n = predictions.size(0)
+        if n < 2:
+            return torch.tensor(0.0, device=predictions.device)
+
+        # Use a simplified ranking loss based on order consistency
+        pred_ranks = torch.argsort(torch.argsort(predictions))
+        target_ranks = torch.argsort(torch.argsort(targets))
+
+        # L2 loss between rank positions (normalized)
+        rank_diff = (pred_ranks.float() - target_ranks.float()) / n
+        return torch.mean(rank_diff ** 2)
+
 
 class ResidualBlock(nn.Module):
     """Residual block with improved skip connections."""
@@ -2204,18 +2224,16 @@ class QBNetwork(nn.Module):
         combined = torch.cat([passing, rushing, bonus], dim=1)
         output = self.output_layer(combined)
 
-        # Generate predictions with floor/ceiling as per optimization guide
-        mean_pred = output[:, 0] * 45  # Scale to QB range (5-45 points)
-        floor_adj = torch.abs(output[:, 1]) * 10  # Floor adjustment
-        ceiling_adj = torch.abs(output[:, 2]) * 15  # Ceiling adjustment
+        # Don't apply fantasy point scaling - targets are normalized during training
+        # The model will learn to output in normalized space
+        mean_pred = output[:, 0]
+        floor_adj = torch.abs(output[:, 1]) * 0.5  # Smaller adjustments in normalized space
+        ceiling_adj = torch.abs(output[:, 2]) * 0.5
 
         floor = mean_pred - floor_adj
         ceiling = mean_pred + ceiling_adj
 
-        # Ensure realistic ranges
-        mean_pred = torch.clamp(mean_pred, 5.0, 45.0)
-        floor = torch.clamp(floor, 0.0, 45.0)  # Use fixed upper bound
-        ceiling = torch.clamp(ceiling, 5.0, 50.0)  # Use fixed bounds
+        # Don't clamp - let the model learn the appropriate range for normalized targets
 
         # Ensure floor <= mean <= ceiling relationship
         floor = torch.min(floor, mean_pred)
@@ -2299,9 +2317,8 @@ class RBNetwork(nn.Module):
         mean = self.mean_head(features).squeeze(-1)
         std = self.std_head(features).squeeze(-1)
 
-        # Ensure realistic ranges for RB
-        mean = torch.clamp(mean, min=3, max=35)
-        std = torch.clamp(std, min=1, max=8)
+        # Don't clamp here - targets are normalized during training
+        # Clamping to fantasy point ranges [3,35] when using normalized targets breaks training!
 
         # Return mean for compatibility with existing code
         return mean
@@ -2409,9 +2426,8 @@ class WRNetwork(nn.Module):
         mean = self.mean_head(attended_features).squeeze(-1)
         std = self.std_head(attended_features).squeeze(-1)
 
-        # Ensure realistic ranges for WR - NO SIGMOID COMPRESSION
-        mean = torch.clamp(mean, min=2, max=40)
-        std = torch.clamp(std, min=1, max=10)
+        # Don't clamp here - targets are normalized during training
+        # Clamping to fantasy point ranges when using normalized targets breaks training!
 
         # Return mean for compatibility with existing code
         return mean
@@ -2665,10 +2681,7 @@ class QBNeuralModel(BaseNeuralModel):
 
     def __init__(self, config: ModelConfig):
         super().__init__(config)
-        # Optimized training parameters for QB model
-        self.learning_rate = 0.0001   # Balanced learning rate
-        self.batch_size = 64          # Smaller batch size for better gradients
-        self.epochs = 1000            # More epochs to reach target R² > 0.35
+        # QB-specific parameters are now loaded from hyperparameters.yaml via parent class
 
     def build_network(self, input_size: int) -> nn.Module:
         return QBNetwork(input_size)
@@ -2683,10 +2696,8 @@ class RBNeuralModel(BaseNeuralModel):
 
     def __init__(self, config: ModelConfig):
         super().__init__(config)
-        # Optimized RB training parameters
-        self.learning_rate = 0.00005  # Lower LR for RB stability
-        self.batch_size = 32          # Smaller batches for RB
-        self.epochs = 500             # Reduced epochs with better architecture
+        # RB-specific parameters are now loaded from hyperparameters.yaml via parent class
+        # Only override if you need RB-specific adjustments not covered by tuning
 
     def build_network(self, input_size: int) -> nn.Module:
         return RBNetwork(input_size)
@@ -2768,10 +2779,7 @@ class WRNeuralModel(BaseNeuralModel):
 
     def __init__(self, config: ModelConfig):
         super().__init__(config)
-        # Optimized WR training parameters
-        self.learning_rate = 0.0001   # Higher LR for WR complexity
-        self.batch_size = 32          # Smaller batches for better gradients
-        self.epochs = 500             # Balanced epochs with better architecture
+        # WR-specific parameters are now loaded from hyperparameters.yaml via parent class
 
     def build_network(self, input_size: int) -> nn.Module:
         return WRNetwork(input_size)
@@ -2849,9 +2857,7 @@ class TENeuralModel(BaseNeuralModel):
 
     def __init__(self, config: ModelConfig):
         super().__init__(config)
-        self.learning_rate = 0.0001   # Fix: was too low at 0.00005
-        self.batch_size = 64          # Smaller batch for more frequent updates
-        self.epochs = 600             # More epochs for TE complexity
+        # TE-specific parameters are now loaded from hyperparameters.yaml via parent class
 
     def build_network(self, input_size: int) -> nn.Module:
         return TENetwork(input_size)
@@ -2978,6 +2984,38 @@ class DEFCatBoostModel:
         self.model = None
         self.is_trained = False
         self.training_history = []
+        self.best_params = None  # Will be set by tune_hyperparameters
+
+        # Load hyperparameters from YAML if available
+        if HAS_HYPERPARAMETER_MANAGER:
+            from hyperparameter_manager import get_hyperparameter_manager
+            hyperparameter_manager = get_hyperparameter_manager()
+            stored_params = hyperparameter_manager.get_hyperparameters('DST')
+
+            # Extract CatBoost-specific parameters if they exist
+            if stored_params:
+                logger.info(f"Loading DST hyperparameters from YAML")
+                self.best_params = {
+                    'iterations': stored_params.get('catboost_iterations', 4000),
+                    'learning_rate': stored_params.get('catboost_learning_rate', 0.04),
+                    'depth': stored_params.get('catboost_depth', 7),
+                    'l2_leaf_reg': stored_params.get('catboost_l2_leaf_reg', 6),
+                    'bagging_temperature': stored_params.get('catboost_bagging_temperature', 0.5),
+                    'random_strength': stored_params.get('catboost_random_strength', 1),
+                    'border_count': stored_params.get('catboost_border_count', 128),
+                    'min_data_in_leaf': stored_params.get('catboost_min_data_in_leaf', 3)
+                }
+                # Compatibility attributes
+                self.learning_rate = self.best_params['learning_rate']
+                self.batch_size = None  # Not applicable for CatBoost
+            else:
+                # Default values if no stored params
+                self.learning_rate = 0.04
+                self.batch_size = None
+        else:
+            # Default values if hyperparameter manager not available
+            self.learning_rate = 0.04
+            self.batch_size = None
 
         if not HAS_CATBOOST:
             raise ImportError("CatBoost is required for DST model but not available")
@@ -2986,29 +3024,55 @@ class DEFCatBoostModel:
         """Train CatBoost model optimized for DST volatility."""
         start_time = time.time()
 
-        # Enhanced CatBoost parameters for DST with rich feature set (11 → 42 features)
-        self.model = CatBoostRegressor(
-            iterations=4000,             # More iterations needed for complex features
-            learning_rate=0.04,          # Lower LR for stable convergence with more features
-            depth=7,                     # Deeper trees to capture feature interactions
-            l2_leaf_reg=6,              # Stronger regularization to prevent overfitting
-            random_seed=42,              # Reproducibility
-            loss_function='MAE',         # MAE better for DST outliers vs RMSE
-            eval_metric='MAE',           # Primary metric for DST prediction
-            use_best_model=True,         # Use best model from validation
-            verbose=100,                 # Less frequent updates for longer training
-            allow_writing_files=False,   # No temp files
-            # Advanced parameters for enhanced model
-            bootstrap_type='Bayesian',   # Better uncertainty estimation
-            bagging_temperature=0.5,     # Reduce overfitting with Bayesian bootstrap
-            od_type='IncToDec',         # Overfitting detection
-            od_wait=50,                 # Wait period for overfitting detection
-            max_ctr_complexity=4,        # Handle categorical interactions better
-            model_size_reg=0.5,         # Regularize model complexity
-            # Feature interaction settings
-            min_data_in_leaf=3,         # Min samples per leaf (small for DST volatility)
-            leaf_estimation_iterations=5 # Better leaf value estimation
-        )
+        # Use best params from tuning if available, otherwise use defaults
+        if self.best_params is not None:
+            logger.info("Using tuned CatBoost parameters for DST")
+            self.model = CatBoostRegressor(
+                iterations=self.best_params.get('iterations', 4000),
+                learning_rate=self.best_params.get('learning_rate', 0.04),
+                depth=self.best_params.get('depth', 7),
+                l2_leaf_reg=self.best_params.get('l2_leaf_reg', 6),
+                bagging_temperature=self.best_params.get('bagging_temperature', 0.5),
+                random_strength=self.best_params.get('random_strength', 1),
+                border_count=self.best_params.get('border_count', 128),
+                min_data_in_leaf=self.best_params.get('min_data_in_leaf', 3),
+                random_seed=42,
+                loss_function='MAE',
+                eval_metric='MAE',
+                use_best_model=True,
+                verbose=100,
+                allow_writing_files=False,
+                bootstrap_type='Bayesian',
+                od_type='IncToDec',
+                od_wait=50,
+                max_ctr_complexity=4,
+                model_size_reg=0.5,
+                leaf_estimation_iterations=5
+            )
+        else:
+            # Default CatBoost parameters for DST
+            self.model = CatBoostRegressor(
+                iterations=4000,             # More iterations needed for complex features
+                learning_rate=0.04,          # Lower LR for stable convergence with more features
+                depth=7,                     # Deeper trees to capture feature interactions
+                l2_leaf_reg=6,              # Stronger regularization to prevent overfitting
+                random_seed=42,              # Reproducibility
+                loss_function='MAE',         # MAE better for DST outliers vs RMSE
+                eval_metric='MAE',           # Primary metric for DST prediction
+                use_best_model=True,         # Use best model from validation
+                verbose=100,                 # Less frequent updates for longer training
+                allow_writing_files=False,   # No temp files
+                # Advanced parameters for enhanced model
+                bootstrap_type='Bayesian',   # Better uncertainty estimation
+                bagging_temperature=0.5,     # Reduce overfitting with Bayesian bootstrap
+                od_type='IncToDec',         # Overfitting detection
+                od_wait=50,                 # Wait period for overfitting detection
+                max_ctr_complexity=4,        # Handle categorical interactions better
+                model_size_reg=0.5,         # Regularize model complexity
+                # Feature interaction settings
+                min_data_in_leaf=3,         # Min samples per leaf (small for DST volatility)
+                leaf_estimation_iterations=5 # Better leaf value estimation
+            )
 
         logger.info("Training CatBoost model for DST...")
 
@@ -3217,6 +3281,183 @@ class DEFCatBoostModel:
             'pa_bucket': pa_bucket_pred,
             'td_probability': td_prob
         }
+
+    def tune_hyperparameters(self, X_train: np.ndarray, y_train: np.ndarray,
+                            X_val: np.ndarray, y_val: np.ndarray,
+                            n_trials: int = 20, timeout: int = 3600) -> Dict[str, Any]:
+        """Perform real hyperparameter optimization for CatBoost DST model using Optuna.
+
+        Args:
+            X_train: Training features
+            y_train: Training targets
+            X_val: Validation features
+            y_val: Validation targets
+            n_trials: Number of optimization trials
+            timeout: Maximum time in seconds
+
+        Returns:
+            Dictionary of best hyperparameters found
+        """
+        logger.info(f"Starting CatBoost hyperparameter optimization for DST ({n_trials} trials)")
+
+        # Check if Optuna is available
+        try:
+            import optuna
+            optuna.logging.set_verbosity(optuna.logging.WARNING)
+        except ImportError:
+            logger.warning("Optuna not available, using default CatBoost parameters")
+            # Fall back to training with default params
+            result = self.train(X_train, y_train, X_val, y_val)
+            return {
+                'iterations': 4000,
+                'learning_rate': 0.04,
+                'depth': 7,
+                'l2_leaf_reg': 6,
+                'model_type': 'CatBoost'
+            }
+
+        def objective(trial):
+            """Optuna objective function for CatBoost hyperparameter tuning."""
+            # Suggest hyperparameters
+            params = {
+                'iterations': trial.suggest_int('iterations', 1000, 5000, step=500),
+                'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
+                'depth': trial.suggest_int('depth', 4, 10),
+                'l2_leaf_reg': trial.suggest_float('l2_leaf_reg', 1, 10),
+                'bagging_temperature': trial.suggest_float('bagging_temperature', 0, 1),
+                'random_strength': trial.suggest_float('random_strength', 0, 10),
+                'border_count': trial.suggest_int('border_count', 32, 255),
+                'min_data_in_leaf': trial.suggest_int('min_data_in_leaf', 1, 10),
+            }
+
+            # Train model with suggested parameters
+            model = CatBoostRegressor(
+                iterations=params['iterations'],
+                learning_rate=params['learning_rate'],
+                depth=params['depth'],
+                l2_leaf_reg=params['l2_leaf_reg'],
+                bagging_temperature=params['bagging_temperature'],
+                random_strength=params['random_strength'],
+                border_count=params['border_count'],
+                min_data_in_leaf=params['min_data_in_leaf'],
+                loss_function='MAE',
+                eval_metric='MAE',
+                use_best_model=True,
+                early_stopping_rounds=50,
+                random_seed=42,
+                verbose=False,
+                allow_writing_files=False,
+                bootstrap_type='Bayesian'
+            )
+
+            # Fit with early stopping
+            model.fit(
+                X_train, y_train,
+                eval_set=(X_val, y_val),
+                verbose=False
+            )
+
+            # Calculate validation MAE (negative because Optuna minimizes)
+            val_pred = model.predict(X_val)
+            val_mae = np.mean(np.abs(y_val - val_pred))
+
+            # Also calculate R² for logging
+            ss_res = np.sum((y_val - val_pred) ** 2)
+            ss_tot = np.sum((y_val - np.mean(y_val)) ** 2)
+            val_r2 = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+
+            # Log progress every 5 trials
+            if trial.number % 5 == 0:
+                logger.info(f"Trial {trial.number}: MAE={val_mae:.3f}, R²={val_r2:.3f}")
+
+            return val_mae  # Minimize MAE
+
+        # Create study and optimize
+        study = optuna.create_study(direction='minimize', study_name='dst_catboost_tuning')
+        study.optimize(objective, n_trials=n_trials, timeout=timeout)
+
+        # Get best parameters
+        best_params = study.best_params
+        best_mae = study.best_value
+
+        logger.info(f"Best CatBoost parameters found (MAE={best_mae:.3f}): {best_params}")
+
+        # Train final model with best parameters to get R²
+        final_model = CatBoostRegressor(
+            iterations=best_params['iterations'],
+            learning_rate=best_params['learning_rate'],
+            depth=best_params['depth'],
+            l2_leaf_reg=best_params['l2_leaf_reg'],
+            bagging_temperature=best_params['bagging_temperature'],
+            random_strength=best_params['random_strength'],
+            border_count=best_params['border_count'],
+            min_data_in_leaf=best_params['min_data_in_leaf'],
+            loss_function='MAE',
+            eval_metric='MAE',
+            use_best_model=True,
+            random_seed=42,
+            verbose=False,
+            allow_writing_files=False,
+            bootstrap_type='Bayesian'
+        )
+
+        final_model.fit(X_train, y_train, eval_set=(X_val, y_val), verbose=False)
+        val_pred = final_model.predict(X_val)
+
+        # Calculate final R²
+        ss_res = np.sum((y_val - val_pred) ** 2)
+        ss_tot = np.sum((y_val - np.mean(y_val)) ** 2)
+        val_r2 = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+
+        # Update hyperparameter manager if available
+        if HAS_HYPERPARAMETER_MANAGER:
+            from hyperparameter_manager import get_hyperparameter_manager
+            hyperparameter_manager = get_hyperparameter_manager()
+
+            # Update with best CatBoost parameters
+            yaml_params = {
+                'learning_rate': best_params['learning_rate'],
+                'batch_size': 64,  # Keep for compatibility, not used
+                'epochs': best_params['iterations'],  # Maps to iterations
+                'hidden_size': 128,  # Keep for compatibility, not used
+                'num_layers': 2,  # Keep for compatibility, not used
+                'dropout_rate': 0.2,  # Keep for compatibility, not used
+                'weight_decay': best_params['l2_leaf_reg'],  # Maps to l2_leaf_reg
+                # CatBoost specific
+                'catboost_depth': best_params['depth'],
+                'catboost_l2_leaf_reg': best_params['l2_leaf_reg'],
+                'catboost_iterations': best_params['iterations'],
+                'catboost_learning_rate': best_params['learning_rate'],
+                'catboost_bagging_temperature': best_params['bagging_temperature'],
+                'catboost_random_strength': best_params['random_strength'],
+                'catboost_border_count': best_params['border_count'],
+                'catboost_min_data_in_leaf': best_params['min_data_in_leaf']
+            }
+
+            hyperparameter_manager.update_hyperparameters(
+                position='DST',
+                new_params=yaml_params,
+                validation_r2=val_r2,
+                trials=n_trials
+            )
+            logger.info(f"Updated DST hyperparameters in YAML (Best MAE: {best_mae:.3f}, Val R²: {val_r2:.4f})")
+
+        # Store best params for use in training
+        self.best_params = best_params
+
+        # Return parameters in format compatible with training
+        return best_params
+
+    def find_optimal_lr(self, X_train: np.ndarray, y_train: np.ndarray,
+                       start_lr: float = 1e-8, end_lr: float = 1.0,
+                       num_iter: int = 100) -> float:
+        """Stub method - CatBoost DST uses fixed learning rate."""
+        return 0.04
+
+    def optimize_batch_size(self, X_train: np.ndarray, y_train: np.ndarray,
+                           X_val: np.ndarray, y_val: np.ndarray) -> int:
+        """Stub method - CatBoost doesn't use batch size."""
+        return 0  # N/A for CatBoost
 
     def predict(self, X: np.ndarray) -> PredictionResult:
         """Generate predictions with CatBoost."""
@@ -3521,32 +3762,46 @@ class EnsembleModel:
 
         # XGBoost hyperparameters are position-specific and fixed for now
         # In a future version, we could also tune XGBoost parameters
+        # Use different key names to avoid collision with neural network params
         xgb_params = {
-            'max_depth': 6,
-            'learning_rate': 0.1,
-            'subsample': 0.8,
-            'colsample_bytree': 0.8
+            'xgb_max_depth': 6,
+            'xgb_learning_rate': 0.1,
+            'xgb_subsample': 0.8,
+            'xgb_colsample_bytree': 0.8
         }
 
         if self.position == 'QB':
             xgb_params.update({
-                'max_depth': 7,
-                'learning_rate': 0.05
+                'xgb_max_depth': 7,
+                'xgb_learning_rate': 0.05
             })
         elif self.position in ['RB', 'WR']:
             xgb_params.update({
-                'max_depth': 6,
-                'learning_rate': 0.08
+                'xgb_max_depth': 6,
+                'xgb_learning_rate': 0.08
             })
         else:  # TE, DST
             xgb_params.update({
-                'max_depth': 5,
-                'learning_rate': 0.1
+                'xgb_max_depth': 5,
+                'xgb_learning_rate': 0.1
             })
 
-        # Return combined parameters
+        # Return combined parameters without collisions
         combined_params = {**nn_params, **xgb_params}
         logger.info(f"Ensemble hyperparameters: {combined_params}")
+
+        # Save the optimized hyperparameters to YAML config if available
+        # Only save neural network parameters (not XGBoost ones) to avoid confusion
+        if HAS_HYPERPARAMETER_MANAGER:
+            nn_only_params = {k: v for k, v in combined_params.items() if not k.startswith('xgb_')}
+            hyperparameter_manager = get_hyperparameter_manager()
+            hyperparameter_manager.update_hyperparameters(
+                position=self.position,
+                new_params=nn_only_params,
+                validation_r2=None,  # Will be updated after training
+                trials=n_trials
+            )
+
         return combined_params
 
     def predict(self, X: np.ndarray) -> PredictionResult:
