@@ -1499,6 +1499,9 @@ class BaseNeuralModel(ABC):
         # Run optimization
         best_params = tuner.optimize(n_trials, timeout)
 
+        # Store best validation R² for hyperparameter manager
+        self._last_validation_r2 = tuner.best_score
+
         # Apply best parameters
         self.learning_rate = best_params.get('learning_rate', self.learning_rate)
         self.batch_size = best_params.get('batch_size', self.batch_size)
