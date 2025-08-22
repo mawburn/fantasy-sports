@@ -143,64 +143,80 @@ class HyperparameterManager:
         # Check if we should update based on position-specific optimization metric
         should_update = True
 
-        # For neural network positions (QB, RB, WR, TE), prioritize NDCG@20 if available
-        if position in ['QB', 'RB', 'WR', 'TE'] and validation_ndcg is not None:
-            current_best = self.config['positions'][position].get('best_validation_ndcg_at_k')
-            if current_best is not None:
-                try:
-                    current_best_float = float(current_best)
-                    validation_ndcg_float = float(validation_ndcg)
-                    if validation_ndcg_float < current_best_float:  # Lower NDCG is worse
-                        should_update = False
-                        logger.warning(f"Not updating {position} hyperparameters: "
-                                     f"new NDCG@20 ({validation_ndcg_float:.4f}) is worse than "
-                                     f"current best ({current_best_float:.4f})")
-                except (TypeError, ValueError):
-                    logger.warning(f"Could not compare NDCG@20 values for {position}, updating anyway")
-            else:
-                # No existing NDCG@20 value, so any valid NDCG@20 is an improvement
-                logger.info(f"No existing NDCG@20 for {position}, updating with new NDCG@20: {validation_ndcg:.4f}")
-        # For DST, prioritize Spearman correlation if available
-        elif position == 'DST' and validation_spearman is not None:
-            current_best = self.config['positions'][position].get('best_validation_spearman')
-            if current_best is not None:
-                try:
-                    current_best_float = float(current_best)
-                    validation_spearman_float = float(validation_spearman)
-                    if validation_spearman_float < current_best_float:  # Lower Spearman is worse
-                        should_update = False
-                        logger.warning(f"Not updating {position} hyperparameters: "
-                                     f"new Spearman ({validation_spearman_float:.4f}) is worse than "
-                                     f"current best ({current_best_float:.4f})")
-                except (TypeError, ValueError):
-                    logger.warning(f"Could not compare Spearman values for {position}, updating anyway")
-        elif validation_mae is not None:
-            current_best = self.config['positions'][position].get('best_validation_mae')
-            if current_best is not None:
-                try:
-                    current_best_float = float(current_best)
-                    validation_mae_float = float(validation_mae)
-                    if validation_mae_float > current_best_float:  # Higher MAE is worse
-                        should_update = False
-                        logger.warning(f"Not updating {position} hyperparameters: "
-                                     f"new MAE ({validation_mae_float:.4f}) is worse than "
-                                     f"current best ({current_best_float:.4f})")
-                except (TypeError, ValueError):
-                    logger.warning(f"Could not compare MAE values for {position}, updating anyway")
-        elif validation_r2 is not None:
-            # Fallback to R² comparison if MAE not available
-            current_best = self.config['positions'][position].get('best_validation_r2')
-            if current_best is not None:
-                try:
-                    current_best_float = float(current_best)
-                    validation_r2_float = float(validation_r2)
-                    if validation_r2_float < current_best_float:
-                        should_update = False
-                        logger.warning(f"Not updating {position} hyperparameters: "
-                                     f"new R² ({validation_r2_float:.4f}) is worse than "
-                                     f"current best ({current_best_float:.4f})")
-                except (TypeError, ValueError):
-                    logger.warning(f"Could not compare R² values for {position}, updating anyway")
+        # First, check if new metrics meet basic quality guardrails
+        if validation_mae is not None and validation_mae >= 6.0:
+            should_update = False
+            logger.warning(f"Not updating {position} hyperparameters: "
+                         f"MAE guardrail failed ({validation_mae:.4f} >= 6.0)")
+        elif validation_spearman is not None and validation_spearman <= 0:
+            should_update = False
+            logger.warning(f"Not updating {position} hyperparameters: "
+                         f"Spearman guardrail failed ({validation_spearman:.4f} <= 0)")
+        elif validation_r2 is not None and validation_r2 <= 0:
+            should_update = False
+            logger.warning(f"Not updating {position} hyperparameters: "
+                         f"R² guardrail failed ({validation_r2:.4f} <= 0)")
+
+        # If guardrails pass, then check metric-specific comparisons
+        if should_update:
+            # For neural network positions (QB, RB, WR, TE), prioritize NDCG@20 if available
+            if position in ['QB', 'RB', 'WR', 'TE'] and validation_ndcg is not None:
+                current_best = self.config['positions'][position].get('best_validation_ndcg_at_k')
+                if current_best is not None:
+                    try:
+                        current_best_float = float(current_best)
+                        validation_ndcg_float = float(validation_ndcg)
+                        if validation_ndcg_float < current_best_float:  # Lower NDCG is worse
+                            should_update = False
+                            logger.warning(f"Not updating {position} hyperparameters: "
+                                         f"new NDCG@20 ({validation_ndcg_float:.4f}) is worse than "
+                                         f"current best ({current_best_float:.4f})")
+                    except (TypeError, ValueError):
+                        logger.warning(f"Could not compare NDCG@20 values for {position}, updating anyway")
+                else:
+                    # No existing NDCG@20 value, so any valid NDCG@20 is an improvement
+                    logger.info(f"No existing NDCG@20 for {position}, updating with new NDCG@20: {validation_ndcg:.4f}")
+            # For DST, prioritize Spearman correlation if available
+            elif position == 'DST' and validation_spearman is not None:
+                current_best = self.config['positions'][position].get('best_validation_spearman')
+                if current_best is not None:
+                    try:
+                        current_best_float = float(current_best)
+                        validation_spearman_float = float(validation_spearman)
+                        if validation_spearman_float < current_best_float:  # Lower Spearman is worse
+                            should_update = False
+                            logger.warning(f"Not updating {position} hyperparameters: "
+                                         f"new Spearman ({validation_spearman_float:.4f}) is worse than "
+                                         f"current best ({current_best_float:.4f})")
+                    except (TypeError, ValueError):
+                        logger.warning(f"Could not compare Spearman values for {position}, updating anyway")
+            elif validation_mae is not None:
+                current_best = self.config['positions'][position].get('best_validation_mae')
+                if current_best is not None:
+                    try:
+                        current_best_float = float(current_best)
+                        validation_mae_float = float(validation_mae)
+                        if validation_mae_float > current_best_float:  # Higher MAE is worse
+                            should_update = False
+                            logger.warning(f"Not updating {position} hyperparameters: "
+                                         f"new MAE ({validation_mae_float:.4f}) is worse than "
+                                         f"current best ({current_best_float:.4f})")
+                    except (TypeError, ValueError):
+                        logger.warning(f"Could not compare MAE values for {position}, updating anyway")
+            elif validation_r2 is not None:
+                # Fallback to R² comparison if MAE not available
+                current_best = self.config['positions'][position].get('best_validation_r2')
+                if current_best is not None:
+                    try:
+                        current_best_float = float(current_best)
+                        validation_r2_float = float(validation_r2)
+                        if validation_r2_float < current_best_float:
+                            should_update = False
+                            logger.warning(f"Not updating {position} hyperparameters: "
+                                         f"new R² ({validation_r2_float:.4f}) is worse than "
+                                         f"current best ({current_best_float:.4f})")
+                    except (TypeError, ValueError):
+                        logger.warning(f"Could not compare R² values for {position}, updating anyway")
 
         if should_update:
             # Update hyperparameters

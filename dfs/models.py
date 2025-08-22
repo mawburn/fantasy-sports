@@ -792,11 +792,12 @@ try:
                         val_pred = val_pred['mean']
                     val_pred = val_pred.detach().cpu().numpy().squeeze()
 
-                # Use MAE from training result (calculated from best checkpoint)
+                # Use all metrics from training result (calculated from best checkpoint)
                 mae = result.val_mae
+                r2 = result.val_r2
+                # Still need to calculate NDCG and Spearman from current best model state
                 ndcg_score = ndcg_at_k(self.y_val, val_pred, k=20)
                 spearman_corr, _ = spearmanr(self.y_val, val_pred)
-                r2 = r2_score(self.y_val, val_pred)
 
                 # Debug: Check if model actually has best checkpoint loaded
                 logger.info(f"Trial {trial.number + 1}: Using MAE={mae:.3f} from training result")
@@ -815,8 +816,9 @@ try:
                 trial.set_user_attr("r2", float(r2))
                 trial.set_user_attr("spearman", float(spearman_corr))
 
-                # Store the best model if this is the best NDCG@k so far AND MAE < guardrail
-                if mae < mae_guardrail and (not hasattr(self, 'best_ndcg') or ndcg_score > self.best_ndcg):
+                # Store the best model if this is the best NDCG@k so far AND all guardrails pass
+                if (mae < mae_guardrail and spearman_corr > 0 and r2 > 0 and
+                    (not hasattr(self, 'best_ndcg') or ndcg_score > self.best_ndcg)):
                     self.best_ndcg = ndcg_score
                     self.best_model = model
                     # Store best metrics for later use (only for valid trials)
@@ -828,10 +830,18 @@ try:
                     }
                     logger.info(f"Trial {trial.number + 1}: New best valid trial stored (MAE={mae:.3f}, NDCG={ndcg_score:.4f})")
 
-                # Apply MAE guardrail - prune if MAE too high
+                # Apply quality guardrails - prune if metrics don't meet minimum standards
                 if mae >= mae_guardrail:
                     logger.info(f"Trial {trial.number + 1}: MAE guardrail failed: {mae:.3f} >= {mae_guardrail}")
                     raise optuna.TrialPruned(f"MAE guardrail failed: {mae:.3f} >= {mae_guardrail}")
+
+                if spearman_corr <= 0:
+                    logger.info(f"Trial {trial.number + 1}: Spearman guardrail failed: {spearman_corr:.4f} <= 0")
+                    raise optuna.TrialPruned(f"Spearman guardrail failed: {spearman_corr:.4f} <= 0")
+
+                if r2 <= 0:
+                    logger.info(f"Trial {trial.number + 1}: R² guardrail failed: {r2:.4f} <= 0")
+                    raise optuna.TrialPruned(f"R² guardrail failed: {r2:.4f} <= 0")
 
                 # Add newline to separate from training progress, then log trial progress
                 print()  # Ensure newline after training progress
@@ -2074,6 +2084,38 @@ class BaseNeuralModel(ABC):
         ndcg_score = ndcg_at_k(y_val, predictions, k=k)
         return float(ndcg_score)
 
+    def _compute_validation_spearman(self, val_loader: DataLoader, y_val: np.ndarray) -> float:
+        """Compute Spearman correlation on validation data."""
+        from scipy.stats import spearmanr
+
+        self.network.eval()
+        predictions = []
+
+        with torch.no_grad():
+            for batch_X, _ in val_loader:
+                pred = self.network(batch_X)
+
+                # Handle QB model's dictionary output
+                if isinstance(pred, dict):
+                    pred = pred['mean']
+                elif pred.dim() > 1 and pred.size(1) == 1:
+                    pred = pred.squeeze(1)
+
+                predictions.extend(pred.cpu().numpy())
+
+        predictions = np.array(predictions)
+
+        # Handle NaN predictions
+        if np.isnan(predictions).any():
+            return 0.0  # Return 0 correlation for failed predictions
+
+        # Compute Spearman correlation
+        try:
+            correlation, _ = spearmanr(y_val, predictions)
+            return float(correlation) if not np.isnan(correlation) else 0.0
+        except Exception:
+            return 0.0  # Return 0 correlation for any computation errors
+
     def validate_predictions(self, predictions: np.ndarray, position: str = None) -> bool:
         """Ensure predictions are realistic per optimization guide validation."""
 
@@ -2186,24 +2228,26 @@ class BaseNeuralModel(ABC):
 
             # Compute validation NDCG@K every epoch for precise checkpointing
             val_ndcg = self._compute_validation_ndcg(val_loader, y_val, k=20)
-            # Also compute R² and MAE for logging/tracking
+            # Also compute R², MAE, and Spearman for guardrails and logging
             val_r2 = self._compute_validation_r2(val_loader, y_val)
             val_mae = self._compute_validation_mae(val_loader, y_val)
+            val_spearman = self._compute_validation_spearman(val_loader, y_val)
 
             self.train_losses.append(train_loss)
             self.val_losses.append(val_loss)
 
-            # Snapshot best model based on NDCG@K score (higher is better) AND MAE < 6.0
+            # Snapshot best model based on NDCG@K score (higher is better) AND all guardrails pass
             improved = False
-            if val_ndcg > best_val_ndcg and val_mae < 6.0:
+            guardrails_pass = val_mae < 6.0 and val_spearman > 0 and val_r2 > 0
+            if val_ndcg > best_val_ndcg and guardrails_pass:
                 best_val_ndcg = val_ndcg
                 best_val_loss = val_loss
                 best_epoch = epoch
                 import copy
                 self.best_state_dict = copy.deepcopy(self.network.state_dict())
                 improved = True
-            elif val_ndcg == best_val_ndcg and val_loss < best_val_loss and val_mae < 6.0:
-                # Same NDCG@K, but better loss - still an improvement if MAE is good
+            elif val_ndcg == best_val_ndcg and val_loss < best_val_loss and guardrails_pass:
+                # Same NDCG@K, but better loss - still an improvement if all guardrails pass
                 best_val_loss = val_loss
                 best_epoch = epoch
                 import copy
@@ -2212,9 +2256,9 @@ class BaseNeuralModel(ABC):
 
             # Progress reporting - show improvements and periodic updates
             if improved:
-                print(f"\r\033[K🎯 Epoch {epoch}: New best NDCG@20 = {val_ndcg:.4f} (MAE={val_mae:.3f})", end="", flush=True)
+                print(f"\r\033[K🎯 Epoch {epoch}: New best NDCG@20 = {val_ndcg:.4f} (MAE={val_mae:.3f}, R²={val_r2:.3f}, Spear={val_spearman:.3f})", end="", flush=True)
             elif epoch % 50 == 0:
-                print(f"\r\033[KEpoch {epoch}/{self.epochs}: NDCG@20 = {val_ndcg:.4f} (Best: {best_val_ndcg:.4f} @ epoch {best_epoch})", end="", flush=True)
+                print(f"\r\033[KEpoch {epoch}/{self.epochs}: NDCG@20 = {val_ndcg:.4f} (Best: {best_val_ndcg:.4f} @ epoch {best_epoch}) [MAE={val_mae:.3f}, R²={val_r2:.3f}, S={val_spearman:.3f}]", end="", flush=True)
 
         # Training completed - always run full epochs and use best checkpoint
         print(f"\nTraining completed ({self.epochs} epochs, Best NDCG@20: {best_val_ndcg:.4f} at epoch {best_epoch})")

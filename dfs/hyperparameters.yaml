@@ -40,14 +40,14 @@ positions:
     xgb_subsample: 0.8
   QB:
     batch_size: 48
-    best_validation_r2: -1.679262638092041
-    best_validation_mae: 5.804365634918213
-    best_validation_spearman: -0.22998978666799066
-    best_validation_ndcg_at_k: 0.40902902007533365
+    best_validation_r2: 0.09438669681549072
+    best_validation_mae: 5.65142297744751
+    best_validation_spearman: 0.07822239745994208
+    best_validation_ndcg_at_k: 0.43093031650391783
     dropout_rate: 0.2465447373174767
     epochs: 500
     hidden_size: 192
-    last_tuned: '2025-08-22T14:56:27.023650'
+    last_tuned: '2025-08-22T16:17:54.700121'
     learning_rate: 0.0044809759182149545
     num_layers: 2
     tuning_trials: 5
