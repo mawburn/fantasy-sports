@@ -15,6 +15,8 @@ positions:
   DST:
     batch_size: 64
     best_validation_r2: 0.0417885281510314
+    best_validation_mae: null
+    best_validation_spearman: null
     catboost_bagging_temperature: 0.40841695608322587
     catboost_border_count: 52
     catboost_depth: 8
@@ -38,6 +40,8 @@ positions:
   QB:
     batch_size: 16
     best_validation_r2: 0.2919396162033081
+    best_validation_mae: null
+    best_validation_spearman: null
     dropout_rate: 0.3832290311184182
     epochs: 500
     hidden_size: 256
@@ -53,6 +57,8 @@ positions:
   RB:
     batch_size: 16
     best_validation_r2: null
+    best_validation_mae: null
+    best_validation_spearman: null
     dropout_rate: 0.11031655633456552
     epochs: 500
     hidden_size: 256
@@ -68,6 +74,8 @@ positions:
   TE:
     batch_size: 64
     best_validation_r2: null
+    best_validation_mae: null
+    best_validation_spearman: null
     dropout_rate: 0.25
     epochs: 400
     hidden_size: 128
@@ -83,6 +91,8 @@ positions:
   WR:
     batch_size: 16
     best_validation_r2: null
+    best_validation_mae: null
+    best_validation_spearman: null
     dropout_rate: 0.31242177333881366
     epochs: 500
     hidden_size: 128

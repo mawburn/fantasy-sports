@@ -547,7 +547,7 @@ try:
                 trial: Optuna trial
 
             Returns:
-                Validation R² score (to maximize)
+                Combined score (MAE + Spearman correlation) to maximize
             """
             # Get search ranges from hyperparameter manager
             from hyperparameter_manager import get_hyperparameter_manager
@@ -633,12 +633,24 @@ try:
                              early_stopping_rounds=50,
                              verbose=False)
 
-                    # Evaluate
-                    from sklearn.metrics import r2_score
+                    # Evaluate using MAE and Spearman correlation
+                    from sklearn.metrics import mean_absolute_error
+                    from scipy.stats import spearmanr
                     val_pred = model.predict(self.X_val)
-                    val_r2 = r2_score(self.y_val, val_pred)
 
-                    return val_r2
+                    mae = mean_absolute_error(self.y_val, val_pred)
+                    spearman_corr, _ = spearmanr(self.y_val, val_pred)
+
+                    # Combined score: normalize and combine metrics
+                    # Lower MAE is better, higher Spearman is better
+                    # Scale MAE to 0-1 range (assuming max reasonable MAE ~20 for fantasy points)
+                    mae_score = max(0, 1 - (mae / 20))
+                    spearman_score = max(0, spearman_corr) if not np.isnan(spearman_corr) else 0
+
+                    # Weighted combination: 50% MAE, 50% Spearman
+                    combined_score = 0.5 * mae_score + 0.5 * spearman_score
+
+                    return combined_score
                 else:
                     return 0.0
 
@@ -662,8 +674,35 @@ try:
                 # Train model
                 result = model.train(self.X_train, self.y_train, self.X_val, self.y_val)
 
-                # Return validation R² (to maximize)
-                return result.val_r2
+                # Calculate predictions for evaluation
+                model.network.eval()
+                with torch.no_grad():
+                    X_val_tensor = torch.tensor(self.X_val, dtype=torch.float32).to(model.device)
+                    val_pred_tensor = model.network(X_val_tensor)
+
+                    # Handle different output formats
+                    if isinstance(val_pred_tensor, dict):
+                        val_pred_tensor = val_pred_tensor['mean']
+                    elif val_pred_tensor.dim() > 1 and val_pred_tensor.size(1) == 1:
+                        val_pred_tensor = val_pred_tensor.squeeze(1)
+
+                    val_pred = val_pred_tensor.cpu().numpy()
+
+                # Evaluate using MAE and Spearman correlation
+                from sklearn.metrics import mean_absolute_error
+                from scipy.stats import spearmanr
+                import numpy as np
+
+                mae = mean_absolute_error(self.y_val, val_pred)
+                spearman_corr, _ = spearmanr(self.y_val, val_pred)
+
+                # Store the best model if this is the best MAE so far
+                if not hasattr(self, 'best_mae') or mae < self.best_mae:
+                    self.best_mae = mae
+                    self.best_model = model
+
+                # Optimize on MAE (lower is better)
+                return mae
 
             except Exception as e:
                 logger.warning(f"Trial failed: {e}")
@@ -681,10 +720,13 @@ try:
             """
             # Create study
             study = optuna.create_study(
-                direction='maximize',
+                direction='minimize',  # Minimize MAE
                 sampler=optuna.samplers.TPESampler(seed=42),
                 pruner=optuna.pruners.MedianPruner(n_startup_trials=5)
             )
+
+            # Initialize best model storage
+            self.best_model = None
 
             # Optimize
             study.optimize(
@@ -699,7 +741,7 @@ try:
             self.best_score = study.best_value
 
             logger.info(f"Best hyperparameters: {self.best_params}")
-            logger.info(f"Best validation R²: {self.best_score:.4f}")
+            logger.info(f"Best MAE: {self.best_score:.4f}")
 
             return self.best_params
 
@@ -1546,8 +1588,47 @@ class BaseNeuralModel(ABC):
         # Run optimization
         best_params = tuner.optimize(n_trials, timeout)
 
-        # Store best validation R² for hyperparameter manager
-        self._last_validation_r2 = tuner.best_score
+        # Store best MAE for hyperparameter manager
+        self._last_mae = tuner.best_score
+
+        # Use the best model from tuning if available
+        if hasattr(tuner, 'best_model') and tuner.best_model is not None:
+            # Replace current network with the best model's network
+            self.network = tuner.best_model.network
+            self.device = tuner.best_model.device
+
+            # Calculate individual metrics using the best model
+            self.network.eval()
+            with torch.no_grad():
+                X_val_tensor = torch.tensor(X_val, dtype=torch.float32).to(self.device)
+                val_pred_tensor = self.network(X_val_tensor)
+
+                # Handle different output formats
+                if isinstance(val_pred_tensor, dict):
+                    val_pred_tensor = val_pred_tensor['mean']
+                elif val_pred_tensor.dim() > 1 and val_pred_tensor.size(1) == 1:
+                    val_pred_tensor = val_pred_tensor.squeeze(1)
+
+                val_pred = val_pred_tensor.cpu().numpy()
+
+            # Calculate all metrics for storage
+            from sklearn.metrics import mean_absolute_error
+            from scipy.stats import spearmanr
+            import numpy as np
+
+            self._last_validation_mae = mean_absolute_error(y_val, val_pred)
+            spearman_corr, _ = spearmanr(y_val, val_pred)
+            self._last_validation_spearman = spearman_corr if not np.isnan(spearman_corr) else 0
+
+            # Also calculate R² for compatibility
+            ss_res = np.sum((y_val - val_pred) ** 2)
+            ss_tot = np.sum((y_val - np.mean(y_val)) ** 2)
+            self._last_validation_r2 = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+        else:
+            # Fallback: use the stored best_score as the metrics
+            self._last_validation_mae = tuner.best_score
+            self._last_validation_spearman = 0.0
+            self._last_validation_r2 = 0.0
 
         # Apply best parameters
         self.learning_rate = best_params.get('learning_rate', self.learning_rate)
@@ -1564,10 +1645,10 @@ class BaseNeuralModel(ABC):
         logger.info(f"Applied best hyperparameters for {self.config.position}: {best_params}")
 
         # Save the optimized hyperparameters to YAML config
-        # Extract validation R² from training results if available
-        validation_r2 = None
-        if hasattr(self, '_last_validation_r2'):
-            validation_r2 = self._last_validation_r2
+        # Extract all validation metrics if available
+        validation_r2 = getattr(self, '_last_validation_r2', None)
+        validation_mae = getattr(self, '_last_mae', None)  # Best MAE from tuning
+        validation_spearman = getattr(self, '_last_validation_spearman', None)
 
         # Save to hyperparameter manager if available
         if HAS_HYPERPARAMETER_MANAGER:
@@ -1576,6 +1657,8 @@ class BaseNeuralModel(ABC):
                 position=self.config.position,
                 new_params=best_params,
                 validation_r2=validation_r2,
+                validation_mae=validation_mae,
+                validation_spearman=validation_spearman,
                 trials=n_trials
             )
 
@@ -1792,6 +1875,33 @@ class BaseNeuralModel(ABC):
         r2 = 1 - (ss_res / ss_tot)
         return r2
 
+    def _compute_validation_mae(self, val_loader: DataLoader, y_val: np.ndarray) -> float:
+        """Compute MAE score on validation data."""
+        self.network.eval()
+        predictions = []
+
+        with torch.no_grad():
+            for batch_X, _ in val_loader:
+                pred = self.network(batch_X)
+
+                # Handle QB model's dictionary output
+                if isinstance(pred, dict):
+                    pred = pred['mean']
+                elif pred.dim() > 1 and pred.size(1) == 1:
+                    pred = pred.squeeze(1)
+
+                predictions.extend(pred.cpu().numpy())
+
+        predictions = np.array(predictions)
+
+        # Handle NaN predictions
+        if np.isnan(predictions).any():
+            return float("inf")  # High MAE for failed predictions
+
+        # Compute MAE
+        mae = np.mean(np.abs(y_val - predictions))
+        return mae
+
     def validate_predictions(self, predictions: np.ndarray, position: str = None) -> bool:
         """Ensure predictions are realistic per optimization guide validation."""
 
@@ -1891,7 +2001,7 @@ class BaseNeuralModel(ABC):
         )
 
         best_val_loss = float("inf")
-        best_val_r2 = -float("inf")  # Track best R² score
+        best_val_mae = float("inf")  # Track best MAE score (lower is better)
         best_epoch = 0
 
         logger.info(f"Starting neural network training for {self.config.position}")
@@ -1902,22 +2012,24 @@ class BaseNeuralModel(ABC):
             val_loss = self._validate_epoch(val_loader)
             self.scheduler.step(val_loss)  # ReduceLROnPlateau takes loss as input
 
-            # Compute validation R² every epoch for precise checkpointing
+            # Compute validation MAE every epoch for precise checkpointing
+            val_mae = self._compute_validation_mae(val_loader, y_val)
+            # Also compute R² for logging/tracking
             val_r2 = self._compute_validation_r2(val_loader, y_val)
 
             self.train_losses.append(train_loss)
             self.val_losses.append(val_loss)
 
-            # Snapshot best model based on R² score
+            # Snapshot best model based on MAE score (lower is better)
             improved = False
-            if val_r2 > best_val_r2:
-                best_val_r2 = val_r2
+            if val_mae < best_val_mae:
+                best_val_mae = val_mae
                 best_val_loss = val_loss
                 best_epoch = epoch
                 self.best_state_dict = self.network.state_dict().copy()
                 improved = True
-            elif val_r2 == best_val_r2 and val_loss < best_val_loss:
-                # Same R², but better loss - still an improvement
+            elif val_mae == best_val_mae and val_loss < best_val_loss:
+                # Same MAE, but better loss - still an improvement
                 best_val_loss = val_loss
                 best_epoch = epoch
                 self.best_state_dict = self.network.state_dict().copy()
@@ -1925,12 +2037,12 @@ class BaseNeuralModel(ABC):
 
             # Progress reporting - show improvements and periodic updates
             if improved:
-                print(f"\r\033[K🎯 Epoch {epoch}: New best R² = {val_r2:.4f}", end="", flush=True)
+                print(f"\r\033[K🎯 Epoch {epoch}: New best MAE = {val_mae:.4f}", end="", flush=True)
             elif epoch % 50 == 0:
-                print(f"\r\033[KEpoch {epoch}/{self.epochs}: R² = {val_r2:.4f} (Best: {best_val_r2:.4f} @ epoch {best_epoch})", end="", flush=True)
+                print(f"\r\033[KEpoch {epoch}/{self.epochs}: MAE = {val_mae:.4f} (Best: {best_val_mae:.4f} @ epoch {best_epoch})", end="", flush=True)
 
         # Training completed - always run full epochs and use best checkpoint
-        print(f"\nTraining completed ({self.epochs} epochs, Best R²: {best_val_r2:.4f} at epoch {best_epoch})")
+        print(f"\nTraining completed ({self.epochs} epochs, Best MAE: {best_val_mae:.4f} at epoch {best_epoch})")
 
         if hasattr(self, "best_state_dict"):
             self.network.load_state_dict(self.best_state_dict)
@@ -1964,7 +2076,9 @@ class BaseNeuralModel(ABC):
             train_mae = val_mae = float('nan')
             train_rmse = val_rmse = float('nan')
             train_r2 = float('nan')
-            val_r2 = best_val_r2  # Still use best R² even if final predictions have NaN
+            # Calculate final R² from the best MAE model
+            val_ss_tot = np.sum((y_val - np.mean(y_val)) ** 2)
+            val_r2 = 1 - np.sum((y_val - val_pred) ** 2) / val_ss_tot if val_ss_tot != 0 else 0
         else:
             train_mae = np.mean(np.abs(y_train - train_pred))
             val_mae = np.mean(np.abs(y_val - val_pred))
@@ -1979,8 +2093,9 @@ class BaseNeuralModel(ABC):
             else:
                 train_r2 = 1 - np.sum((y_train - train_pred) ** 2) / train_ss_tot
 
-            # Use the best validation R² from training (already computed during checkpointing)
-            val_r2 = best_val_r2
+            # Calculate final validation R² from the best MAE model
+            val_ss_tot = np.sum((y_val - np.mean(y_val)) ** 2)
+            val_r2 = 1 - np.sum((y_val - val_pred) ** 2) / val_ss_tot if val_ss_tot != 0 else 0
 
         self._residual_std = np.std(y_val - val_pred)
         self.is_trained = True
@@ -3406,20 +3521,21 @@ class DEFCatBoostModel:
                 verbose=False
             )
 
-            # Calculate validation MAE (negative because Optuna minimizes)
+            # Calculate validation metrics
             val_pred = model.predict(X_val)
             val_mae = np.mean(np.abs(y_val - val_pred))
 
-            # Also calculate R² for logging
-            ss_res = np.sum((y_val - val_pred) ** 2)
-            ss_tot = np.sum((y_val - np.mean(y_val)) ** 2)
-            val_r2 = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+            # Calculate Spearman correlation
+            from scipy.stats import spearmanr
+            spearman_corr, _ = spearmanr(y_val, val_pred)
+            spearman_corr = spearman_corr if not np.isnan(spearman_corr) else 0
 
             # Log progress every 5 trials
             if trial.number % 5 == 0:
-                logger.info(f"Trial {trial.number}: MAE={val_mae:.3f}, R²={val_r2:.3f}")
+                logger.info(f"Trial {trial.number}: MAE={val_mae:.3f}, Spearman={spearman_corr:.3f}")
 
-            return val_mae  # Minimize MAE
+            # Optimize on MAE (lower is better)
+            return val_mae
 
         # Create study and optimize
         study = optuna.create_study(direction='minimize', study_name='dst_catboost_tuning')
@@ -3427,7 +3543,7 @@ class DEFCatBoostModel:
 
         # Get best parameters
         best_params = study.best_params
-        best_mae = study.best_value
+        best_mae = study.best_value  # Best MAE achieved
 
         logger.info(f"Best CatBoost parameters found (MAE={best_mae:.3f}): {best_params}")
 
@@ -3453,7 +3569,13 @@ class DEFCatBoostModel:
         final_model.fit(X_train, y_train, eval_set=(X_val, y_val), verbose=False)
         val_pred = final_model.predict(X_val)
 
-        # Calculate final R²
+        # Calculate final metrics
+        final_mae = np.mean(np.abs(y_val - val_pred))
+        from scipy.stats import spearmanr
+        final_spearman, _ = spearmanr(y_val, val_pred)
+        final_spearman = final_spearman if not np.isnan(final_spearman) else 0
+
+        # Also calculate R² for compatibility
         ss_res = np.sum((y_val - val_pred) ** 2)
         ss_tot = np.sum((y_val - np.mean(y_val)) ** 2)
         val_r2 = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
@@ -3487,9 +3609,11 @@ class DEFCatBoostModel:
                 position='DST',
                 new_params=yaml_params,
                 validation_r2=val_r2,
+                validation_mae=final_mae,
+                validation_spearman=final_spearman,
                 trials=n_trials
             )
-            logger.info(f"Updated DST hyperparameters in YAML (Best MAE: {best_mae:.3f}, Val R²: {val_r2:.4f})")
+            logger.info(f"Updated DST hyperparameters in YAML (MAE: {final_mae:.3f}, Spearman: {final_spearman:.3f}, R²: {val_r2:.4f})")
 
         # Store best params for use in training
         self.best_params = best_params

@@ -117,13 +117,16 @@ class HyperparameterManager:
         return params
 
     def update_hyperparameters(self, position: str, new_params: Dict[str, Any],
-                             validation_r2: float = None, trials: int = None):
+                             validation_r2: float = None, validation_mae: float = None,
+                             validation_spearman: float = None, trials: int = None):
         """Update hyperparameters for a position.
 
         Args:
             position: Position code (QB, RB, WR, TE, DST)
             new_params: New hyperparameter values
             validation_r2: Best validation R² achieved
+            validation_mae: Best validation MAE achieved
+            validation_spearman: Best validation Spearman correlation achieved
             trials: Number of trials used in optimization
         """
         position = position.upper()
@@ -135,23 +138,36 @@ class HyperparameterManager:
         if position not in self.config['positions']:
             self.config['positions'][position] = {}
 
-        # Check if we should update based on validation score
+        # Check if we should update based on MAE (preferred) or R² (fallback)
         should_update = True
-        current_best = self.config['positions'][position].get('best_validation_r2')
-
-        if validation_r2 is not None and current_best is not None:
-            # Handle numpy scalar types
-            try:
-                current_best_float = float(current_best)
-                validation_r2_float = float(validation_r2)
-                if validation_r2_float < current_best_float:
-                    should_update = False
-                    logger.warning(f"Not updating {position} hyperparameters: "
-                                 f"new R² ({validation_r2_float:.4f}) is worse than "
-                                 f"current best ({current_best_float:.4f})")
-            except (TypeError, ValueError):
-                # If conversion fails, update anyway but log warning
-                logger.warning(f"Could not compare R² values for {position}, updating anyway")
+        
+        if validation_mae is not None:
+            current_best = self.config['positions'][position].get('best_validation_mae')
+            if current_best is not None:
+                try:
+                    current_best_float = float(current_best)
+                    validation_mae_float = float(validation_mae)
+                    if validation_mae_float > current_best_float:  # Higher MAE is worse
+                        should_update = False
+                        logger.warning(f"Not updating {position} hyperparameters: "
+                                     f"new MAE ({validation_mae_float:.4f}) is worse than "
+                                     f"current best ({current_best_float:.4f})")
+                except (TypeError, ValueError):
+                    logger.warning(f"Could not compare MAE values for {position}, updating anyway")
+        elif validation_r2 is not None:
+            # Fallback to R² comparison if MAE not available
+            current_best = self.config['positions'][position].get('best_validation_r2')
+            if current_best is not None:
+                try:
+                    current_best_float = float(current_best)
+                    validation_r2_float = float(validation_r2)
+                    if validation_r2_float < current_best_float:
+                        should_update = False
+                        logger.warning(f"Not updating {position} hyperparameters: "
+                                     f"new R² ({validation_r2_float:.4f}) is worse than "
+                                     f"current best ({current_best_float:.4f})")
+                except (TypeError, ValueError):
+                    logger.warning(f"Could not compare R² values for {position}, updating anyway")
 
         if should_update:
             # Update hyperparameters
@@ -159,15 +175,30 @@ class HyperparameterManager:
 
             # Update metadata
             self.config['positions'][position]['last_tuned'] = datetime.now().isoformat()
+            
+            # Store all metrics as floats to avoid numpy serialization issues
             if validation_r2 is not None:
-                # Store as float to avoid numpy serialization issues
                 self.config['positions'][position]['best_validation_r2'] = float(validation_r2)
+            if validation_mae is not None:
+                self.config['positions'][position]['best_validation_mae'] = float(validation_mae)
+            if validation_spearman is not None:
+                self.config['positions'][position]['best_validation_spearman'] = float(validation_spearman)
             if trials is not None:
                 self.config['positions'][position]['tuning_trials'] = trials
 
             logger.info(f"Updated hyperparameters for {position} with {len(new_params)} parameters")
+            
+            # Log all available metrics
+            metrics_log = []
+            if validation_mae is not None:
+                metrics_log.append(f"MAE: {validation_mae:.4f}")
+            if validation_spearman is not None:
+                metrics_log.append(f"Spearman: {validation_spearman:.4f}")
             if validation_r2 is not None:
-                logger.info(f"Best validation R² for {position}: {validation_r2:.4f}")
+                metrics_log.append(f"R²: {validation_r2:.4f}")
+            
+            if metrics_log:
+                logger.info(f"Best metrics for {position}: {', '.join(metrics_log)}")
 
             # Save to file
             self.save_config()
@@ -199,12 +230,16 @@ class HyperparameterManager:
             return {
                 'last_tuned': pos_config.get('last_tuned'),
                 'best_validation_r2': pos_config.get('best_validation_r2'),
+                'best_validation_mae': pos_config.get('best_validation_mae'),
+                'best_validation_spearman': pos_config.get('best_validation_spearman'),
                 'tuning_trials': pos_config.get('tuning_trials', 0)
             }
 
         return {
             'last_tuned': None,
             'best_validation_r2': None,
+            'best_validation_mae': None,
+            'best_validation_spearman': None,
             'tuning_trials': 0
         }
 

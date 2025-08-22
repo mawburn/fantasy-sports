@@ -31,6 +31,52 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+def _filter_for_top_performers(X: np.ndarray, y: np.ndarray, position: str) -> Tuple[np.ndarray, np.ndarray]:
+    """Filter training data to focus on top performers and meaningful games.
+    
+    Removes low-scoring games that add noise when trying to identify 
+    top performers for DFS lineup construction.
+    
+    Args:
+        X: Feature matrix
+        y: Target fantasy points
+        position: Player position (QB, RB, WR, TE, DST)
+        
+    Returns:
+        Tuple of filtered (X, y)
+    """
+    position = position.upper()
+    
+    # Position-specific minimum thresholds for meaningful performances
+    min_thresholds = {
+        'QB': 8.0,   # QB should have at least 8 fantasy points (200 pass yds + 1 TD)
+        'RB': 6.0,   # RB should have at least 6 fantasy points (60 rush yds OR 1 TD)  
+        'WR': 5.0,   # WR should have at least 5 fantasy points (50 rec yds OR 1 TD)
+        'TE': 4.0,   # TE should have at least 4 fantasy points (40 rec yds)
+        'DST': 2.0,  # DST should have at least 2 fantasy points
+        'DEF': 2.0   # DEF should have at least 2 fantasy points
+    }
+    
+    # Additional filtering: remove bottom 10% of performances to focus on upside
+    percentile_cutoff = 10  # Remove bottom 10%
+    
+    min_threshold = min_thresholds.get(position, 3.0)
+    percentile_threshold = np.percentile(y, percentile_cutoff)
+    
+    # Use the higher of the two thresholds
+    final_threshold = max(min_threshold, percentile_threshold)
+    
+    # Filter out low performances
+    keep_mask = y >= final_threshold
+    X_filtered = X[keep_mask]
+    y_filtered = y[keep_mask]
+    
+    removed_count = len(y) - len(y_filtered)
+    logger.info(f"Filtered {removed_count} low-performing {position} games (threshold: {final_threshold:.1f})")
+    logger.info(f"Kept {len(y_filtered)}/{len(y)} samples ({100*len(y_filtered)/len(y):.1f}%)")
+    
+    return X_filtered, y_filtered
+
 # Feature extraction functions for QB model optimization
 def extract_vegas_features(db_path: str, game_id: str, team_id: int, is_home: bool) -> Dict[str, float]:
     """Extract critical Vegas-based features for QB predictions."""
@@ -4665,6 +4711,9 @@ def get_training_data(
 
         if not cleaning_progress._finished:
             cleaning_progress.finish()
+
+        # Filter for top performers (remove low-scoring games that add noise)
+        X, y = _filter_for_top_performers(X, y, position)
 
         logger.info(f"Final dataset: {len(X)} training samples for {position} with {len(feature_names)} features")
         return X, y, feature_names

@@ -373,21 +373,59 @@ class DFSContestSimulator:
         }]
 
     def _simulate_results(self, lineups: List[Dict], date: datetime) -> List[float]:
-        """Simulate actual fantasy scores for lineups."""
+        """Get actual historical fantasy scores for lineups."""
 
         results = []
         for lineup in lineups:
-            # Simulate variance around projections
             total_score = 0
             for player in lineup['players']:
-                projected = player['projected_points']
-                # Add realistic variance (std dev ~80% of projection)
-                actual = max(0, np.random.normal(projected, projected * 0.8))
-                total_score += actual
+                # Get actual historical fantasy points for this player on this date
+                actual_points = self._get_actual_fantasy_points(player['player_id'], date)
+                if actual_points is not None:
+                    total_score += actual_points
+                else:
+                    # If no actual data available (player didn't play, was injured, etc.)
+                    logger.warning(f"No actual fantasy points for player {player.get('player_name', 'Unknown')} on {date}")
+                    # Use 0 points (didn't play)
+                    total_score += 0
 
             results.append(total_score)
 
         return results
+
+    def _get_actual_fantasy_points(self, player_id: int, game_date: datetime) -> Optional[float]:
+        """Get actual fantasy points for a player on a specific game date."""
+        with sqlite3.connect(self.db_path) as conn:
+            # First try regular players
+            query = """
+                SELECT ps.fantasy_points
+                FROM player_stats ps
+                JOIN games g ON ps.game_id = g.id
+                WHERE ps.player_id = ?
+                AND date(g.game_date) = date(?)
+            """
+            result = conn.execute(query, (player_id, game_date.strftime('%Y-%m-%d'))).fetchone()
+
+            if result and result[0] is not None:
+                return float(result[0])
+
+            # If not found, try DST stats (for defense players)
+            dst_query = """
+                SELECT ds.fantasy_points
+                FROM dst_stats ds
+                JOIN games g ON ds.game_id = g.id
+                JOIN teams t ON ds.team_abbr = t.team_abbr
+                JOIN players p ON p.team_id = t.id
+                WHERE p.id = ?
+                AND date(g.game_date) = date(?)
+                AND p.position = 'DST'
+            """
+            dst_result = conn.execute(dst_query, (player_id, game_date.strftime('%Y-%m-%d'))).fetchone()
+
+            if dst_result and dst_result[0] is not None:
+                return float(dst_result[0])
+
+            return None
 
     def _calculate_payouts(self, results: List[float]) -> List[float]:
         """Calculate contest payouts based on results."""
@@ -552,23 +590,58 @@ class CorrelationBacktester:
         return lineups[:3]
 
     def _simulate_lineup_scores(self, lineups: List[Dict[str, Any]], date: datetime) -> List[float]:
-        """Simulate actual scores for correlation testing."""
+        """Get actual historical scores for correlation testing."""
 
         scores = []
         for lineup in lineups:
             total_score = 0
 
-            strategy = lineup.get('strategy', 'standard')
-            correlation_multiplier = 1.15 if strategy in ['single_stack', 'double_stack'] else 1.0
-
             for player in lineup['players']:
-                projected = player.get('projected_points', 8.0)
-                actual = max(0, np.random.normal(projected * correlation_multiplier, projected * 0.8))
-                total_score += actual
+                # Get actual historical fantasy points
+                actual_points = self._get_actual_fantasy_points(player['player_id'], date)
+                if actual_points is not None:
+                    total_score += actual_points
+                else:
+                    # Player didn't play - use 0 points
+                    total_score += 0
 
             scores.append(total_score)
 
         return scores
+
+    def _get_actual_fantasy_points(self, player_id: int, game_date: datetime) -> Optional[float]:
+        """Get actual fantasy points for a player on a specific game date."""
+        with sqlite3.connect(self.db_path) as conn:
+            # First try regular players
+            query = """
+                SELECT ps.fantasy_points
+                FROM player_stats ps
+                JOIN games g ON ps.game_id = g.id
+                WHERE ps.player_id = ?
+                AND date(g.game_date) = date(?)
+            """
+            result = conn.execute(query, (player_id, game_date.strftime('%Y-%m-%d'))).fetchone()
+
+            if result and result[0] is not None:
+                return float(result[0])
+
+            # If not found, try DST stats (for defense players)
+            dst_query = """
+                SELECT ds.fantasy_points
+                FROM dst_stats ds
+                JOIN games g ON ds.game_id = g.id
+                JOIN teams t ON ds.team_abbr = t.team_abbr
+                JOIN players p ON p.team_id = t.id
+                WHERE p.id = ?
+                AND date(g.game_date) = date(?)
+                AND p.position = 'DST'
+            """
+            dst_result = conn.execute(dst_query, (player_id, game_date.strftime('%Y-%m-%d'))).fetchone()
+
+            if dst_result and dst_result[0] is not None:
+                return float(dst_result[0])
+
+            return None
 
 
 class PortfolioBacktester:
@@ -662,6 +735,8 @@ class PortfolioBacktester:
 
     def _simulate_lineup_score(self, lineup: Dict) -> float:
         """Simulate single lineup score."""
+        # Note: PortfolioBacktester still uses simulation since it's not tied to specific historical dates
+        # This would need refactoring to support historical backtesting with actual scores
 
         total_score = 0
         for player in lineup['players']:
