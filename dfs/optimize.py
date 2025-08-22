@@ -664,10 +664,10 @@ def build_tournament_lineup(
                 injury_status=player.injury_status
             )
 
-            # Blend projection with ceiling for tournament optimization
+            # Blend projection with ceiling for tournament optimization (60% ceiling focus)
             tournament_score = (
-                player.projected_points * (1 - ceiling_weight) +
-                player.ceiling * ceiling_weight
+                player.projected_points * 0.4 +
+                player.ceiling * 0.6
             )
             tournament_player.projected_points = tournament_score
             tournament_pool.append(tournament_player)
@@ -955,7 +955,7 @@ def optimize_cash_game_lineup(
             name=player.name,
             position=player.position,
             salary=player.salary,
-            projected_points=max(player.floor, player.projected_points * 0.9),  # Less conservative
+            projected_points=(player.floor + player.projected_points) / 2,  # Average floor and projection for cash games
             floor=player.floor,
             ceiling=player.ceiling,
             team_abbr=player.team_abbr,
