@@ -143,11 +143,21 @@ class HyperparameterManager:
         # Check if we should update based on position-specific optimization metric
         should_update = True
 
-        # First, check if new metrics meet basic quality guardrails
-        if validation_mae is not None and validation_mae >= 6.0:
+        # First, check if new metrics meet position-specific quality guardrails
+        mae_guardrails = {
+            'QB': 8.0,   # QBs have higher variance in fantasy points
+            'RB': 6.0,   # RBs have moderate variance
+            'WR': 5.0,   # WRs have moderate variance
+            'TE': 4.0,   # TEs have lower variance
+            'DST': 3.0,  # DST has lower variance
+            'DEF': 3.0   # Alternative DST name
+        }
+        mae_threshold = mae_guardrails.get(position, 6.0)
+        
+        if validation_mae is not None and validation_mae >= mae_threshold:
             should_update = False
             logger.warning(f"Not updating {position} hyperparameters: "
-                         f"MAE guardrail failed ({validation_mae:.4f} >= 6.0)")
+                         f"MAE guardrail failed ({validation_mae:.4f} >= {mae_threshold})")
         elif validation_spearman is not None and validation_spearman <= 0:
             should_update = False
             logger.warning(f"Not updating {position} hyperparameters: "

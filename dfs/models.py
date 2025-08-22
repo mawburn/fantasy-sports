@@ -104,6 +104,8 @@ torch.backends.cudnn.benchmark = False
 if OPTIMAL_DEVICE.type == "mps":
     # Enable memory efficient attention for M-series
     torch.backends.mps.enable_fallback = True  # Fallback to CPU for unsupported ops
+    logger.warning("MPS fallback enabled - some operations may run on CPU instead of GPU, "
+                   "which could impact performance")
 
 
 @dataclass
@@ -549,20 +551,20 @@ try:
         if k <= 0:
             return 0.0
 
-        # Handle negative fantasy points by shifting to make minimum = 0
-        # This ensures relevance scores are non-negative as required by NDCG
-        min_true = np.min(y_true)
-        if min_true < 0:
-            y_true_shifted = y_true - min_true
-        else:
-            y_true_shifted = y_true.copy()
+        # Handle negative fantasy points using exponential transformation
+        # This preserves relative differences better than shifting
+        # Using 2^(y/10) - 1 to scale fantasy points appropriately
+        # (e.g., 0 points -> 0 relevance, 10 points -> 1 relevance, 20 points -> 3 relevance)
+        y_true_relevance = np.power(2, y_true / 10) - 1
+        # Ensure non-negative (handles very negative values)
+        y_true_relevance = np.maximum(y_true_relevance, 0)
 
         # Sort indices by predicted values (descending order)
         predicted_order = np.argsort(y_pred)[::-1]
 
         # Get the top-k predictions and their true relevance scores
         top_k_indices = predicted_order[:k]
-        top_k_true_scores = y_true_shifted[top_k_indices]
+        top_k_true_scores = y_true_relevance[top_k_indices]
 
         # Calculate DCG@k (Discounted Cumulative Gain)
         # DCG = sum(rel_i / log2(i + 2)) for i in range(k)
@@ -571,8 +573,8 @@ try:
             dcg += relevance / np.log2(i + 2)
 
         # Calculate ideal DCG@k (sort by true relevance scores)
-        ideal_order = np.argsort(y_true_shifted)[::-1]
-        ideal_top_k = y_true_shifted[ideal_order][:k]
+        ideal_order = np.argsort(y_true_relevance)[::-1]
+        ideal_top_k = y_true_relevance[ideal_order][:k]
 
         idcg = 0.0
         for i, relevance in enumerate(ideal_top_k):
@@ -729,13 +731,19 @@ try:
                     spearman_corr, _ = spearmanr(self.y_val, val_pred)
                     r2 = r2_score(self.y_val, val_pred)
 
-                    # Handle NaN values (treat as 0.0)
+                    # Handle NaN values with logging
                     if spearman_corr is None or np.isnan(spearman_corr):
+                        logger.warning(f"NaN detected in Spearman correlation for {position} trial {trial.number}")
                         spearman_corr = 0.0
                     if np.isnan(ndcg_score):
+                        logger.warning(f"NaN detected in NDCG@20 score for {position} trial {trial.number}")
                         ndcg_score = 0.0
                     if np.isnan(r2):
+                        logger.warning(f"NaN detected in R² score for {position} trial {trial.number}")
                         r2 = 0.0
+                    if np.isnan(mae):
+                        logger.warning(f"NaN detected in MAE for {position} trial {trial.number}")
+                        mae = float('inf')  # Treat NaN MAE as worst possible
 
                     # Store metrics in trial attributes
                     trial.set_user_attr("mae", float(mae))
@@ -1610,7 +1618,7 @@ class BaseNeuralModel(ABC):
     # BaseNeuralModel methods continue below
 
     def find_optimal_lr(self, X_train: np.ndarray, y_train: np.ndarray,
-                       start_lr: float = 1e-8, end_lr: float = 1.0,
+                       start_lr: float = 1e-5, end_lr: float = 1e-1,
                        num_iter: int = 100) -> float:
         """Find optimal learning rate using LR range test.
 
@@ -3854,7 +3862,7 @@ class DEFCatBoostModel:
         return best_params
 
     def find_optimal_lr(self, X_train: np.ndarray, y_train: np.ndarray,
-                       start_lr: float = 1e-8, end_lr: float = 1.0,
+                       start_lr: float = 1e-5, end_lr: float = 1e-1,
                        num_iter: int = 100) -> float:
         """Stub method - CatBoost DST uses fixed learning rate."""
         return 0.04

@@ -98,7 +98,7 @@ class LineupConstraints:
     # Stacking constraints
     allow_qb_stack: bool = True
     allow_rb_def_stack: bool = True
-    min_qb_stack_count: int = 1  # Minimum pass catchers to stack with QB
+    min_qb_stack_count: int = 2  # Minimum pass catchers to stack with QB (2 for tournaments)
 
     # Exposure constraints (for multi-lineup generation)
     max_exposure: Dict[int, float] = None
@@ -558,10 +558,19 @@ def build_stacking_lineup(
                 if qb_players and pass_catchers:
                     qb_selected = lp.lpSum([player_vars[pid] for pid in qb_players])
                     catchers_selected = lp.lpSum([player_vars[pid] for pid in pass_catchers])
+                    
+                    # Weight pass catchers by their projections to prefer higher-projected players
+                    weighted_catchers = lp.lpSum([
+                        player_vars[pid] * player_projections[pid] 
+                        for pid in pass_catchers
+                    ])
 
                     if force_stacking:
                         # Force stacking: if QB selected, must have pass catchers
                         prob += catchers_selected >= constraints.min_qb_stack_count * qb_selected
+                        
+                        # Soft constraint: prefer higher-projected pass catchers when stacking
+                        # This is achieved by the objective function maximizing total projections
 
     # RB-DEF stacking constraints (game script correlation)
     if constraints.allow_rb_def_stack and rb_def_stack_teams:

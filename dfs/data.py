@@ -49,7 +49,7 @@ def _filter_for_top_performers(X: np.ndarray, y: np.ndarray, position: str) -> T
     
     # Position-specific minimum thresholds for meaningful performances
     min_thresholds = {
-        'QB': 8.0,   # QB should have at least 8 fantasy points (200 pass yds + 1 TD)
+        'QB': 5.0,   # QB should have at least 5 fantasy points (allows backup performances)
         'RB': 6.0,   # RB should have at least 6 fantasy points (60 rush yds OR 1 TD)  
         'WR': 5.0,   # WR should have at least 5 fantasy points (50 rec yds OR 1 TD)
         'TE': 4.0,   # TE should have at least 4 fantasy points (40 rec yds)
@@ -110,16 +110,16 @@ def extract_vegas_features(db_path: str, game_id: str, team_id: int, is_home: bo
                 'blowout_risk': 1 if team_spread and abs(team_spread) > 10 else 0
             })
         else:
-            # Default values if no betting data
+            # Use NaN for missing betting data to distinguish from actual values
             features.update({
-                'team_implied_total': 0,
-                'game_total': 0,
-                'spread': 0,
-                'is_favorite': 0,
-                'favorite_margin': 0,
-                'expected_pass_rate': 0.55,
-                'shootout_probability': 0,
-                'blowout_risk': 0
+                'team_implied_total': float('nan'),
+                'game_total': float('nan'),
+                'spread': float('nan'),
+                'is_favorite': float('nan'),
+                'favorite_margin': float('nan'),
+                'expected_pass_rate': 0.55,  # Keep reasonable default for pass rate
+                'shootout_probability': float('nan'),
+                'blowout_risk': float('nan')
             })
 
     return features
