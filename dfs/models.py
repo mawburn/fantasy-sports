@@ -26,6 +26,8 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
+from helpers import log_model_metrics
+
 logger = logging.getLogger(__name__)
 
 # Import hyperparameter manager with error handling
@@ -3870,7 +3872,7 @@ class DEFCatBoostModel:
         )
 
         self.training_history.append(result.__dict__)
-        logger.info(f"CatBoost training completed: MAE={val_mae:.3f}, R²={val_r2:.3f}")
+        log_model_metrics("CatBoost", "Training", val_mae, val_r2)
 
         return result
 
@@ -4530,7 +4532,7 @@ class EnsembleModel:
 
         self.is_trained = True
 
-        logger.info(f"XGBoost ensemble trained: MAE={val_mae:.3f}, R²={val_r2:.3f}")
+        log_model_metrics("XGBoost", "Ensemble", val_mae, val_r2)
 
         return TrainingResult(
             model=self.xgb_model,

@@ -12,6 +12,7 @@ Designed to replace direct SQL queries in data.py with optimized batch operation
 
 import logging
 import sqlite3
+from contextlib import contextmanager
 from typing import Dict, List, Tuple
 
 import pandas as pd
@@ -19,6 +20,31 @@ import pandas as pd
 from data import ProgressDisplay
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def db_connection(db_path: str = "data/nfl_dfs.db"):
+    """Context manager for database connections.
+    
+    Ensures connections are properly closed even if errors occur.
+    
+    Args:
+        db_path: Path to SQLite database
+        
+    Yields:
+        SQLite connection object
+        
+    Example:
+        with db_connection() as conn:
+            result = conn.execute("SELECT * FROM players").fetchall()
+    """
+    from data import get_db_connection  # Import here to avoid circular imports
+    
+    conn = get_db_connection(db_path)
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 class DatabaseManager:

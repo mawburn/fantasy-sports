@@ -23,6 +23,8 @@ import numpy as np
 import pandas as pd
 import requests
 
+from helpers import safe_float, safe_int, validate_file_path
+
 try:
     import nfl_data_py as nfl
 except ImportError:
@@ -1142,18 +1144,6 @@ def collect_nfl_data(seasons: List[int], db_path: str = "data/nfl_dfs.db") -> No
                         fantasy_points = calculate_dk_fantasy_points(player_week)
 
                         # Convert and validate all numeric fields
-                        def safe_float(val, default=0.0):
-                            try:
-                                return float(val) if pd.notna(val) else default
-                            except (ValueError, TypeError):
-                                return default
-
-                        def safe_int(val, default=0):
-                            try:
-                                return int(val) if pd.notna(val) else default
-                            except (ValueError, TypeError):
-                                return default
-
                         stats_data = (
                             player_id,
                             game_id,
@@ -1399,12 +1389,6 @@ def collect_pbp_data(season: int, conn: sqlite3.Connection) -> None:
             if not existing_game:
                 # Skip plays for games that don't exist in our games table
                 continue
-
-            def safe_int(val, default=0):
-                try:
-                    return int(val) if pd.notna(val) and val != "" else default
-                except (ValueError, TypeError):
-                    return default
 
             play_data = (
                 str(play.get("play_id", "")),
@@ -6002,8 +5986,7 @@ def import_spreadspoke_data(
     csv_path: str, db_path: str = "data/nfl_dfs.db", seasons: Optional[List[int]] = None
 ) -> None:
     """Import weather and betting data from spreadspoke CSV file."""
-    if not Path(csv_path).exists():
-        raise FileNotFoundError(f"CSV file not found: {csv_path}")
+    csv_path = str(validate_file_path(csv_path, "Spreadspoke CSV"))
 
     conn = get_db_connection(db_path)
 
@@ -6706,7 +6689,9 @@ def backtest_production_pipeline(
 
         # Load trained model
         model_path = f"models/{position.lower()}_model.pth"
-        if not Path(model_path).exists():
+        try:
+            model_path = str(validate_file_path(model_path, "Model"))
+        except FileNotFoundError:
             return {"error": f"No trained model found: {model_path}"}
 
         # Get expected feature count from training data
