@@ -29,7 +29,7 @@ positions:
     dropout_rate: 0.2
     epochs: 3500
     hidden_size: 128
-    last_tuned: '2025-08-22T11:10:00.161164'
+    last_tuned: "2025-08-22T11:10:00.161164"
     learning_rate: 0.07951773559697924
     num_layers: 2
     tuning_trials: 500
@@ -40,14 +40,14 @@ positions:
     xgb_subsample: 0.8
   QB:
     batch_size: 48
-    best_validation_r2: 0.09438669681549072
-    best_validation_mae: 5.65142297744751
-    best_validation_spearman: 0.07822239745994208
-    best_validation_ndcg_at_k: 0.43093031650391783
-    dropout_rate: 0.2465447373174767
+    best_validation_r2: null
+    best_validation_mae: null
+    best_validation_spearman: null
+    best_validation_ndcg_at_k: null
+    dropout_rate: null
     epochs: 500
     hidden_size: 192
-    last_tuned: '2025-08-22T16:17:54.700121'
+    last_tuned: "2025-08-22T16:17:54.700121"
     learning_rate: 0.0044809759182149545
     num_layers: 2
     tuning_trials: 5
@@ -58,14 +58,14 @@ positions:
     xgb_subsample: 0.8
   RB:
     batch_size: 48
-    best_validation_r2: -0.2713441848754883
-    best_validation_mae: 5.998381614685059
-    best_validation_spearman: 0.4137932637859814
-    best_validation_ndcg_at_k: 0.594992834076214
-    dropout_rate: 0.2465447373174767
+    best_validation_r2: null
+    best_validation_mae: null
+    best_validation_spearman: null
+    best_validation_ndcg_at_k: null
+    dropout_rate: null
     epochs: 500
     hidden_size: 192
-    last_tuned: '2025-08-22T14:59:24.573004'
+    last_tuned: "2025-08-22T14:59:24.573004"
     learning_rate: 0.0044809759182149545
     num_layers: 2
     tuning_trials: 5
@@ -80,7 +80,7 @@ positions:
     best_validation_mae: null
     best_validation_spearman: null
     best_validation_ndcg_at_k: null
-    dropout_rate: 0.25
+    dropout_rate: null
     epochs: 400
     hidden_size: 128
     last_tuned: null
@@ -94,14 +94,14 @@ positions:
     xgb_subsample: 0.8
   WR:
     batch_size: 48
-    best_validation_r2: -0.041590332984924316
-    best_validation_mae: 5.8081254959106445
-    best_validation_spearman: 0.3483362669033034
-    best_validation_ndcg_at_k: 0.42747798431386264
-    dropout_rate: 0.2465447373174767
+    best_validation_r2: null
+    best_validation_mae: null
+    best_validation_spearman: null
+    best_validation_ndcg_at_k: null
+    dropout_rate: null
     epochs: 500
     hidden_size: 192
-    last_tuned: '2025-08-22T15:04:54.013486'
+    last_tuned: "2025-08-22T15:04:54.013486"
     learning_rate: 0.0044809759182149545
     num_layers: 2
     tuning_trials: 5
