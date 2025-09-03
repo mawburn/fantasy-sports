@@ -951,12 +951,15 @@ DB_SCHEMA = {
 
 
 def get_db_connection(db_path: str = "data/nfl_dfs.db") -> sqlite3.Connection:
-    """Get database connection and ensure directory exists."""
+    """Get database connection with fast timeout for concurrent access."""
     db_file = Path(db_path)
     db_file.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(db_path)
+    # Use very short timeout - fail fast instead of waiting
+    conn = sqlite3.connect(db_path, timeout=1.0)
     conn.execute("PRAGMA foreign_keys = ON")  # Enable foreign key constraints
+    conn.execute("PRAGMA journal_mode = WAL")  # Enable WAL mode for better concurrency
+    conn.execute("PRAGMA synchronous = NORMAL")  # Balance safety and performance
     return conn
 
 
@@ -2271,9 +2274,11 @@ def load_draftkings_csv(
                     player_id = get_or_create_defense_player(team_abbr, conn)
                 else:
                     # Try to find matching individual player
-                    player_id = find_player_by_name_and_team(
-                        player_name, team_abbr, conn
-                    )
+                    player_id = find_player_by_name_and_team(player_name, team_abbr, conn)
+                    
+                    # If not found, create new player (rookie/new signing)
+                    if not player_id:
+                        player_id = create_new_player(player_name, team_abbr, roster_position, conn)
 
                 if player_id:
                     # Check if this player already exists for this contest
@@ -2357,30 +2362,120 @@ def get_or_create_defense_player(
 
     return cursor.lastrowid
 
-
-def find_player_by_name_and_team(
-    name: str, team_abbr: str, conn: sqlite3.Connection
-) -> Optional[int]:
-    """Find player by name and team."""
-    team_id = get_team_id_by_abbr(team_abbr, conn)
-    if not team_id:
+def find_player_by_name_and_team(name: str, team_abbr: str, conn: sqlite3.Connection) -> Optional[int]:
+    """Find player by name and team, with DraftKings as source of truth for current assignments."""
+    target_team_id = get_team_id_by_abbr(team_abbr, conn)
+    if not target_team_id:
+        logger.warning(f"Unknown team abbreviation: {team_abbr}")
         return None
 
-    # Try exact match first
+    # Team abbreviation aliases for matching
+    team_aliases = {
+        'LAR': ['LA', 'LAR'],
+        'LA': ['LA', 'LAR'],
+        'LV': ['LV', 'OAK'],
+        'OAK': ['LV', 'OAK'],
+        'LAC': ['LAC', 'SD'],
+        'SD': ['LAC', 'SD']
+    }
+    
+    # Get all possible team IDs for this team abbreviation
+    search_teams = team_aliases.get(team_abbr, [team_abbr])
+    team_ids = []
+    for abbr in search_teams:
+        tid = get_team_id_by_abbr(abbr, conn)
+        if tid:
+            team_ids.append(tid)
+
+    # 1. Try exact name match with correct team
     cursor = conn.execute(
-        "SELECT id FROM players WHERE display_name = ? AND team_id = ?", (name, team_id)
+        "SELECT id, team_id FROM players WHERE display_name = ? AND team_id = ?",
+        (name, target_team_id)
     )
     result = cursor.fetchone()
     if result:
         return result[0]
 
-    # Try partial match (for name variations)
+    # 2. Try exact name match with any alias team
+    if team_ids:
+        placeholders = ','.join('?' * len(team_ids))
+        cursor = conn.execute(
+            f"SELECT id, team_id FROM players WHERE display_name = ? AND team_id IN ({placeholders})",
+            [name] + team_ids
+        )
+        result = cursor.fetchone()
+        if result:
+            player_id, old_team_id = result
+            # Update team if it changed
+            if old_team_id != target_team_id:
+                conn.execute(
+                    "UPDATE players SET team_id = ? WHERE id = ?",
+                    (target_team_id, player_id)
+                )
+                logger.info(f"Updated {name} team assignment to {team_abbr}")
+            return player_id
+
+    # 3. Try name variations (remove suffixes like Jr., Sr., etc.)
+    clean_name = name.replace(' Jr.', '').replace(' Sr.', '').replace(' III', '').replace(' II', '').strip()
+    if clean_name != name:
+        cursor = conn.execute(
+            "SELECT id, team_id FROM players WHERE (display_name = ? OR player_name = ?) AND team_id = ?",
+            (clean_name, clean_name, target_team_id)
+        )
+        result = cursor.fetchone()
+        if result:
+            return result[0]
+
+    # 4. Try fuzzy name match across all teams (for traded players)
     cursor = conn.execute(
-        "SELECT id FROM players WHERE display_name LIKE ? AND team_id = ?",
-        (f"%{name}%", team_id),
+        "SELECT id, team_id, display_name FROM players WHERE display_name LIKE ? OR player_name LIKE ?",
+        (f"%{clean_name}%", f"%{clean_name}%")
     )
-    result = cursor.fetchone()
-    return result[0] if result else None
+    results = cursor.fetchall()
+    if results:
+        # If only one match, assume it's the same player who changed teams
+        if len(results) == 1:
+            player_id, old_team_id, db_name = results[0]
+            conn.execute(
+                "UPDATE players SET team_id = ?, display_name = ? WHERE id = ?",
+                (target_team_id, name, player_id)
+            )
+            logger.info(f"Updated {db_name} -> {name}, moved to {team_abbr}")
+            return player_id
+
+    # 5. Player not found - they might be a rookie or new signing
+    return None
+
+def create_new_player(name: str, team_abbr: str, position: str, conn: sqlite3.Connection) -> Optional[int]:
+    """Create a new player entry (e.g., for rookies or new signings)."""
+    team_id = get_team_id_by_abbr(team_abbr, conn)
+    if not team_id:
+        logger.warning(f"Cannot create player {name}: unknown team {team_abbr}")
+        return None
+    
+    # Map DraftKings positions to NFL positions
+    position_mapping = {
+        'QB': 'QB',
+        'RB': 'RB', 
+        'WR': 'WR',
+        'TE': 'TE',
+        'FLEX': 'RB',  # Default to RB for FLEX
+        'DST': 'DEF'
+    }
+    nfl_position = position_mapping.get(position, position)
+    
+    try:
+        cursor = conn.execute(
+            """INSERT INTO players (player_name, display_name, position, team_id, status)
+               VALUES (?, ?, ?, ?, 'Active')""",
+            (name, name, nfl_position, team_id)
+        )
+        player_id = cursor.lastrowid
+        logger.info(f"Created new player: {name} ({nfl_position}, {team_abbr})")
+        return player_id
+    except Exception as e:
+        logger.error(f"Failed to create player {name}: {e}")
+        return None
 
 
 def get_defensive_matchup_features(
@@ -3830,25 +3925,8 @@ def get_player_features(
                 }
             )
 
-        # Add comprehensive injury features
-        # Get player injury status
-        player_injury = conn.execute(
-            """SELECT p.injury_status FROM players p WHERE p.id = ?""", (player_id,)
-        ).fetchone()
-
-        injury_status = (player_injury[0] if player_injury else None) or "Healthy"
-
-        # One-hot encode injury status
-        features["injury_status_Out"] = 1 if injury_status == "Out" else 0
-        features["injury_status_Doubtful"] = 1 if injury_status == "Doubtful" else 0
-        features["injury_status_Questionable"] = (
-            1 if injury_status == "Questionable" else 0
-        )
-        features["injury_status_Probable"] = (
-            1 if injury_status in ["Probable", "Healthy"] else 0
-        )
-
-        # Count games missed in last 4 weeks
+        # Historical injury data is not available - only use games missed as a proxy
+        # Count games missed in last 4 weeks (this is historically accurate)
         games_missed = conn.execute(
             """SELECT COUNT(*) FROM games g
                WHERE g.game_date >= ? AND g.game_date < ?
@@ -3861,36 +3939,8 @@ def get_player_features(
 
         features["games_missed_last4"] = games_missed[0] if games_missed else 0
 
-        # Practice trend (simplified - assume stable for now)
-        features["practice_trend"] = 0  # 0=stable, 1=improving, -1=regressing
-
-        # Returning from injury flag
-        features["returning_from_injury"] = (
-            1
-            if features["games_missed_last4"] > 0 and injury_status == "Healthy"
-            else 0
-        )
-
-        # Team injury aggregates - count injured starters
-        team_injured = conn.execute(
-            """SELECT COUNT(*) FROM players p
-               WHERE p.team_id = ? AND p.injury_status IN ('Out', 'Doubtful', 'Questionable')""",
-            (team_id,),
-        ).fetchone()
-
-        opponent_team_id = away_team_id if is_home else home_team_id
-        opp_injured = conn.execute(
-            """SELECT COUNT(*) FROM players p
-               WHERE p.team_id = ? AND p.injury_status IN ('Out', 'Doubtful', 'Questionable')""",
-            (opponent_team_id,),
-        ).fetchone()
-
-        features["team_injured_starters"] = min(
-            team_injured[0] if team_injured else 0, 11
-        )  # Cap at 11
-        features["opp_injured_starters"] = min(
-            opp_injured[0] if opp_injured else 0, 11
-        )  # Cap at 11
+        # NOTE: Injury status features removed from training to prevent data corruption
+        # Current injury status will be applied only during predictions, not training
 
         # Add enhanced betting odds features (prioritize live odds from odds_api)
         betting_data = conn.execute(
@@ -4451,15 +4501,7 @@ def get_training_data(
             "hot_gt85",
             "wind_gt15",
             "dome",
-            "injury_status_Out",
-            "injury_status_Doubtful",
-            "injury_status_Questionable",
-            "injury_status_Probable",
             "games_missed_last4",
-            "practice_trend",
-            "returning_from_injury",
-            "team_injured_starters",
-            "opp_injured_starters",
             "targets_ema",
             "routes_run_ema",
             "rush_att_ema",
@@ -4794,30 +4836,10 @@ def get_training_data(
 
             features.update(weather_betting_features)
 
-            # Add injury and contextual features
+            # Note: Injury features removed from training to prevent data corruption
+            
+            # Add advanced QB-specific features for better prediction  
             try:
-                # Get player injury status
-                player_injury = conn.execute(
-                    """SELECT injury_status FROM players WHERE id = ?""", (player_id,)
-                ).fetchone()
-
-                injury_status = (
-                    player_injury[0] if player_injury else None
-                ) or "Healthy"
-
-                # One-hot encode injury status
-                features["injury_status_Out"] = 1 if injury_status == "Out" else 0
-                features["injury_status_Doubtful"] = (
-                    1 if injury_status == "Doubtful" else 0
-                )
-                features["injury_status_Questionable"] = (
-                    1 if injury_status == "Questionable" else 0
-                )
-                features["injury_status_Probable"] = (
-                    1 if injury_status in ["Probable", "Healthy"] else 0
-                )
-
-                # Add advanced QB-specific features for better prediction
                 qb_features = {}
 
                 # Enhanced passing efficiency metrics for QBs
@@ -5518,15 +5540,7 @@ def get_training_data(
                 # Add defaults if query fails
                 features.update(
                     {
-                        "injury_status_Out": 0,
-                        "injury_status_Doubtful": 0,
-                        "injury_status_Questionable": 0,
-                        "injury_status_Probable": 1,
                         "games_missed_last4": 0,
-                        "practice_trend": 0,
-                        "returning_from_injury": 0,
-                        "team_injured_starters": 0,
-                        "opp_injured_starters": 0,
                         "targets_ema": 0,
                         "routes_run_ema": 0,
                         "rush_att_ema": 0,

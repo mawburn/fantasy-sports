@@ -2524,16 +2524,29 @@ class BaseNeuralModel(ABC):
                     flush=True,
                 )
             elif epoch % 50 == 0:
-                print(
-                    f"\r\033[KEpoch {epoch}/{self.epochs}: NDCG@20 = {val_ndcg:.4f} (Best: {best_val_ndcg:.4f} @ epoch {best_epoch}) [MAE={val_mae:.3f}, R²={val_r2:.3f}, S={val_spearman:.3f}]",
-                    end="",
-                    flush=True,
-                )
+                # Show guardrail status more clearly
+                guardrail_status = "PASS" if guardrails_pass else "FAIL"
+                if best_val_ndcg > 0.0:  # We have a valid best epoch
+                    print(
+                        f"\r\033[KEpoch {epoch}/{self.epochs}: NDCG@20 = {val_ndcg:.4f} (Best: {best_val_ndcg:.4f} @ epoch {best_epoch}) [MAE={val_mae:.3f}, R²={val_r2:.3f}, S={val_spearman:.3f}] [{guardrail_status}]",
+                        end="",
+                        flush=True,
+                    )
+                else:  # No valid epochs yet
+                    print(
+                        f"\r\033[KEpoch {epoch}/{self.epochs}: NDCG@20 = {val_ndcg:.4f} (No valid epochs yet) [MAE={val_mae:.3f}, R²={val_r2:.3f}, S={val_spearman:.3f}] [{guardrail_status}]",
+                        end="",
+                        flush=True,
+                    )
 
-        # Training completed - always run full epochs and use best checkpoint
-        print(
-            f"\nTraining completed ({self.epochs} epochs, Best NDCG@20: {best_val_ndcg:.4f} at epoch {best_epoch})"
-        )
+        # Training completed - show summary and use best checkpoint
+        print()
+        if best_val_ndcg > 0.0:
+            print(f"✅ Training completed ({self.epochs} epochs)")
+            print(f"   Best valid epoch: {best_epoch} (NDCG@20: {best_val_ndcg:.4f})")
+        else:
+            print(f"❌ Training completed ({self.epochs} epochs)")
+            print(f"   No epochs passed guardrails (MAE < 6.0, R² > 0, Spearman > 0)")
 
         if hasattr(self, "best_state_dict") and self.best_state_dict is not None:
             logger.info(f"Loading best checkpoint from epoch {best_epoch}")

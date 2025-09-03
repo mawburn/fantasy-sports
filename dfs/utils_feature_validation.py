@@ -33,12 +33,7 @@ _BINARY_COLS = [
     "hot_gt85",
     "wind_gt15",
     "dome",
-    "returning_from_injury",
-    # injury status one-hots (add/remove to match your schema file)
-    "injury_status_Out",
-    "injury_status_Doubtful",
-    "injury_status_Questionable",
-    "injury_status_Probable",
+    # Note: injury features removed from training to prevent data corruption
 ]
 
 # If you include a cyclical/normalized week col, add it here as numeric.
@@ -156,16 +151,7 @@ def validate_and_prepare_features(
         if col in df.columns:
             _assert_binary_col(df, col)
 
-    # Injury one-hot exclusivity (if the four are present, row-sum <= 1)
-    inj_cols = [
-        c for c in _BINARY_COLS if c.startswith("injury_status_") and c in df.columns
-    ]
-    if inj_cols:
-        sums = df[inj_cols].sum(axis=1)
-        if (sums > 1.0 + 1e-6).any():
-            _fail(
-                f"Injury status one-hots must be mutually exclusive. Found row-sum > 1 in {int((sums > 1.0).sum())} rows."
-            )
+    # Note: Injury validation removed since injury features are no longer in training
 
     # Soft numeric ranges
     for col, (lo, hi) in _NUMERIC_SOFT_RANGES.items():
