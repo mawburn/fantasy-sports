@@ -2216,6 +2216,7 @@ def get_rb_specific_features(
             FROM player_stats ps
             JOIN games g ON ps.game_id = g.id
             JOIN players p ON ps.player_id = p.id
+            JOIN teams t ON p.team_id = t.id
             WHERE p.position = 'RB'
             AND t.team_abbr != ?
             AND (
@@ -2944,7 +2945,7 @@ def get_dst_specific_features(
             SELECT ds.game_id, COUNT(*) as total_plays
             FROM dfs_scores ds
             JOIN teams t ON ds.team_id = t.id
-            WHERE p.team_id IN (SELECT id FROM teams WHERE team_abbr = ?) AND ds.season = ?
+            WHERE t.team_abbr = ? AND ds.season = ?
                 AND ds.week BETWEEN ? AND ?
             GROUP BY ds.game_id
         ) team_totals

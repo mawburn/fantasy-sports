@@ -14,26 +14,26 @@ defaults:
 positions:
   DST:
     batch_size: 64
-    best_validation_r2: 0.04331141605243072
-    best_validation_mae: 3.6445401949463596
-    best_validation_spearman: 0.2661997618714862
+    best_validation_r2: 0.040905538970460675
+    best_validation_mae: 3.6336536093269562
+    best_validation_spearman: 0.2891068101233672
     best_validation_ndcg_at_k: null
-    catboost_bagging_temperature: 0.3184925303881691
-    catboost_border_count: 204
-    catboost_depth: 10
-    catboost_iterations: 4000
-    catboost_l2_leaf_reg: 9.467935384933472
-    catboost_learning_rate: 0.028645750609488086
-    catboost_min_data_in_leaf: 9
-    catboost_random_strength: 1.3679446598447034
+    catboost_bagging_temperature: 0.943558843810539
+    catboost_border_count: 153
+    catboost_depth: 9
+    catboost_iterations: 2000
+    catboost_l2_leaf_reg: 3.58965939573488
+    catboost_learning_rate: 0.08428115988868123
+    catboost_min_data_in_leaf: 6
+    catboost_random_strength: 6.979825211672289
     dropout_rate: 0.2
-    epochs: 4000
+    epochs: 2000
     hidden_size: 128
-    last_tuned: '2025-09-03T21:58:26.562233'
-    learning_rate: 0.028645750609488086
+    last_tuned: "2025-09-04T19:24:41.921744"
+    learning_rate: 0.08428115988868123
     num_layers: 2
-    tuning_trials: 1000
-    weight_decay: 9.467935384933472
+    tuning_trials: 5000
+    weight_decay: 3.58965939573488
     xgb_colsample_bytree: 0.8
     xgb_learning_rate: 0.1
     xgb_max_depth: 5
@@ -47,7 +47,7 @@ positions:
     dropout_rate: null
     epochs: 500
     hidden_size: 192
-    last_tuned: '2025-08-22T16:17:54.700121'
+    last_tuned: "2025-08-22T16:17:54.700121"
     learning_rate: 0.0044809759182149545
     num_layers: 2
     tuning_trials: 5
@@ -58,17 +58,17 @@ positions:
     xgb_subsample: 0.8
   RB:
     batch_size: 48
-    best_validation_r2: null
-    best_validation_mae: null
-    best_validation_spearman: null
-    best_validation_ndcg_at_k: null
-    dropout_rate: null
+    best_validation_r2: 0.10740649700164795
+    best_validation_mae: 5.380098819732666
+    best_validation_spearman: 0.41242198816698356
+    best_validation_ndcg_at_k: 0.35988851366759955
+    dropout_rate: 0.4795542149013333
     epochs: 500
-    hidden_size: 192
-    last_tuned: '2025-08-22T14:59:24.573004'
-    learning_rate: 0.0044809759182149545
-    num_layers: 2
-    tuning_trials: 5
+    hidden_size: 64
+    last_tuned: "2025-09-04T19:13:47.586916"
+    learning_rate: 0.004362599362560562
+    num_layers: 4
+    tuning_trials: 10
     weight_decay: 0.001
     xgb_colsample_bytree: 0.8
     xgb_learning_rate: 0.08
@@ -101,7 +101,7 @@ positions:
     dropout_rate: null
     epochs: 500
     hidden_size: 192
-    last_tuned: '2025-08-22T15:04:54.013486'
+    last_tuned: "2025-08-22T15:04:54.013486"
     learning_rate: 0.0044809759182149545
     num_layers: 2
     tuning_trials: 5

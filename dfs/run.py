@@ -97,6 +97,7 @@ def train_models(
     epochs: int = 100,
     override_lr: float = None,
     override_batch_size: int = None,
+    simplified_dst: bool = False,
 ):
     """Train prediction models for specified positions using position-specific seasons.
 
@@ -149,21 +150,115 @@ def train_models(
                 logger.warning(f"No training data available for {position}")
                 continue
 
+            # Data quality validation
+            import numpy as np
+
+            # Check for NaN/Inf values
+            nan_count_X = np.isnan(X).sum()
+            inf_count_X = np.isinf(X).sum()
+            nan_count_y = np.isnan(y).sum()
+            inf_count_y = np.isinf(y).sum()
+
+            if nan_count_X > 0 or inf_count_X > 0:
+                logger.warning(
+                    f"Found {nan_count_X} NaN and {inf_count_X} Inf values in features. Cleaning..."
+                )
+                X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+            if nan_count_y > 0 or inf_count_y > 0:
+                logger.warning(
+                    f"Found {nan_count_y} NaN and {inf_count_y} Inf values in targets. Cleaning..."
+                )
+                y = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
+
+            # Log target range for fantasy points (clipping now handled in models.py)
+            y_min, y_max = np.min(y), np.max(y)
+            if y_min < -10 or y_max > 100:
+                logger.info(
+                    f"Target values have wide range: min={y_min:.2f}, max={y_max:.2f} (this is ok, models.py handles position-specific clipping)"
+                )
+
+            # Check feature variance
+            feature_variance = np.var(X, axis=0)
+            zero_var_features = np.sum(feature_variance < 1e-10)
+            if zero_var_features > 0:
+                logger.warning(
+                    f"Found {zero_var_features} zero-variance features out of {len(feature_names)}"
+                )
+
             logger.info(
                 f"Training {position} with {len(X)} samples, {len(feature_names)} features"
             )
+            logger.info(
+                f"Target stats: mean={np.mean(y):.2f}, std={np.std(y):.2f}, min={np.min(y):.2f}, max={np.max(y):.2f}"
+            )
 
-            # Create and train model (use ensemble for QB and RB)
-            config = ModelConfig(position=position, features=feature_names)
-            use_ensemble = (
-                position in ["QB", "WR", "TE"]
-            )  # Enable ensemble for QB, WR, TE (RB neural-only, DST CatBoost-only perform better)
-            model = create_model(position, config, use_ensemble=use_ensemble)
-
-            # Split data (80/20)
+            # Time-based split to prevent data leakage FIRST
+            # Use last 20% of games chronologically for validation
             split_idx = int(0.8 * len(X))
             X_train, X_val = X[:split_idx], X[split_idx:]
             y_train, y_val = y[:split_idx], y[split_idx:]
+
+            logger.info(f"Train/Val split: {len(X_train)} training samples, {len(X_val)} validation samples")
+            logger.info(f"Using chronological split - training on earlier games, validating on later games")
+
+            # Create and train model (use ensemble for QB and RB)
+            config = ModelConfig(position=position, features=feature_names)
+
+            # Use simplified model for DST if enabled
+            if position == "DST" and simplified_dst:
+                logger.info("Using Simplified DST Model (Vegas-focused)")
+                from models_dst_simple import SimplifiedDSTModel
+                model = SimplifiedDSTModel()
+                # Train the simplified model
+                results = model.train(X_train, y_train, X_val, y_val, feature_names)
+                # Create a result object compatible with the rest of the pipeline
+                from models import TrainingResult
+                result = TrainingResult(
+                    model=model,
+                    training_time=0,
+                    best_iteration=0,
+                    feature_importance=None,
+                    train_mae=results['train_mae'],
+                    val_mae=results['val_mae'],
+                    train_rmse=0,
+                    val_rmse=0,
+                    train_r2=0,
+                    val_r2=0,
+                    training_samples=len(X_train),
+                    validation_samples=len(X_val),
+                    feature_count=len(feature_names),
+                    train_spearman=results['train_spearman'],
+                    val_spearman=results['val_spearman']
+                )
+                # Skip normal training flow
+                model.save_model(str(models_dir / "dst_model_simplified.pkl"))
+                logger.info(
+                    f"Simplified DST model saved. Val MAE: {result.val_mae:.2f}, Val Spearman: {result.val_spearman:.3f}"
+                )
+                continue  # Skip to next position
+            else:
+                use_ensemble = (
+                    position in ["QB", "WR", "TE"]
+                )  # Enable ensemble for QB, WR, TE (RB neural-only, DST CatBoost-only perform better)
+                model = create_model(position, config, use_ensemble=use_ensemble)
+
+            # Split already done above for simplified DST, skip if already split
+            if not (position == "DST" and simplified_dst):
+                # Time-based split to prevent data leakage
+                # Use last 20% of games chronologically for validation
+                # This ensures we're always predicting future games, not past ones
+                split_idx = int(0.8 * len(X))
+                X_train, X_val = X[:split_idx], X[split_idx:]
+                y_train, y_val = y[:split_idx], y[split_idx:]
+
+                # Log split information for transparency
+                logger.info(
+                    f"Train/Val split: {len(X_train)} training samples, {len(X_val)} validation samples"
+                )
+                logger.info(
+                    "Using chronological split - training on earlier games, validating on later games"
+                )
 
             # Apply hyperparameter tuning if requested
             if tune_all:
@@ -174,10 +269,15 @@ def train_models(
                     X_train, y_train, X_val, y_val, n_trials=trials, epochs=epochs
                 )
                 logger.info(f"Best hyperparameters for {position}: {best_params}")
+
+                # CRITICAL FIX: Save the best model from tuning, don't skip
+                # The model now contains the best model from hyperparameter tuning
+                model_path = models_dir / f"{position.lower()}_model.pth"
+                model.save_model(str(model_path))
                 logger.info(
-                    f"Hyperparameter tuning complete for {position}. Run training without --tune-all to train with optimized hyperparameters."
+                    f"Best tuned model saved to {model_path}. Hyperparameters: {best_params}"
                 )
-                continue  # Skip training and saving when tuning
+                continue  # Skip additional training since we already have the best model
             else:
                 # Apply individual tuning options
                 if tune_lr:
@@ -210,19 +310,233 @@ def train_models(
             # Train model
             result = model.train(X_train, y_train, X_val, y_val)
 
+            # Feature importance analysis
+            logger.info(f"Analyzing feature importance for {position}...")
+            feature_importance = analyze_feature_importance(
+                model, X_val, y_val, feature_names
+            )
+
+            # Log top 20 most important features
+            if feature_importance:
+                logger.info(f"Top 20 features for {position}:")
+                for i, (feat, importance) in enumerate(feature_importance[:20], 1):
+                    logger.info(f"  {i:2}. {feat:40} {importance:.4f}")
+
+                # Save feature importance to file
+                import json
+                importance_path = models_dir / f"{position.lower()}_feature_importance.json"
+                with open(importance_path, "w") as f:
+                    json.dump(
+                        {feat: float(imp) for feat, imp in feature_importance},
+                        f,
+                        indent=2
+                    )
+                logger.info(f"Feature importance saved to {importance_path}")
+
             # Save model
             model_path = models_dir / f"{position.lower()}_model.pth"
             model.save_model(str(model_path))
 
-            logger.info(
-                f"{position} model saved. Val MAE: {result.val_mae:.2f}, Val R²: {result.val_r2:.3f}"
-            )
+            # Log appropriate metrics based on position
+            if position == "DST" and hasattr(result, 'val_spearman') and result.val_spearman is not None:
+                logger.info(
+                    f"{position} model saved. Val MAE: {result.val_mae:.2f}, Val Spearman: {result.val_spearman:.3f}, Val R²: {result.val_r2:.3f}"
+                )
+            else:
+                logger.info(
+                    f"{position} model saved. Val MAE: {result.val_mae:.2f}, Val R²: {result.val_r2:.3f}"
+                )
 
         except Exception as e:
             logger.error(f"Failed to train {position} model: {e}")
             import traceback
 
             logger.debug(traceback.format_exc())
+
+
+def analyze_feature_importance(model, X_val, y_val, feature_names):
+    """Analyze feature importance using permutation importance.
+
+    Args:
+        model: Trained model
+        X_val: Validation features
+        y_val: Validation targets
+        feature_names: List of feature names
+
+    Returns:
+        List of (feature_name, importance) tuples sorted by importance
+    """
+    import numpy as np
+    from sklearn.metrics import mean_absolute_error
+
+    # Get baseline predictions
+    baseline_pred = model.predict(X_val).point_estimate
+    baseline_mae = mean_absolute_error(y_val, baseline_pred)
+
+    feature_importance = []
+
+    for i, feature_name in enumerate(feature_names):
+        # Permute feature values
+        X_val_permuted = X_val.copy()
+        np.random.shuffle(X_val_permuted[:, i])
+
+        # Get predictions with permuted feature
+        permuted_pred = model.predict(X_val_permuted).point_estimate
+        permuted_mae = mean_absolute_error(y_val, permuted_pred)
+
+        # Calculate importance as increase in error
+        importance = permuted_mae - baseline_mae
+        feature_importance.append((feature_name, importance))
+
+    # Sort by importance (descending)
+    feature_importance.sort(key=lambda x: x[1], reverse=True)
+
+    return feature_importance
+
+
+def backtest_models(
+    seasons: List[int] = None,
+    positions: List[str] = None,
+    walk_forward_windows: int = 3,
+):
+    """Run comprehensive backtesting with walk-forward validation.
+
+    Args:
+        seasons: List of seasons to test on
+        positions: Positions to backtest (default: all)
+        walk_forward_windows: Number of walk-forward validation windows
+    """
+    if positions is None:
+        positions = ["QB", "RB", "WR", "TE", "DST"]
+
+    if seasons is None:
+        # Use last 3 seasons for backtesting
+        available_seasons = get_available_seasons()
+        if len(available_seasons) >= 3:
+            seasons = available_seasons[-3:]
+        else:
+            seasons = available_seasons
+
+    logger.info(f"Running backtesting for positions: {positions}")
+    logger.info(f"Seasons: {seasons}")
+    logger.info(f"Walk-forward windows: {walk_forward_windows}")
+
+    backtest_results = {}
+
+    for position in positions:
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Backtesting {position} model")
+        logger.info(f"{'='*60}")
+
+        position_results = {
+            "walk_forward_results": [],
+            "out_of_time_results": None,
+            "summary": {}
+        }
+
+        # Walk-forward validation
+        if len(seasons) >= 2:
+            window_size = max(1, len(seasons) // walk_forward_windows)
+
+            for window_idx in range(walk_forward_windows):
+                train_end = min((window_idx + 1) * window_size, len(seasons) - 1)
+                train_seasons = seasons[:train_end]
+                test_seasons = [seasons[train_end]] if train_end < len(seasons) else []
+
+                if not test_seasons:
+                    continue
+
+                logger.info(f"\nWalk-forward window {window_idx + 1}:")
+                logger.info(f"  Train: {train_seasons}")
+                logger.info(f"  Test: {test_seasons}")
+
+                # Get training and test data
+                X_train, y_train, feature_names = get_training_data(
+                    position, train_seasons, DEFAULT_DB_PATH
+                )
+                X_test, y_test, _ = get_training_data(
+                    position, test_seasons, DEFAULT_DB_PATH
+                )
+
+                if len(X_train) == 0 or len(X_test) == 0:
+                    logger.warning(f"Insufficient data for window {window_idx + 1}")
+                    continue
+
+                # Train model on training window
+                config = ModelConfig(position=position, features=feature_names)
+                model = create_model(position, config, use_ensemble=False)
+
+                # Use 80/20 split within training data for validation
+                split_idx = int(0.8 * len(X_train))
+                X_tr, X_val = X_train[:split_idx], X_train[split_idx:]
+                y_tr, y_val = y_train[:split_idx], y_train[split_idx:]
+
+                # Quick training for backtesting (fewer epochs)
+                model.epochs = 50
+                result = model.train(X_tr, y_tr, X_val, y_val)
+
+                # Test on held-out season
+                from sklearn.metrics import mean_absolute_error, r2_score
+                from scipy.stats import spearmanr
+
+                predictions = model.predict(X_test).point_estimate
+                mae = mean_absolute_error(y_test, predictions)
+                r2 = r2_score(y_test, predictions)
+                spearman, _ = spearmanr(y_test, predictions)
+
+                window_result = {
+                    "train_seasons": train_seasons,
+                    "test_seasons": test_seasons,
+                    "train_samples": len(X_train),
+                    "test_samples": len(X_test),
+                    "mae": mae,
+                    "r2": r2,
+                    "spearman": spearman,
+                    "val_mae": result.val_mae,
+                    "val_r2": result.val_r2,
+                }
+
+                position_results["walk_forward_results"].append(window_result)
+
+                logger.info(f"  Test MAE: {mae:.3f}")
+                logger.info(f"  Test R²: {r2:.3f}")
+                logger.info(f"  Test Spearman: {spearman:.3f}")
+
+        # Calculate summary statistics
+        if position_results["walk_forward_results"]:
+            maes = [r["mae"] for r in position_results["walk_forward_results"]]
+            r2s = [r["r2"] for r in position_results["walk_forward_results"]]
+            spearmans = [r["spearman"] for r in position_results["walk_forward_results"]
+                        if r["spearman"] is not None and not np.isnan(r["spearman"])]
+
+            position_results["summary"] = {
+                "avg_mae": np.mean(maes),
+                "std_mae": np.std(maes),
+                "avg_r2": np.mean(r2s),
+                "std_r2": np.std(r2s),
+                "avg_spearman": np.mean(spearmans) if spearmans else 0,
+                "std_spearman": np.std(spearmans) if spearmans else 0,
+                "worst_mae": np.max(maes),
+                "best_mae": np.min(maes),
+            }
+
+            logger.info(f"\n{position} Backtest Summary:")
+            logger.info(f"  Average MAE: {position_results['summary']['avg_mae']:.3f} ± {position_results['summary']['std_mae']:.3f}")
+            logger.info(f"  Average R²: {position_results['summary']['avg_r2']:.3f} ± {position_results['summary']['std_r2']:.3f}")
+            logger.info(f"  Average Spearman: {position_results['summary']['avg_spearman']:.3f} ± {position_results['summary']['std_spearman']:.3f}")
+            logger.info(f"  Best/Worst MAE: {position_results['summary']['best_mae']:.3f} / {position_results['summary']['worst_mae']:.3f}")
+
+        backtest_results[position] = position_results
+
+    # Save backtest results
+    import json
+    results_path = Path(DEFAULT_MODELS_DIR) / "backtest_results.json"
+    with open(results_path, "w") as f:
+        json.dump(backtest_results, f, indent=2, default=str)
+
+    logger.info(f"\nBacktest results saved to {results_path}")
+
+    return backtest_results
 
 
 def update_injury_statuses(
@@ -448,8 +762,33 @@ def predict_players_optimized(
     # Load feature metadata once from a small sample
     logger.info("Loading model metadata...")
     for position in ["QB", "RB", "WR", "TE", "DST"]:
-        model_path = models_dir / f"{position.lower()}_model.pth"
-        if model_path.exists():
+        # For DST, check for multiple file formats
+        if position == "DST":
+            # Check for simplified model first (.pkl), then regular CatBoost (.cbm), then neural (.pth)
+            model_path = None
+            for ext in ['.pkl', '.cbm', '.pth']:
+                candidate_path = models_dir / f"{position.lower()}_model{ext}"
+                if candidate_path.exists():
+                    model_path = candidate_path
+                    break
+
+            if model_path and model_path.suffix == '.pkl':
+                # Load simplified DST model
+                try:
+                    from models_dst_simple import SimplifiedDSTModel
+                    model = SimplifiedDSTModel()
+                    model.load(str(model_path))
+                    models[position] = model
+                    # Simplified model has its own feature set
+                    position_feature_names[position] = None  # Will be handled by the model
+                    logger.info(f"Loaded simplified DST model from {model_path.name}")
+                except Exception as e:
+                    logger.warning(f"Failed to load simplified DST model: {e}")
+                continue
+        else:
+            model_path = models_dir / f"{position.lower()}_model.pth"
+
+        if model_path and model_path.exists():
             try:
                 # Get feature names from a minimal sample (just for metadata)
                 available_seasons = get_available_seasons()[
@@ -547,11 +886,49 @@ def predict_players_optimized(
 
     # Process each position in batches
     for position, position_players in players_by_position.items():
-        if position in models and position in position_feature_names:
+        if position in models:
             model = models[position]
-            feature_names = position_feature_names[position]
+            feature_names = position_feature_names.get(position)
 
-            if len(feature_names) > 0:
+            # Handle simplified DST model separately
+            if position == "DST" and feature_names is None:
+                # This is the simplified DST model
+                from models_dst_simple import SimplifiedDSTModel
+                if isinstance(model, SimplifiedDSTModel):
+                    for player_data in position_players:
+                        try:
+                            # SimplifiedDSTModel handles its own feature extraction and prediction
+                            pred = model.predict_single(player_data)
+                            if pred is not None:
+                                player_id = player_data["player_id"]
+                                injury_status = injury_statuses.get(player_id)
+
+                                # Apply injury adjustments if needed
+                                if injury_status:
+                                    if injury_status == "Questionable":
+                                        pred *= 0.85
+                                    elif injury_status == "Doubtful":
+                                        pred *= 0.5
+
+                                predictions.append({
+                                    "player_id": player_id,
+                                    "name": player_data["name"],
+                                    "team": player_data["team"],
+                                    "opponent": player_data.get("opponent", ""),
+                                    "position": position,
+                                    "dk_position": player_data["dk_position"],
+                                    "salary": player_data["salary"],
+                                    "projection": max(0.0, pred),
+                                    "floor": max(0.0, pred * 0.8),
+                                    "ceiling": max(0.0, pred * 1.3),
+                                    "value": max(0.0, pred / (player_data["salary"] / 1000)) if player_data["salary"] > 0 else 0,
+                                    "injury_status": injury_status
+                                })
+                        except Exception as e:
+                            logger.debug(f"Failed to predict for {player_data['name']}: {e}")
+                    continue
+
+            if feature_names and len(feature_names) > 0:
                 # Batch extract features for all players in this position
                 batch_features = []
                 valid_players = []
@@ -1192,6 +1569,11 @@ def main():
     train_parser.add_argument(
         "--batch-size", type=int, help="Override batch size (if not tuning)"
     )
+    train_parser.add_argument(
+        "--simplified-dst",
+        action="store_true",
+        help="Use simplified Vegas-focused DST model instead of neural network"
+    )
 
     # Predict command
     predict_parser = subparsers.add_parser(
@@ -1257,6 +1639,30 @@ def main():
     )
 
     # Backtest command
+    # Comprehensive model backtesting
+    model_backtest_parser = subparsers.add_parser(
+        "model-backtest", help="Run comprehensive model backtesting with walk-forward validation"
+    )
+    model_backtest_parser.add_argument(
+        "--seasons",
+        type=int,
+        nargs="+",
+        help="Seasons to use for backtesting (default: last 3 available)",
+    )
+    model_backtest_parser.add_argument(
+        "--positions",
+        nargs="+",
+        choices=["QB", "RB", "WR", "TE", "DST"],
+        help="Positions to backtest (default: all)",
+    )
+    model_backtest_parser.add_argument(
+        "--windows",
+        type=int,
+        default=3,
+        help="Number of walk-forward validation windows (default: 3)",
+    )
+
+    # Original backtest parser for lineup optimization testing
     backtest_parser = subparsers.add_parser("backtest", help="Run model backtesting")
     backtest_parser.add_argument(
         "--start-date", required=True, help="Backtest start date (YYYY-MM-DD)"
@@ -1355,6 +1761,7 @@ def main():
             epochs=args.epochs,
             override_lr=args.lr,
             override_batch_size=args.batch_size,
+            simplified_dst=getattr(args, 'simplified_dst', False),
         )
 
     elif args.command == "injury":
@@ -1396,6 +1803,13 @@ def main():
             args.output_dir,
             args.save_predictions,
             args.injury_file,
+        )
+
+    elif args.command == "model-backtest":
+        backtest_models(
+            seasons=args.seasons,
+            positions=args.positions,
+            walk_forward_windows=args.windows,
         )
 
     elif args.command == "backtest":

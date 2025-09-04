@@ -26,6 +26,21 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
+# Import our new abstraction modules
+from nn_components import (
+    StandardBlock, ResidualBlock, AttentionBlock,
+    MultiHeadOutput, FeatureExtractor, PositionSpecificBranch,
+    GatedFusion
+)
+from metrics import (
+    calculate_ndcg_at_k, calculate_spearman_correlation,
+    calculate_metrics_suite, print_metrics_report,
+    calculate_validation_stats
+)
+from training import ModelTrainer, EarlyStopping, LearningRateFinder
+from data_utils import DataManager, DFSDataset, BatchSizeOptimizer
+from features import FeatureEngineer
+
 from helpers import log_model_metrics, parse_date_flexible
 
 logger = logging.getLogger(__name__)
@@ -63,15 +78,17 @@ if not HAS_XGBOOST and not HAS_CATBOOST:
         "No gradient boosting libraries available. Ensemble features disabled."
     )
 
-# Position-specific fantasy point ranges (DraftKings scoring)
+# Position-specific fantasy point ranges (DraftKings scoring) with outlier headroom
+# Format: (min, max) where min handles rare edge cases and max includes headroom for outliers
 POSITION_RANGES = {
-    "QB": 45.0,  # QBs typically score 15-35, max ~45
-    "RB": 35.0,  # RBs typically score 8-25, max ~35
-    "WR": 30.0,  # WRs typically score 6-22, max ~30
-    "TE": 25.0,  # TEs typically score 4-18, max ~25
-    "DEF": 20.0,  # DEFs typically score 5-15, max ~20
-    "DST": 20.0,  # Same as DEF
+    "QB": (-5.0, 70.0),   # Max seen: 54.88, adding ~30% headroom
+    "RB": (-5.0, 70.0),   # Max seen: 58.1, adding headroom
+    "WR": (-5.0, 70.0),   # Max seen: 58.6, adding headroom
+    "TE": (-5.0, 60.0),   # Max seen: 44.7, adding headroom
+    "DEF": (-15.0, 40.0), # Can go negative, max seen: 26.0
+    "DST": (-15.0, 40.0), # Same as DEF
 }
+
 
 # Set PyTorch for reproducible, Apple Silicon M-series optimized training
 
@@ -157,6 +174,8 @@ class TrainingResult:
     training_samples: int
     validation_samples: int
     feature_count: int
+    train_spearman: Optional[float] = None
+    val_spearman: Optional[float] = None
 
 
 class LRFinder:
@@ -570,89 +589,7 @@ try:
 
     HAS_OPTUNA = True
 
-    def ndcg_at_k(y_true: np.ndarray, y_pred: np.ndarray, k: int = 20) -> float:
-        """Calculate NDCG@k (Normalized Discounted Cumulative Gain at k).
-
-        This metric is ideal for ranking problems where we care about the relative
-        ordering of predictions, especially for the top-k items.
-
-        Args:
-            y_true: True target values (actual fantasy points)
-            y_pred: Predicted values (predicted fantasy points)
-            k: Number of top items to consider (default: 20)
-
-        Returns:
-            NDCG@k score between 0 and 1, where 1 is perfect ranking
-        """
-        import numpy as np
-
-        # Handle edge cases
-        if len(y_true) == 0 or len(y_pred) == 0:
-            return 0.0
-
-        if len(y_true) != len(y_pred):
-            raise ValueError(
-                f"Length mismatch: y_true={len(y_true)}, y_pred={len(y_pred)}"
-            )
-
-        # Ensure we have valid arrays
-        y_true = np.asarray(y_true).flatten()
-        y_pred = np.asarray(y_pred).flatten()
-
-        # Handle NaN values by setting them to minimum
-        if np.any(np.isnan(y_true)) or np.any(np.isnan(y_pred)):
-            y_true = np.nan_to_num(
-                y_true, nan=np.nanmin(y_true) if not np.all(np.isnan(y_true)) else 0.0
-            )
-            y_pred = np.nan_to_num(
-                y_pred, nan=np.nanmin(y_pred) if not np.all(np.isnan(y_pred)) else 0.0
-            )
-
-        # Limit k to the number of available items
-        n_items = len(y_true)
-        k = min(k, n_items)
-
-        if k <= 0:
-            return 0.0
-
-        # Handle negative fantasy points using exponential transformation
-        # This preserves relative differences better than shifting
-        # Using 2^(y/10) - 1 to scale fantasy points appropriately
-        # (e.g., 0 points -> 0 relevance, 10 points -> 1 relevance, 20 points -> 3 relevance)
-        y_true_relevance = np.power(2, y_true / 10) - 1
-        # Ensure non-negative (handles very negative values)
-        y_true_relevance = np.maximum(y_true_relevance, 0)
-
-        # Sort indices by predicted values (descending order)
-        predicted_order = np.argsort(y_pred)[::-1]
-
-        # Get the top-k predictions and their true relevance scores
-        top_k_indices = predicted_order[:k]
-        top_k_true_scores = y_true_relevance[top_k_indices]
-
-        # Calculate DCG@k (Discounted Cumulative Gain)
-        # DCG = sum(rel_i / log2(i + 2)) for i in range(k)
-        dcg = 0.0
-        for i, relevance in enumerate(top_k_true_scores):
-            dcg += relevance / np.log2(i + 2)
-
-        # Calculate ideal DCG@k (sort by true relevance scores)
-        ideal_order = np.argsort(y_true_relevance)[::-1]
-        ideal_top_k = y_true_relevance[ideal_order][:k]
-
-        idcg = 0.0
-        for i, relevance in enumerate(ideal_top_k):
-            idcg += relevance / np.log2(i + 2)
-
-        # Calculate NDCG@k
-        if idcg == 0.0:
-            # If all relevance scores are 0, return 0
-            return 0.0
-
-        ndcg = dcg / idcg
-
-        # Ensure result is in valid range [0, 1]
-        return max(0.0, min(1.0, ndcg))
+    # ndcg_at_k is now imported from metrics module
 
     class HyperparameterTuner:
         """Joint hyperparameter optimization using Optuna."""
@@ -769,11 +706,21 @@ try:
                 int(layers_config.get("max", 4)),
             )
 
-            # MAE guardrail threshold
-            mae_guardrail = 6.0
+            # Get position first
+            position = self.model_config.position.upper()
+
+            # MAE guardrail threshold (position-specific)
+            # QB has higher variance, so allow slightly higher MAE
+            mae_guardrails = {
+                "QB": 7.5,  # QBs have high variance (0-50+ points)
+                "RB": 6.0,  # RBs moderate variance
+                "WR": 6.0,  # WRs moderate variance
+                "TE": 5.0,  # TEs lower variance
+                "DST": 4.0  # DST relatively predictable
+            }
+            mae_guardrail = mae_guardrails.get(position, 6.0)
 
             # Handle DST position (uses CatBoost instead of neural network)
-            position = self.model_config.position.upper()
             if position == "DST":
                 # DST uses CatBoost, different hyperparameters
                 if HAS_CATBOOST:
@@ -812,7 +759,7 @@ try:
                     val_pred = model.predict(self.X_val)
 
                     mae = mean_absolute_error(self.y_val, val_pred)
-                    ndcg_score = ndcg_at_k(self.y_val, val_pred, k=20)
+                    ndcg_score = calculate_ndcg_at_k(self.y_val, val_pred, k=20)
                     spearman_corr, _ = spearmanr(self.y_val, val_pred)
                     r2 = r2_score(self.y_val, val_pred)
 
@@ -898,13 +845,19 @@ try:
                 # Use all metrics from training result (calculated from best checkpoint)
                 mae = result.val_mae
                 r2 = result.val_r2
+
+                # CRITICAL: Convert MAE from normalized scale back to original scale for guardrail checking
+                # The model trains on normalized targets, so mae is in normalized units
+                # We need to convert it back to fantasy points for meaningful guardrail comparison
+                mae_original_scale = mae * model.y_std
+
                 # Still need to calculate NDCG and Spearman from current best model state
-                ndcg_score = ndcg_at_k(self.y_val, val_pred, k=20)
+                ndcg_score = calculate_ndcg_at_k(self.y_val, val_pred, k=20)
                 spearman_corr, _ = spearmanr(self.y_val, val_pred)
 
                 # Debug: Check if model actually has best checkpoint loaded
                 logger.info(
-                    f"Trial {trial.number + 1}: Using MAE={mae:.3f} from training result"
+                    f"Trial {trial.number + 1}: MAE={mae:.3f} (normalized), {mae_original_scale:.3f} (original scale)"
                 )
 
                 # Handle NaN values (treat as 0.0)
@@ -916,38 +869,46 @@ try:
                     r2 = 0.0
 
                 # Store metrics in trial attributes for inspection
-                trial.set_user_attr("mae", float(mae))
+                # Store both normalized MAE (for comparison) and original scale MAE (for reporting)
+                trial.set_user_attr("mae", float(mae_original_scale))
+                trial.set_user_attr("mae_normalized", float(mae))
                 trial.set_user_attr("ndcg_at_k", float(ndcg_score))
                 trial.set_user_attr("r2", float(r2))
                 trial.set_user_attr("spearman", float(spearman_corr))
 
                 # Store the best model if this is the best NDCG@k so far AND all guardrails pass
+                # Use original scale MAE for guardrail checking
                 if (
-                    mae < mae_guardrail
+                    mae_original_scale < mae_guardrail
                     and spearman_corr > 0
                     and r2 > 0
                     and (not hasattr(self, "best_ndcg") or ndcg_score > self.best_ndcg)
                 ):
                     self.best_ndcg = ndcg_score
                     self.best_model = model
+                    # Ensure the best model has input_size set
+                    if not hasattr(model, 'input_size'):
+                        model.input_size = self.X_train.shape[1]
                     # Store best metrics for later use (only for valid trials)
+                    # Store original scale MAE for reporting
                     self.best_metrics = {
-                        "mae": float(mae),
+                        "mae": float(mae_original_scale),
                         "ndcg_at_k": float(ndcg_score),
                         "r2": float(r2),
                         "spearman": float(spearman_corr),
                     }
                     logger.info(
-                        f"Trial {trial.number + 1}: New best valid trial stored (MAE={mae:.3f}, NDCG={ndcg_score:.4f})"
+                        f"Trial {trial.number + 1}: New best valid trial stored (MAE={mae_original_scale:.3f}, NDCG={ndcg_score:.4f})"
                     )
 
                 # Apply quality guardrails - prune if metrics don't meet minimum standards
-                if mae >= mae_guardrail:
+                # Use original scale MAE for guardrail checking
+                if mae_original_scale >= mae_guardrail:
                     logger.info(
-                        f"Trial {trial.number + 1}: MAE guardrail failed: {mae:.3f} >= {mae_guardrail}"
+                        f"Trial {trial.number + 1}: MAE guardrail failed: {mae_original_scale:.3f} >= {mae_guardrail}"
                     )
                     raise optuna.TrialPruned(
-                        f"MAE guardrail failed: {mae:.3f} >= {mae_guardrail}"
+                        f"MAE guardrail failed: {mae_original_scale:.3f} >= {mae_guardrail}"
                     )
 
                 if spearman_corr <= 0:
@@ -967,7 +928,7 @@ try:
                 # Add newline to separate from training progress, then log trial progress
                 print()  # Ensure newline after training progress
                 logger.info(
-                    f"Trial {trial.number + 1}: NDCG@20={ndcg_score:.4f}, MAE={mae:.4f}, Spearman={spearman_corr:.4f}, R²={r2:.4f}"
+                    f"Trial {trial.number + 1}: NDCG@20={ndcg_score:.4f}, MAE={mae_original_scale:.4f}, Spearman={spearman_corr:.4f}, R²={r2:.4f}"
                 )
 
                 # Return NDCG@k for maximization
@@ -1015,8 +976,13 @@ try:
             self.best_params = study.best_params
             self.best_score = study.best_value
 
-            logger.info(f"Best hyperparameters: {self.best_params}")
-            logger.info(f"Best NDCG@20: {self.best_score:.4f}")
+            # Check if all trials failed (best_score would be -1.0)
+            if self.best_score <= -1.0:
+                logger.error(f"All trials failed - no valid hyperparameters found")
+                self.best_score = -1.0  # Explicitly set to -1.0 to indicate failure
+            else:
+                logger.info(f"Best hyperparameters: {self.best_params}")
+                logger.info(f"Best NDCG@20: {self.best_score:.4f}")
 
             return self.best_params
 
@@ -1711,7 +1677,6 @@ class BaseNeuralModel(ABC):
         # quantile_criterion will be set as a lambda after _quantile_loss is defined
         self.quantile_criterion = None  # Set properly after methods are defined
         self.mse_criterion = nn.MSELoss()  # For fallback if Huber fails
-        self.dfs_criterion = DFSLoss()  # DFS-optimized loss function
 
         # Load hyperparameters from YAML config or use defaults
         if HAS_HYPERPARAMETER_MANAGER:
@@ -1754,18 +1719,9 @@ class BaseNeuralModel(ABC):
         """Clip/winsorize targets by position before training."""
         position = self.config.position.upper()
 
-        # Position-specific clipping ranges
-        clip_ranges = {
-            "QB": (-5, 55),
-            "RB": (-5, 45),
-            "WR": (-5, 40),
-            "TE": (-5, 30),
-            "DST": (-5, 30),
-            "DEF": (-5, 30),
-        }
-
-        if position in clip_ranges:
-            low, high = clip_ranges[position]
+        # Use global position-specific clipping ranges
+        if position in POSITION_RANGES:
+            low, high = POSITION_RANGES[position]
             y_clipped = np.clip(y, low, high)
             logger.info(
                 f"Clipped {position} targets to [{low}, {high}]. "
@@ -1961,6 +1917,14 @@ class BaseNeuralModel(ABC):
             self.network = tuner.best_model.network
             self.device = tuner.best_model.device
 
+            # CRITICAL: Also copy the best_state_dict from the best model
+            if hasattr(tuner.best_model, "best_state_dict"):
+                self.best_state_dict = tuner.best_model.best_state_dict
+            else:
+                # If best model doesn't have best_state_dict, use its current state
+                import copy
+                self.best_state_dict = copy.deepcopy(self.network.state_dict())
+
             # Calculate individual metrics using the best model
             self.network.eval()
             with torch.no_grad():
@@ -2047,30 +2011,6 @@ class BaseNeuralModel(ABC):
 
         return best_params
 
-    def _train_epochs(
-        self, train_loader: DataLoader, val_loader: DataLoader, epochs: int
-    ) -> Dict[str, float]:
-        """Train for a specific number of epochs (used by batch size optimizer).
-
-        Args:
-            train_loader: Training data loader
-            val_loader: Validation data loader
-            epochs: Number of epochs to train
-
-        Returns:
-            Dictionary with final metrics
-        """
-        best_val_loss = float("inf")
-
-        for _epoch in range(epochs):
-            train_loss = self._train_epoch(train_loader)
-            val_loss = self._validate_epoch(val_loader)
-
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-
-        return {"train_loss": train_loss, "val_loss": best_val_loss}
-
     def _normalize_features(
         self, X: np.ndarray, is_training: bool = True
     ) -> np.ndarray:
@@ -2113,271 +2053,16 @@ class BaseNeuralModel(ABC):
         if len(X) != len(y):
             raise ValueError("Feature and target lengths don't match")
 
-    def _create_data_loaders(
-        self,
-        X_train: np.ndarray,
-        y_train: np.ndarray,
-        X_val: np.ndarray,
-        y_val: np.ndarray,
-    ) -> Tuple[DataLoader, DataLoader]:
-        """Create PyTorch data loaders optimized for Apple Silicon."""
-        # Create tensors on CPU first, then move to device for better memory management
-        train_X = torch.tensor(X_train, dtype=torch.float32).to(
-            self.device, non_blocking=True
-        )
-        train_y = torch.tensor(y_train, dtype=torch.float32).to(
-            self.device, non_blocking=True
-        )
-        val_X = torch.tensor(X_val, dtype=torch.float32).to(
-            self.device, non_blocking=True
-        )
-        val_y = torch.tensor(y_val, dtype=torch.float32).to(
-            self.device, non_blocking=True
-        )
+    # NOTE: The following helper methods have been removed as we now use ModelTrainer
+    # and the metrics module for training and validation:
+    # - _train_epoch: Replaced by ModelTrainer.train_epoch
+    # - _validate_epoch: Replaced by ModelTrainer.validate
+    # - _compute_validation_r2: Replaced by metrics.calculate_metrics_suite
+    # - _compute_validation_mae: Replaced by metrics.calculate_metrics_suite
+    # - _compute_validation_ndcg: Replaced by metrics.calculate_ndcg_at_k
+    # - _compute_validation_spearman: Replaced by metrics.calculate_spearman_correlation
 
-        train_dataset = TensorDataset(train_X, train_y)
-        val_dataset = TensorDataset(val_X, val_y)
-
-        # Optimize DataLoader settings for device type
-        # Set num_workers=0 for GPU/MPS to avoid CUDA initialization errors in forked processes
-        if self.device.type in ["cuda", "mps"]:
-            num_workers = 0
-            pin_memory = False
-        else:
-            num_workers = min(4, os.cpu_count() // 2)
-            pin_memory = False
-
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=self.batch_size,
-            shuffle=True,
-            num_workers=num_workers,
-            pin_memory=pin_memory,
-            persistent_workers=False,  # Better for MPS
-        )
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=num_workers,
-            pin_memory=pin_memory,
-            persistent_workers=False,
-        )
-
-        return train_loader, val_loader
-
-    def _train_epoch(
-        self, train_loader: DataLoader, salaries: torch.Tensor = None
-    ) -> float:
-        """Train model for one epoch with enhanced loss function for QB models."""
-        self.network.train()
-        total_loss = 0.0
-        num_batches = 0
-
-        for _batch_idx, batch_data in enumerate(train_loader):
-            if len(batch_data) == 3:  # With salaries
-                batch_X, batch_y, batch_salaries = batch_data
-            else:  # Without salaries
-                batch_X, batch_y = batch_data
-                batch_salaries = None
-
-            self.optimizer.zero_grad()
-            predictions = self.network(batch_X)
-
-            # Use DFS loss for QB models, regular loss for others
-            if isinstance(predictions, dict) and self.config.position == "QB":
-                loss = self.dfs_criterion(predictions, batch_y, batch_salaries)
-            elif isinstance(predictions, dict):
-                predictions = predictions[
-                    "mean"
-                ]  # Use mean prediction for non-QB models
-                loss = self.criterion(predictions, batch_y)
-            elif predictions.dim() > 1 and predictions.size(1) == 1:
-                predictions = predictions.squeeze(1)
-                loss = self.criterion(predictions, batch_y)
-            else:
-                loss = self.criterion(predictions, batch_y)
-
-            # Check if loss is valid before backward pass
-            if torch.isnan(loss) or torch.isinf(loss):
-                continue
-
-            loss.backward()
-
-            # Moderate gradient clipping to prevent exploding gradients while allowing learning
-            torch.nn.utils.clip_grad_norm_(self.network.parameters(), max_norm=1.0)
-
-            # Check for NaN gradients after clipping
-            has_nan_grad = False
-            for param in self.network.parameters():
-                if param.grad is not None and (
-                    torch.isnan(param.grad).any() or torch.isinf(param.grad).any()
-                ):
-                    has_nan_grad = True
-                    break
-
-            if has_nan_grad:
-                # Clear gradients and skip update
-                self.optimizer.zero_grad()
-                continue
-
-            self.optimizer.step()
-
-            total_loss += loss.item()
-            num_batches += 1
-
-        return total_loss / num_batches if num_batches > 0 else 0.0
-
-    def _validate_epoch(self, val_loader: DataLoader) -> float:
-        """Validate model for one epoch."""
-        self.network.eval()
-        total_loss = 0.0
-        num_batches = 0
-
-        with torch.no_grad():
-            for batch_X, batch_y in val_loader:
-                predictions = self.network(batch_X)
-
-                # Handle QB model's dictionary output
-                if isinstance(predictions, dict):
-                    predictions = predictions[
-                        "mean"
-                    ]  # Use mean prediction for validation
-                elif predictions.dim() > 1 and predictions.size(1) == 1:
-                    predictions = predictions.squeeze(1)
-
-                loss = self.criterion(predictions, batch_y)
-                total_loss += loss.item()
-                num_batches += 1
-
-        return total_loss / num_batches if num_batches > 0 else 0.0
-
-    def _compute_validation_r2(
-        self, val_loader: DataLoader, y_val: np.ndarray
-    ) -> float:
-        """Compute R² score on validation data."""
-        self.network.eval()
-        predictions = []
-
-        with torch.no_grad():
-            for batch_X, _ in val_loader:
-                pred = self.network(batch_X)
-
-                # Handle QB model's dictionary output
-                if isinstance(pred, dict):
-                    pred = pred["mean"]
-                elif pred.dim() > 1 and pred.size(1) == 1:
-                    pred = pred.squeeze(1)
-
-                predictions.extend(pred.cpu().numpy())
-
-        predictions = np.array(predictions)
-
-        # Handle NaN predictions
-        if np.isnan(predictions).any():
-            return -float("inf")
-
-        # Compute R²
-        ss_tot = np.sum((y_val - np.mean(y_val)) ** 2)
-        ss_res = np.sum((y_val - predictions) ** 2)
-
-        if ss_tot == 0:
-            return 0.0
-
-        r2 = 1 - (ss_res / ss_tot)
-        return r2
-
-    def _compute_validation_mae(
-        self, val_loader: DataLoader, y_val: np.ndarray
-    ) -> float:
-        """Compute MAE score on validation data."""
-        self.network.eval()
-        predictions = []
-
-        with torch.no_grad():
-            for batch_X, _ in val_loader:
-                pred = self.network(batch_X)
-
-                # Handle QB model's dictionary output
-                if isinstance(pred, dict):
-                    pred = pred["mean"]
-                elif pred.dim() > 1 and pred.size(1) == 1:
-                    pred = pred.squeeze(1)
-
-                predictions.extend(pred.cpu().numpy())
-
-        predictions = np.array(predictions)
-
-        # Handle NaN predictions
-        if np.isnan(predictions).any():
-            return float("inf")  # High MAE for failed predictions
-
-        # Compute MAE
-        mae = np.mean(np.abs(y_val - predictions))
-        return mae
-
-    def _compute_validation_ndcg(
-        self, val_loader: DataLoader, y_val: np.ndarray, k: int = 20
-    ) -> float:
-        """Compute NDCG@k score on validation data."""
-        self.network.eval()
-        predictions = []
-
-        with torch.no_grad():
-            for batch_X, _ in val_loader:
-                pred = self.network(batch_X)
-
-                # Handle QB model's dictionary output
-                if isinstance(pred, dict):
-                    pred = pred["mean"]
-                elif pred.dim() > 1 and pred.size(1) == 1:
-                    pred = pred.squeeze(1)
-
-                predictions.extend(pred.cpu().numpy())
-
-        predictions = np.array(predictions)
-
-        # Handle NaN predictions
-        if np.isnan(predictions).any():
-            return 0.0  # Low NDCG for failed predictions
-
-        # Compute NDCG@k
-        ndcg_score = ndcg_at_k(y_val, predictions, k=k)
-        return float(ndcg_score)
-
-    def _compute_validation_spearman(
-        self, val_loader: DataLoader, y_val: np.ndarray
-    ) -> float:
-        """Compute Spearman correlation on validation data."""
-        from scipy.stats import spearmanr
-
-        self.network.eval()
-        predictions = []
-
-        with torch.no_grad():
-            for batch_X, _ in val_loader:
-                pred = self.network(batch_X)
-
-                # Handle QB model's dictionary output
-                if isinstance(pred, dict):
-                    pred = pred["mean"]
-                elif pred.dim() > 1 and pred.size(1) == 1:
-                    pred = pred.squeeze(1)
-
-                predictions.extend(pred.cpu().numpy())
-
-        predictions = np.array(predictions)
-
-        # Handle NaN predictions
-        if np.isnan(predictions).any():
-            return 0.0  # Return 0 correlation for failed predictions
-
-        # Compute Spearman correlation
-        try:
-            correlation, _ = spearmanr(y_val, predictions)
-            return float(correlation) if not np.isnan(correlation) else 0.0
-        except Exception:
-            return 0.0  # Return 0 correlation for any computation errors
+    # [Methods removed for brevity - see ModelTrainer and metrics module]
 
     def validate_predictions(
         self, predictions: np.ndarray, position: str = None
@@ -2389,7 +2074,8 @@ class BaseNeuralModel(ABC):
         if position == "QB":
             # QB-specific validation as per optimization guide
             assert predictions.min() >= 5, f"QB floor too low: {predictions.min()}"
-            assert predictions.max() <= 45, f"QB ceiling too high: {predictions.max()}"
+            max_allowed = POSITION_RANGES["QB"][1]
+            assert predictions.max() <= max_allowed, f"QB ceiling too high: {predictions.max()} > {max_allowed}"
             assert predictions.std() > 3, f"Insufficient variance: {predictions.std()}"
 
             # Check for reasonable distribution
@@ -2418,7 +2104,7 @@ class BaseNeuralModel(ABC):
         X_val: np.ndarray,
         y_val: np.ndarray,
     ) -> TrainingResult:
-        """Train the neural network model."""
+        """Train the neural network model using ModelTrainer."""
         start_time = time.time()
 
         # Set up quantile_criterion if not already set
@@ -2437,11 +2123,17 @@ class BaseNeuralModel(ABC):
         X_val = np.nan_to_num(X_val, nan=0.0, posinf=0.0, neginf=0.0)
         y_val = np.nan_to_num(y_val, nan=0.0, posinf=0.0, neginf=0.0)
 
+        # Get position-specific clipping range from global constant
+        position = self.config.position.upper()
+        y_min, y_max = POSITION_RANGES.get(position, (-5, 75))
+
         # Check for extreme values and clip them
         X_train = np.clip(X_train, -1000, 1000)
-        y_train = np.clip(y_train, -10, 50)  # DST fantasy points range
+        y_train = np.clip(y_train, y_min, y_max)
         X_val = np.clip(X_val, -1000, 1000)
-        y_val = np.clip(y_val, -10, 50)
+        y_val = np.clip(y_val, y_min, y_max)
+
+        logger.debug(f"Clipping {position} y-values to range [{y_min}, {y_max}]")
 
         # Robust feature scaling with zero-variance handling
         X_mean = np.mean(X_train, axis=0)
@@ -2462,117 +2154,83 @@ class BaseNeuralModel(ABC):
         y_train = np.nan_to_num(y_train, nan=0.0, posinf=0.0, neginf=0.0)
         y_val = np.nan_to_num(y_val, nan=0.0, posinf=0.0, neginf=0.0)
 
+        # Normalize targets to improve training stability
+        y_train_normalized = self._normalize_targets(y_train)
+        # Use the same normalization parameters for validation
+        y_val_normalized = (y_val - self.y_mean) / self.y_std
+
         if self.network is None:
             input_size = X_train.shape[1]
             self.input_size = input_size  # Store input size for later use
             self.network = self.build_network(input_size)
             self.network.to(self.device)
 
-        # Use AdamW with improved weight decay for better generalization
-        self.optimizer = optim.AdamW(
-            self.network.parameters(),
-            lr=self.learning_rate,
-            weight_decay=0.001,
-            betas=(0.9, 0.999),
-            eps=1e-8,
+        # Create ModelTrainer instance with our configuration
+        from training import ModelTrainer
+
+        trainer = ModelTrainer(
+            model=self.network,
+            device=self.device,
+            learning_rate=self.learning_rate,
+            weight_decay=self.weight_decay,
+            batch_size=self.batch_size,
+            epochs=self.epochs,
+            early_stopping_patience=self.patience,
+            scheduler_patience=15,
+            gradient_clip_val=1.0,
+            use_amp=self.device.type == "cuda",  # Use AMP for GPU
+            verbose=True
         )
 
-        train_loader, val_loader = self._create_data_loaders(
-            X_train, y_train, X_val, y_val
+        # Create data manager for efficient data loading
+        from data_utils import DataManager
+
+        data_manager = DataManager(
+            batch_size=self.batch_size,
+            device=self.device,
+            num_workers=0,  # Avoid issues with multiprocessing
+            pin_memory=self.device.type == "cuda"
         )
 
-        # More stable learning rate schedule
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode="min", factor=0.7, patience=15, min_lr=1e-6
+        # Create sample weights if needed
+        sample_weights = data_manager.create_sample_weights(
+            y_train_normalized,
+            method="inverse_frequency"
         )
-
-        best_val_loss = float("inf")
-        best_val_ndcg = 0.0  # Track best NDCG@K score (higher is better)
-        best_epoch = 0
 
         logger.info(f"Starting neural network training for {self.config.position}")
 
-        # Training loop with best model checkpointing (no early stopping)
-        for epoch in range(self.epochs):
-            train_loss = self._train_epoch(train_loader)
-            val_loss = self._validate_epoch(val_loader)
-            self.scheduler.step(val_loss)  # ReduceLROnPlateau takes loss as input
+        # Train using ModelTrainer
+        training_result = trainer.train(
+            X_train,
+            y_train_normalized,
+            X_val,
+            y_val_normalized,
+            loss_fn=self.criterion,
+            sample_weights=sample_weights,
+            position=self.config.position
+        )
 
-            # Compute validation NDCG@K every epoch for precise checkpointing
-            val_ndcg = self._compute_validation_ndcg(val_loader, y_val, k=20)
-            # Also compute R², MAE, and Spearman for guardrails and logging
-            val_r2 = self._compute_validation_r2(val_loader, y_val)
-            val_mae = self._compute_validation_mae(val_loader, y_val)
-            val_spearman = self._compute_validation_spearman(val_loader, y_val)
+        # Extract metrics from training result
+        best_epoch = training_result.get("best_epoch", training_result["epochs_trained"])
+        best_val_ndcg = training_result["best_metrics"].get("ndcg@20", 0.0)
 
-            self.train_losses.append(train_loss)
-            self.val_losses.append(val_loss)
+        # Store training history
+        self.train_losses = trainer.history["train_loss"]
+        self.val_losses = trainer.history["val_loss"]
 
-            # Snapshot best model based on NDCG@K score (higher is better) AND all guardrails pass
-            improved = False
-            guardrails_pass = val_mae < 6.0 and val_spearman > 0 and val_r2 > 0
-            if val_ndcg > best_val_ndcg and guardrails_pass:
-                best_val_ndcg = val_ndcg
-                best_val_loss = val_loss
-                best_epoch = epoch
-                import copy
+        # The model's best weights are already loaded by ModelTrainer
+        logger.info(
+            f"Training completed: Best model from epoch {best_epoch}/{training_result['epochs_trained']}, "
+            f"NDCG@20={best_val_ndcg:.4f}, "
+            f"MAE={training_result['best_metrics']['mae']:.3f}"
+        )
 
-                self.best_state_dict = copy.deepcopy(self.network.state_dict())
-                improved = True
-            elif (
-                val_ndcg == best_val_ndcg
-                and val_loss < best_val_loss
-                and guardrails_pass
-            ):
-                # Same NDCG@K, but better loss - still an improvement if all guardrails pass
-                best_val_loss = val_loss
-                best_epoch = epoch
-                import copy
+        # Use best_metrics from training_result (from best checkpoint)
+        # This ensures we report metrics from the best model, not the final epoch
+        best_metrics = training_result.get("best_metrics", {})
 
-                self.best_state_dict = copy.deepcopy(self.network.state_dict())
-                improved = True
-
-            # Progress reporting - show improvements and periodic updates
-            if improved:
-                print(
-                    f"\r\033[K🎯 Epoch {epoch}: New best NDCG@20 = {val_ndcg:.4f} (MAE={val_mae:.3f}, R²={val_r2:.3f}, Spear={val_spearman:.3f})",
-                    end="",
-                    flush=True,
-                )
-            elif epoch % 50 == 0:
-                # Show guardrail status more clearly
-                guardrail_status = "PASS" if guardrails_pass else "FAIL"
-                if best_val_ndcg > 0.0:  # We have a valid best epoch
-                    print(
-                        f"\r\033[KEpoch {epoch}/{self.epochs}: NDCG@20 = {val_ndcg:.4f} (Best: {best_val_ndcg:.4f} @ epoch {best_epoch}) [MAE={val_mae:.3f}, R²={val_r2:.3f}, S={val_spearman:.3f}] [{guardrail_status}]",
-                        end="",
-                        flush=True,
-                    )
-                else:  # No valid epochs yet
-                    print(
-                        f"\r\033[KEpoch {epoch}/{self.epochs}: NDCG@20 = {val_ndcg:.4f} (No valid epochs yet) [MAE={val_mae:.3f}, R²={val_r2:.3f}, S={val_spearman:.3f}] [{guardrail_status}]",
-                        end="",
-                        flush=True,
-                    )
-
-        # Training completed - show summary and use best checkpoint
-        print()
-        if best_val_ndcg > 0.0:
-            print(f"✅ Training completed ({self.epochs} epochs)")
-            print(f"   Best valid epoch: {best_epoch} (NDCG@20: {best_val_ndcg:.4f})")
-        else:
-            print(f"❌ Training completed ({self.epochs} epochs)")
-            print(f"   No epochs passed guardrails (MAE < 6.0, R² > 0, Spearman > 0)")
-
-        if hasattr(self, "best_state_dict") and self.best_state_dict is not None:
-            logger.info(f"Loading best checkpoint from epoch {best_epoch}")
-            self.network.load_state_dict(self.best_state_dict)
-        else:
-            logger.warning(
-                "No best checkpoint available - using final epoch state (this will likely have high MAE)"
-            )
-
-        # Calculate final metrics
+        # Calculate predictions for residual std calculation
         self.network.eval()
         with torch.no_grad():
             X_train_tensor = torch.tensor(
@@ -2583,7 +2241,7 @@ class BaseNeuralModel(ABC):
             train_pred_tensor = self.network(X_train_tensor)
             val_pred_tensor = self.network(X_val_tensor)
 
-            # Handle QB model's dictionary output
+            # Handle multi-head output
             if isinstance(train_pred_tensor, dict):
                 train_pred_tensor = train_pred_tensor["mean"]
             elif train_pred_tensor.dim() > 1 and train_pred_tensor.size(1) == 1:
@@ -2594,45 +2252,33 @@ class BaseNeuralModel(ABC):
             elif val_pred_tensor.dim() > 1 and val_pred_tensor.size(1) == 1:
                 val_pred_tensor = val_pred_tensor.squeeze(1)
 
-            train_pred = train_pred_tensor.cpu().numpy()
-            val_pred = val_pred_tensor.cpu().numpy()
+            # Denormalize predictions
+            train_pred = self._denormalize_predictions(train_pred_tensor.cpu().numpy())
+            val_pred = self._denormalize_predictions(val_pred_tensor.cpu().numpy())
 
-        # Check for NaN predictions and handle gracefully
-        if np.isnan(train_pred).any() or np.isnan(val_pred).any():
-            logger.error("NaN predictions detected after training!")
-            train_mae = float("nan")
-            val_mae = float("nan")  # Set validation MAE to NaN
-            train_rmse = val_rmse = float("nan")
-            train_r2 = float("nan")
-            # Calculate final R² from the best NDCG@K model
-            val_ss_tot = np.sum((y_val - np.mean(y_val)) ** 2)
-            val_r2 = (
-                1 - np.sum((y_val - val_pred) ** 2) / val_ss_tot
-                if val_ss_tot != 0
-                else 0
-            )
+        # For training metrics, calculate from current predictions
+        from metrics import calculate_metrics_suite
+
+        train_metrics = calculate_metrics_suite(y_train, train_pred, self.config.position)
+
+        # Use best_metrics for validation metrics (from best checkpoint)
+        # These are the metrics from when the model performed best during training
+        if best_metrics:
+            val_mae = best_metrics.get("mae", 0)
+            val_rmse = best_metrics.get("rmse", 0)
+            val_r2 = best_metrics.get("r2", 0)
+            val_metrics = best_metrics
         else:
-            train_mae = np.mean(np.abs(y_train - train_pred))
-            # Calculate final validation MAE from best NDCG@K model
-            val_mae = np.mean(np.abs(y_val - val_pred))
-            train_rmse = np.sqrt(np.mean((y_train - train_pred) ** 2))
-            val_rmse = np.sqrt(np.mean((y_val - val_pred) ** 2))
+            # Fallback to calculating from current state if best_metrics not available
+            val_metrics = calculate_metrics_suite(y_val, val_pred, self.config.position)
+            val_mae = val_metrics["mae"]
+            val_rmse = val_metrics["rmse"]
+            val_r2 = val_metrics["r2"]
 
-            # Calculate training R² with safeguards against division by zero
-            train_ss_tot = np.sum((y_train - np.mean(y_train)) ** 2)
-
-            if train_ss_tot == 0:
-                train_r2 = 0.0  # If no variance in target, R² is undefined, set to 0
-            else:
-                train_r2 = 1 - np.sum((y_train - train_pred) ** 2) / train_ss_tot
-
-            # Calculate final validation R² from the best MAE model
-            val_ss_tot = np.sum((y_val - np.mean(y_val)) ** 2)
-            val_r2 = (
-                1 - np.sum((y_val - val_pred) ** 2) / val_ss_tot
-                if val_ss_tot != 0
-                else 0
-            )
+        # Extract key metrics
+        train_mae = train_metrics["mae"]
+        train_rmse = train_metrics["rmse"]
+        train_r2 = train_metrics["r2"]
 
         self._residual_std = np.std(y_val - val_pred)
         self.is_trained = True
@@ -2644,7 +2290,7 @@ class BaseNeuralModel(ABC):
             best_iteration=best_epoch,
             feature_importance=None,
             train_mae=train_mae,
-            val_mae=val_mae,  # Final MAE from the best NDCG@K model
+            val_mae=val_mae,
             train_rmse=train_rmse,
             val_rmse=val_rmse,
             train_r2=train_r2,
@@ -2655,7 +2301,10 @@ class BaseNeuralModel(ABC):
         )
 
         self.training_history.append(result.__dict__)
-        logger.info(f"Training completed: NDCG@20={best_val_ndcg:.3f}, R²={val_r2:.3f}")
+        logger.info(
+            f"Training completed: NDCG@20={val_metrics.get('ndcg@20', 0):.3f}, "
+            f"R²={val_r2:.3f}, MAE={val_mae:.3f}"
+        )
 
         return result
 
@@ -2663,6 +2312,17 @@ class BaseNeuralModel(ABC):
         """Generate predictions with uncertainty quantification and validation."""
         if not self.is_trained or self.network is None:
             raise ValueError("Model must be trained before making predictions")
+
+        # Validate input feature dimensions
+        if hasattr(self, 'input_size'):
+            expected_features = self.input_size
+            actual_features = X.shape[1] if len(X.shape) > 1 else X.shape[0]
+            if actual_features != expected_features:
+                raise ValueError(
+                    f"Feature dimension mismatch: expected {expected_features} features, "
+                    f"but got {actual_features}. This usually means the prediction data "
+                    f"was prepared differently than the training data."
+                )
 
         self.network.eval()
         X_tensor = torch.tensor(X, dtype=torch.float32).to(self.device)
@@ -2673,16 +2333,37 @@ class BaseNeuralModel(ABC):
             # Handle enhanced QB model's dictionary output
             if isinstance(predictions, dict):
                 point_estimate = predictions["mean"].cpu().numpy()
-                floor = predictions.get("floor", point_estimate - 5).cpu().numpy()
-                ceiling = predictions.get("ceiling", point_estimate + 5).cpu().numpy()
+                floor = predictions.get("floor", point_estimate - 0.5).cpu().numpy()  # Smaller in normalized space
+                ceiling = predictions.get("ceiling", point_estimate + 0.5).cpu().numpy()
             elif predictions.dim() > 1 and predictions.size(1) == 1:
                 point_estimate = predictions.squeeze(1).cpu().numpy()
-                floor = point_estimate - 5
-                ceiling = point_estimate + 5
+                floor = point_estimate - 0.5  # Smaller in normalized space
+                ceiling = point_estimate + 0.5
             else:
                 point_estimate = predictions.cpu().numpy()
-                floor = point_estimate - 5
-                ceiling = point_estimate + 5
+                floor = point_estimate - 0.5
+                ceiling = point_estimate + 0.5
+
+        # Denormalize all predictions back to fantasy point scale
+        if hasattr(self, 'y_mean') and hasattr(self, 'y_std'):
+            point_estimate = self._denormalize_predictions(point_estimate)
+            floor = self._denormalize_predictions(floor)
+            ceiling = self._denormalize_predictions(ceiling)
+
+        # Apply position-specific bounds after denormalization
+        position = self.config.position.upper()
+        min_val, max_val = POSITION_RANGES.get(position, (-5, 75))
+
+        # Clip to valid ranges (ReLU for non-DEF, allow negatives for DEF/DST)
+        if position in ("DEF", "DST"):
+            point_estimate = np.clip(point_estimate, min_val, max_val)
+            floor = np.clip(floor, min_val, max_val)
+            ceiling = np.clip(ceiling, min_val, max_val)
+        else:
+            # Non-negative for offensive positions
+            point_estimate = np.clip(point_estimate, 0, max_val)
+            floor = np.clip(floor, 0, max_val)
+            ceiling = np.clip(ceiling, 0, max_val)
 
         # Validate predictions if requested
         if validate:
@@ -2716,13 +2397,38 @@ class BaseNeuralModel(ABC):
         """Save trained model to disk."""
         if self.network is None:
             raise ValueError("No model to save")
-        # Save both state dict and input size
+
+        # CRITICAL FIX: Always save the best checkpoint if available, not current state
+        if hasattr(self, "best_state_dict") and self.best_state_dict is not None:
+            logger.info("Saving best checkpoint model (not current state)")
+            state_to_save = self.best_state_dict
+        else:
+            logger.info("No best checkpoint available, saving current model state")
+            state_to_save = self.network.state_dict()
+
+        # Save state dict, input size, and normalization parameters
+        # Get input_size safely - it may not be set if model was only used in hyperparameter tuning
+        if hasattr(self, 'input_size'):
+            input_size = self.input_size
+        elif self.network is not None:
+            # Try to get from first layer of network
+            for name, module in self.network.named_modules():
+                if isinstance(module, nn.Linear):
+                    input_size = module.in_features
+                    break
+            else:
+                input_size = None
+        else:
+            input_size = None
+
         checkpoint = {
-            "model_state_dict": self.network.state_dict(),
-            "input_size": self.input_size,
+            "model_state_dict": state_to_save,
+            "input_size": input_size,
+            "y_mean": self.y_mean if hasattr(self, "y_mean") else 0.0,
+            "y_std": self.y_std if hasattr(self, "y_std") else 1.0,
         }
         torch.save(checkpoint, path)
-        logger.info(f"Model saved to {path} with input_size={self.input_size}")
+        logger.info(f"Model saved to {path} with input_size={input_size}, normalization=(mean={checkpoint['y_mean']:.2f}, std={checkpoint['y_std']:.2f})")
 
     def load_model(self, path: str, input_size: int = None):
         """Load trained model from disk."""
@@ -2740,6 +2446,10 @@ class BaseNeuralModel(ABC):
                     f"Input size mismatch: provided {input_size}, saved {saved_input_size}. Using saved size."
                 )
                 input_size = saved_input_size
+
+            # Restore normalization parameters
+            self.y_mean = checkpoint.get("y_mean", 0.0)
+            self.y_std = checkpoint.get("y_std", 1.0)
         else:
             # Old format - just state dict
             state_dict = checkpoint
@@ -2769,168 +2479,62 @@ class BaseNeuralModel(ABC):
 # End of BaseNeuralModel class
 
 
-class DFSLoss(nn.Module):
-    """Custom DFS loss function with ranking and salary weighting as per optimization guide."""
-
-    def __init__(self, alpha: float = 0.2, beta: float = 0.3, gamma: float = 0.2):
-        """
-        Args:
-            alpha: Weight for range penalty term
-            beta: Weight for ranking loss term
-            gamma: Weight for salary-weighted accuracy term
-        """
-        super().__init__()
-        self.alpha = alpha
-        self.beta = beta
-        self.gamma = gamma
-
-    def forward(
-        self,
-        predictions: Dict[str, torch.Tensor],
-        targets: torch.Tensor,
-        salaries: torch.Tensor = None,
-    ) -> torch.Tensor:
-        """
-        DFS-optimized loss function.
-
-        Args:
-            predictions: Dict with 'mean', 'floor', 'ceiling' tensors
-            targets: Actual fantasy points
-            salaries: Player salaries (optional, uses uniform weights if None)
-        """
-        mean_pred = predictions["mean"]
-        floor_pred = predictions.get("floor", mean_pred - 5)
-        ceiling_pred = predictions.get("ceiling", mean_pred + 5)
-
-        # Main prediction loss (weighted MSE)
-        point_loss = F.mse_loss(mean_pred, targets)
-
-        # Range penalty - penalize unrealistic predictions
-        range_penalty = torch.mean(torch.relu(5 - (ceiling_pred - floor_pred)))
-
-        # Ranking loss (Spearman correlation approximation)
-        rank_loss = self._ranking_loss(mean_pred, targets)
-
-        # Salary-weighted accuracy (more important to get expensive players right)
-        if salaries is not None:
-            salary_weights = salaries / salaries.mean()
-            weighted_loss = F.mse_loss(
-                mean_pred * salary_weights, targets * salary_weights
-            )
-        else:
-            weighted_loss = torch.tensor(0.0, device=targets.device)
-
-        # Combined loss as per optimization guide formula
-        total_loss = (
-            point_loss
-            + self.alpha * range_penalty
-            + self.beta * rank_loss
-            + self.gamma * weighted_loss
-        )
-
-        return total_loss
-
-    def _ranking_loss(
-        self, predictions: torch.Tensor, targets: torch.Tensor
-    ) -> torch.Tensor:
-        """Compute ranking loss to encourage correct player ordering."""
-        # Compute pairwise differences
-        n = predictions.size(0)
-        if n < 2:
-            return torch.tensor(0.0, device=predictions.device)
-
-        # Use a simplified ranking loss based on order consistency
-        pred_ranks = torch.argsort(torch.argsort(predictions))
-        target_ranks = torch.argsort(torch.argsort(targets))
-
-        # L2 loss between rank positions (normalized)
-        rank_diff = (pred_ranks.float() - target_ranks.float()) / n
-        return torch.mean(rank_diff**2)
+# DFSLoss class removed - not needed without salary data
+# The model now uses standard Huber loss for all positions
 
 
-class ResidualBlock(nn.Module):
-    """Residual block with improved skip connections."""
-
-    def __init__(self, input_dim: int, output_dim: int, dropout: float = 0.2):
-        super().__init__()
-
-        self.main_path = nn.Sequential(
-            nn.Linear(input_dim, output_dim),
-            nn.BatchNorm1d(output_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(output_dim, output_dim),
-            nn.BatchNorm1d(output_dim),
-        )
-
-        # Skip connection - project if dimensions don't match
-        self.skip_connection = (
-            nn.Linear(input_dim, output_dim)
-            if input_dim != output_dim
-            else nn.Identity()
-        )
-        self.final_activation = nn.GELU()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        identity = self.skip_connection(x)
-        out = self.main_path(x)
-        return self.final_activation(out + identity)
+# ResidualBlock is now imported from nn_components
 
 
 class QBNetwork(nn.Module):
-    """Enhanced QB Network following optimization guide recommendations with multi-head design."""
+    """QB Network using modular components."""
 
     def __init__(self, input_size: int):
         super().__init__()
 
-        # Feature extraction layers with skip connections (increased capacity)
-        self.feature_extractor = nn.Sequential(
-            nn.Linear(input_size, 256),
-            nn.BatchNorm1d(256),
-            nn.GELU(),
-            nn.Dropout(0.2),
-            ResidualBlock(256, 256),
-            ResidualBlock(256, 256),
-            nn.Linear(256, 128),
-            nn.BatchNorm1d(128),
-            nn.GELU(),
-            nn.Dropout(0.15),
+        # Use FeatureExtractor from nn_components
+        self.feature_extractor = FeatureExtractor(
+            input_size=input_size,
+            layer_sizes=[256, 256, 128],
+            dropout_rates=[0.2, 0.15, 0.15],
+            use_residual=True,
+            normalization="batch",
+            activation="gelu"
         )
 
-        # Multi-head for different aspects as per optimization guide
-        self.passing_head = nn.Sequential(
-            nn.Linear(128, 64),
-            nn.BatchNorm1d(64),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(64, 32),
+        # Position-specific branches
+        self.passing_head = PositionSpecificBranch(
+            in_features=128,
+            branch_sizes=[64, 32],
+            dropout_rates=[0.1, 0],
+            activation="gelu",
+            normalization="batch"
         )
 
-        self.rushing_head = nn.Sequential(
-            nn.Linear(128, 32),
-            nn.BatchNorm1d(32),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(32, 16),
+        self.rushing_head = PositionSpecificBranch(
+            in_features=128,
+            branch_sizes=[32, 16],
+            dropout_rates=[0.1, 0],
+            activation="gelu",
+            normalization="batch"
         )
 
-        self.bonus_head = nn.Sequential(
-            nn.Linear(128, 32),
-            nn.BatchNorm1d(32),
-            nn.Sigmoid(),  # Probability of hitting bonuses
-            nn.Dropout(0.1),
-            nn.Linear(32, 8),
+        self.bonus_head = PositionSpecificBranch(
+            in_features=128,
+            branch_sizes=[32, 8],
+            dropout_rates=[0.1, 0],
+            activation="sigmoid",
+            normalization="batch"
         )
 
-        # Combine all heads as per optimization guide
+        # Use MultiHeadOutput for final predictions
         combined_features = 32 + 16 + 8  # 56 total
-
-        self.output_layer = nn.Sequential(
-            nn.Linear(combined_features, 64),
-            nn.BatchNorm1d(64),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(64, 3),  # [mean, floor_adjustment, ceiling_adjustment]
+        self.output = MultiHeadOutput(
+            in_features=combined_features,
+            hidden_dim=64,
+            predict_std=True,
+            predict_ceiling=True,
+            predict_floor=True
         )
 
     def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
@@ -2944,181 +2548,108 @@ class QBNetwork(nn.Module):
 
         # Combine heads
         combined = torch.cat([passing, rushing, bonus], dim=1)
-        output = self.output_layer(combined)
-
-        # Don't apply fantasy point scaling - targets are normalized during training
-        # The model will learn to output in normalized space
-        mean_pred = output[:, 0]
-        floor_adj = (
-            torch.abs(output[:, 1]) * 0.5
-        )  # Smaller adjustments in normalized space
-        ceiling_adj = torch.abs(output[:, 2]) * 0.5
-
-        floor = mean_pred - floor_adj
-        ceiling = mean_pred + ceiling_adj
-
-        # Don't clamp - let the model learn the appropriate range for normalized targets
-
-        # Ensure floor <= mean <= ceiling relationship
-        floor = torch.min(floor, mean_pred)
-        ceiling = torch.max(ceiling, mean_pred)
-
-        return {
-            "mean": mean_pred,
-            "floor": floor,
-            "ceiling": ceiling,
-            "q25": floor,
-            "q50": mean_pred,
-            "q75": ceiling,
-        }
+        # Use MultiHeadOutput which returns a dict
+        return self.output(combined)
 
 
 class RBNetwork(nn.Module):
-    """Neural network architecture for running back predictions."""
+    """RB Network using modular components."""
 
     def __init__(self, input_size: int):
         super().__init__()
 
-        # RB-specific architecture with proper depth
-        self.input_norm = nn.LayerNorm(input_size)
-
-        self.feature_extractor = nn.Sequential(
-            nn.Linear(input_size, 256),
-            nn.LayerNorm(256),
-            nn.LeakyReLU(0.01),
-            nn.Dropout(0.25),
-            nn.Linear(256, 128),
-            nn.LayerNorm(128),
-            nn.LeakyReLU(0.01),
-            nn.Dropout(0.2),
-            nn.Linear(128, 64),
-            nn.LayerNorm(64),
-            nn.LeakyReLU(0.01),
-            nn.Dropout(0.15),
+        # Use FeatureExtractor with RB-specific config
+        self.feature_extractor = FeatureExtractor(
+            input_size=input_size,
+            layer_sizes=[256, 128, 64],
+            dropout_rates=[0.25, 0.2, 0.15],
+            use_residual=False,
+            normalization="layer",
+            activation="leaky_relu"
         )
 
-        # Attention mechanism for feature importance
-        self.attention = nn.Sequential(
-            nn.Linear(64, 32), nn.Tanh(), nn.Linear(32, 64), nn.Softmax(dim=1)
+        # Use AttentionBlock for feature importance
+        self.attention = AttentionBlock(
+            feature_dim=64,
+            hidden_dim=32,
+            num_heads=1
         )
 
-        # Output heads
-        self.mean_head = nn.Sequential(
-            nn.Linear(64, 32), nn.LeakyReLU(0.01), nn.Linear(32, 1)
+        # Use MultiHeadOutput for predictions
+        self.output = MultiHeadOutput(
+            in_features=64,
+            hidden_dim=32,
+            predict_std=True,
+            predict_ceiling=False,
+            predict_floor=False
         )
-
-        self.std_head = nn.Sequential(
-            nn.Linear(64, 32),
-            nn.LeakyReLU(0.01),
-            nn.Linear(32, 1),
-            nn.Softplus(),  # Ensure positive std
-        )
-
-        # Initialize weights properly
-        self.apply(self._init_weights)
-
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            nn.init.xavier_normal_(module.weight)
-            if module.bias is not None:
-                nn.init.constant_(module.bias, 0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.input_norm(x)
         features = self.feature_extractor(x)
-
-        # Apply attention
-        attention_weights = self.attention(features)
-        features = features * attention_weights
-
-        mean = self.mean_head(features).squeeze(-1)
-        self.std_head(features).squeeze(-1)
-
-        # Don't clamp here - targets are normalized during training
-        # Clamping to fantasy point ranges [3,35] when using normalized targets breaks training!
-
-        # Return mean for compatibility with existing code
-        return mean
+        features = self.attention(features)
+        outputs = self.output(features)
+        # Return mean for compatibility
+        return outputs["mean"]
 
 
 class WRNetwork(nn.Module):
-    """Enhanced neural network architecture for wide receiver predictions."""
+    """WR Network using modular components."""
 
     def __init__(self, input_size: int):
         super().__init__()
 
-        # WR-specific architecture with target share focus
-        self.input_norm = nn.LayerNorm(input_size)
-
-        # Enhanced feature extraction for WR complexity
-        self.feature_extractor = nn.Sequential(
-            nn.Linear(input_size, 320),  # Larger for WR feature complexity
-            nn.LayerNorm(320),
-            nn.LeakyReLU(0.01),
-            nn.Dropout(0.3),
-            nn.Linear(320, 160),
-            nn.LayerNorm(160),
-            nn.LeakyReLU(0.01),
-            nn.Dropout(0.25),
-            nn.Linear(160, 80),
-            nn.LayerNorm(80),
-            nn.LeakyReLU(0.01),
-            nn.Dropout(0.2),
+        # Use FeatureExtractor with WR-specific larger capacity
+        self.feature_extractor = FeatureExtractor(
+            input_size=input_size,
+            layer_sizes=[320, 160, 80],
+            dropout_rates=[0.3, 0.25, 0.2],
+            use_residual=False,
+            normalization="layer",
+            activation="leaky_relu"
         )
 
-        # Specialized branches for WR prediction
-        self.target_branch = nn.Sequential(
-            nn.Linear(80, 40),
-            nn.LayerNorm(40),
-            nn.LeakyReLU(0.01),
-            nn.Dropout(0.15),
-            nn.Linear(40, 24),
+        # Specialized branches using PositionSpecificBranch
+        self.target_branch = PositionSpecificBranch(
+            in_features=80,
+            branch_sizes=[40, 24],
+            dropout_rates=[0.15, 0],
+            activation="leaky_relu",
+            normalization="layer"
         )
 
-        self.efficiency_branch = nn.Sequential(
-            nn.Linear(80, 32),
-            nn.LayerNorm(32),
-            nn.LeakyReLU(0.01),
-            nn.Dropout(0.1),
-            nn.Linear(32, 16),
+        self.efficiency_branch = PositionSpecificBranch(
+            in_features=80,
+            branch_sizes=[32, 16],
+            dropout_rates=[0.1, 0],
+            activation="leaky_relu",
+            normalization="layer"
         )
 
-        self.game_script_branch = nn.Sequential(
-            nn.Linear(80, 24),
-            nn.LayerNorm(24),
-            nn.LeakyReLU(0.01),
-            nn.Dropout(0.1),
-            nn.Linear(24, 12),
+        self.game_script_branch = PositionSpecificBranch(
+            in_features=80,
+            branch_sizes=[24, 12],
+            dropout_rates=[0.1, 0],
+            activation="leaky_relu",
+            normalization="layer"
         )
 
-        # Attention mechanism for feature importance
-        self.attention = nn.Sequential(
-            nn.Linear(52, 26),  # 24 + 16 + 12 = 52
-            nn.Tanh(),
-            nn.Linear(26, 52),
-            nn.Softmax(dim=1),
+        # Use AttentionBlock and MultiHeadOutput
+        combined_features = 24 + 16 + 12  # 52 total
+        self.attention = AttentionBlock(
+            feature_dim=combined_features,
+            hidden_dim=26,
+            num_heads=1
         )
 
-        # Output heads
-        self.mean_head = nn.Sequential(
-            nn.Linear(52, 32), nn.LeakyReLU(0.01), nn.Linear(32, 1)
+        self.output = MultiHeadOutput(
+            in_features=combined_features,
+            hidden_dim=32,
+            predict_std=True,
+            predict_ceiling=False,
+            predict_floor=False
         )
-
-        self.std_head = nn.Sequential(
-            nn.Linear(52, 32), nn.LeakyReLU(0.01), nn.Linear(32, 1), nn.Softplus()
-        )
-
-        # Initialize weights
-        self.apply(self._init_weights)
-
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            nn.init.xavier_normal_(module.weight)
-            if module.bias is not None:
-                nn.init.constant_(module.bias, 0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.input_norm(x)
         features = self.feature_extractor(x)
 
         # Specialized branches
@@ -3131,120 +2662,77 @@ class WRNetwork(nn.Module):
             [target_features, efficiency_features, script_features], dim=1
         )
 
-        # Apply attention
-        attention_weights = self.attention(combined)
-        attended_features = combined * attention_weights
+        # Apply attention and get outputs
+        attended = self.attention(combined)
+        outputs = self.output(attended)
 
-        mean = self.mean_head(attended_features).squeeze(-1)
-        self.std_head(attended_features).squeeze(-1)
-
-        # Don't clamp here - targets are normalized during training
-        # Clamping to fantasy point ranges when using normalized targets breaks training!
-
-        # Return mean for compatibility with existing code
-        return mean
+        # Return mean for compatibility
+        return outputs["mean"]
 
 
 class TENetwork(nn.Module):
-    """Enhanced multi-head neural network architecture for tight end predictions.
+    """TE Network using modular components.
 
-    Specialized architecture focusing on:
-    - Red zone target share (most predictive for TEs)
-    - Formation usage (2-TE sets vs single TE)
-    - Game script dependency (receiving vs blocking role)
-    - Opponent-specific matchups
+    Focuses on red zone usage, formation patterns, and game script.
     """
 
     def __init__(self, input_size: int):
         super().__init__()
 
-        # Multi-head architecture for TE-specific feature processing
-        # Red Zone/Target Branch - processes target share, red zone usage, goal line opportunities
-        self.redzone_branch = nn.Sequential(
-            nn.Linear(input_size, 64),
-            nn.LayerNorm(64),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(64, 32),
-            nn.LayerNorm(32),
-            nn.ReLU(),
-            nn.Dropout(0.15),
+        # Use PositionSpecificBranch for each aspect
+        self.redzone_branch = PositionSpecificBranch(
+            in_features=input_size,
+            branch_sizes=[64, 32],
+            dropout_rates=[0.2, 0.15],
+            activation="relu",
+            normalization="layer"
         )
 
-        # Formation/Role Branch - processes snap share, blocking vs receiving role, two-TE sets
-        self.formation_branch = nn.Sequential(
-            nn.Linear(input_size, 64),
-            nn.LayerNorm(64),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(64, 32),
-            nn.LayerNorm(32),
-            nn.ReLU(),
-            nn.Dropout(0.15),
+        self.formation_branch = PositionSpecificBranch(
+            in_features=input_size,
+            branch_sizes=[64, 32],
+            dropout_rates=[0.2, 0.15],
+            activation="relu",
+            normalization="layer"
         )
 
-        # Game Script Branch - processes team passing volume, game script factors, vegas correlation
-        self.script_branch = nn.Sequential(
-            nn.Linear(input_size, 64),
-            nn.LayerNorm(64),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(64, 32),
-            nn.LayerNorm(32),
-            nn.ReLU(),
-            nn.Dropout(0.15),
+        self.script_branch = PositionSpecificBranch(
+            in_features=input_size,
+            branch_sizes=[64, 32],
+            dropout_rates=[0.2, 0.15],
+            activation="relu",
+            normalization="layer"
         )
 
-        # Efficiency Branch - processes catch rate, YAC efficiency, ceiling indicators
-        self.efficiency_branch = nn.Sequential(
-            nn.Linear(input_size, 48),
-            nn.LayerNorm(48),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(48, 24),
-            nn.LayerNorm(24),
-            nn.ReLU(),
-            nn.Dropout(0.15),
+        self.efficiency_branch = PositionSpecificBranch(
+            in_features=input_size,
+            branch_sizes=[48, 24],
+            dropout_rates=[0.2, 0.15],
+            activation="relu",
+            normalization="layer"
         )
 
-        # Attention mechanism for branch importance
+        # Use built-in attention
         self.attention = nn.MultiheadAttention(32, num_heads=4, batch_first=True)
 
-        # Combined processing after multi-head extraction
-        combined_size = 32 + 32 + 32 + 24  # Sum of branch outputs: 120
-        self.combination_layers = nn.Sequential(
-            nn.Linear(combined_size, 80),
-            nn.LayerNorm(80),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(80, 40),
-            nn.LayerNorm(40),
-            nn.ReLU(),
-            nn.Dropout(0.15),
+        # Combined processing using FeatureExtractor
+        combined_size = 32 + 32 + 32 + 24  # 120 total
+        self.combination = FeatureExtractor(
+            input_size=combined_size,
+            layer_sizes=[80, 40],
+            dropout_rates=[0.2, 0.15],
+            use_residual=False,
+            normalization="layer",
+            activation="relu"
         )
 
-        # Output layers - NO sigmoid compression (learned from optimization guide)
+        # Simple output head
         self.output = nn.Sequential(
             nn.Linear(40, 20),
             nn.ReLU(),
-            nn.Linear(20, 10),
-            nn.ReLU(),
-            nn.Linear(10, 1),
-            # NO Sigmoid - allows full range output (2-40 points)
-            nn.ReLU(),  # Ensures non-negative output
+            nn.Linear(20, 1),
+            nn.ReLU()  # Ensures non-negative
         )
-
-        # Initialize weights properly
-        self._init_weights()
-
-    def _init_weights(self):
-        """Initialize weights with Xavier/Glorot initialization for better gradient flow."""
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight, gain=1.0)
-                if module.bias is not None:
-                    # Small random bias initialization for diversity
-                    nn.init.uniform_(module.bias, -0.1, 0.1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Multi-head feature extraction
@@ -3270,138 +2758,110 @@ class TENetwork(nn.Module):
         # Process combined features
         processed = self.combination_layers(combined)
 
-        # Generate output with proper scaling (2-40 point range for TEs)
-        raw_output = self.output(processed)
+        # Generate output
+        output = self.output(processed)
 
-        # Apply scaling similar to other position networks for consistency
-        scaled_output = raw_output * POSITION_RANGES["TE"]
-
-        return scaled_output
+        # Don't apply ReLU here - clipping happens after denormalization
+        # Return squeezed output to match expected shape [batch_size]
+        return output.squeeze(-1)
 
 
 class DEFNetwork(nn.Module):
-    """Enhanced neural network architecture for defense predictions with research-based improvements."""
+    """Neural network architecture for defense predictions using modular components."""
 
     def __init__(self, input_size: int):
         super().__init__()
 
-        # Increased capacity for better DST pattern recognition (Research Finding: DST needs more complex modeling)
-        self.feature_extraction = nn.Sequential(
-            nn.Linear(input_size, 128),  # Increased from 64
-            nn.LayerNorm(128),  # Better than BatchNorm for smaller datasets
-            nn.GELU(),  # Better activation for complex patterns
-            nn.Dropout(0.4),
-            nn.Linear(128, 96),  # Additional layer for complexity
-            nn.LayerNorm(96),
-            nn.GELU(),
-            nn.Dropout(0.3),
-            nn.Linear(96, 64),
-            nn.LayerNorm(64),
-            nn.GELU(),
-            nn.Dropout(0.25),
+        # Feature extraction backbone with increased capacity for DST patterns
+        self.feature_extractor = FeatureExtractor(
+            input_size=input_size,
+            hidden_sizes=[128, 96, 64],
+            dropout_rate=0.3,
+            activation="gelu",
+            use_residual=True
         )
 
-        # Enhanced specialized branches based on research insights
-        # Research Finding: Pressure rate is #1 predictor
-        self.pressure_branch = nn.Sequential(
-            nn.Linear(64, 32),
-            nn.LayerNorm(32),
-            nn.GELU(),
-            nn.Dropout(0.2),
-            nn.Linear(32, 20),
-            nn.GELU(),
-            nn.Dropout(0.15),
+        # Specialized branches for DST-specific patterns
+        # Pressure rate (#1 predictor)
+        self.pressure_branch = PositionSpecificBranch(
+            input_size=64,
+            hidden_sizes=[32, 20],
+            output_size=20,
+            dropout_rate=0.2,
+            activation="gelu"
         )
 
-        # Research Finding: Turnovers correlate more with scoring than points allowed
-        self.turnover_branch = nn.Sequential(
-            nn.Linear(64, 24),
-            nn.LayerNorm(24),
-            nn.GELU(),
-            nn.Dropout(0.2),
-            nn.Linear(24, 16),
-            nn.GELU(),
-            nn.Dropout(0.15),
+        # Turnovers (correlate with scoring)
+        self.turnover_branch = PositionSpecificBranch(
+            input_size=64,
+            hidden_sizes=[24, 16],
+            output_size=16,
+            dropout_rate=0.2,
+            activation="gelu"
         )
 
-        # Points allowed with non-linear tiered scoring
-        self.points_branch = nn.Sequential(
-            nn.Linear(64, 20),
-            nn.LayerNorm(20),
-            nn.GELU(),
-            nn.Dropout(0.2),
-            nn.Linear(20, 12),
-            nn.GELU(),
-            nn.Dropout(0.1),
+        # Points allowed (non-linear tiered scoring)
+        self.points_branch = PositionSpecificBranch(
+            input_size=64,
+            hidden_sizes=[20, 12],
+            output_size=12,
+            dropout_rate=0.2,
+            activation="gelu"
         )
 
-        # Game script and special teams branch (research finding: critical for DST)
-        self.gamescript_branch = nn.Sequential(
-            nn.Linear(64, 16),
-            nn.LayerNorm(16),
-            nn.GELU(),
-            nn.Dropout(0.15),
-            nn.Linear(16, 10),
-            nn.GELU(),
-            nn.Dropout(0.1),
+        # Game script and special teams
+        self.gamescript_branch = PositionSpecificBranch(
+            input_size=64,
+            hidden_sizes=[16, 10],
+            output_size=10,
+            dropout_rate=0.15,
+            activation="gelu"
         )
 
-        # Enhanced output processing with attention mechanism
+        # Attention-based fusion of branches
         combined_size = 20 + 16 + 12 + 10  # 58 total
-        self.attention = nn.MultiheadAttention(
-            combined_size, num_heads=2, dropout=0.1, batch_first=True
+        self.attention_fusion = AttentionBlock(
+            embed_dim=combined_size,
+            num_heads=2,
+            dropout=0.1
         )
-        self.attention_norm = nn.LayerNorm(combined_size)
 
-        self.output = nn.Sequential(
-            nn.Linear(combined_size, 32),
-            nn.LayerNorm(32),
-            nn.GELU(),
-            nn.Dropout(0.15),
-            nn.Linear(32, 16),
-            nn.LayerNorm(16),
-            nn.GELU(),
-            nn.Dropout(0.1),
+        # Final output processing
+        self.output_processor = FeatureExtractor(
+            input_size=combined_size,
+            hidden_sizes=[32, 16],
+            dropout_rate=0.15,
+            activation="gelu",
+            use_residual=False
+        )
+
+        self.final_layer = nn.Sequential(
             nn.Linear(16, 1),
-            nn.Sigmoid(),
+            nn.Sigmoid()
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Feature extraction
-        features = self.feature_extraction(x)
+        # Extract features
+        features = self.feature_extractor(x)
 
-        # Specialized branches
-        pressure_features = self.pressure_branch(features)
-        turnover_features = self.turnover_branch(features)
-        points_features = self.points_branch(features)
-        gamescript_features = self.gamescript_branch(features)
+        # Process through specialized branches
+        pressure = self.pressure_branch(features)
+        turnovers = self.turnover_branch(features)
+        points = self.points_branch(features)
+        gamescript = self.gamescript_branch(features)
 
-        # Combine all branches
-        combined = torch.cat(
-            [
-                pressure_features,
-                turnover_features,
-                points_features,
-                gamescript_features,
-            ],
-            dim=1,
-        )
+        # Combine branch outputs
+        combined = torch.cat([pressure, turnovers, points, gamescript], dim=1)
 
-        # Apply attention for feature importance weighting
-        if combined.dim() == 2:
-            combined_expanded = combined.unsqueeze(
-                1
-            )  # Add sequence dimension for attention
-            attended, _ = self.attention(
-                combined_expanded, combined_expanded, combined_expanded
-            )
-            attended = attended.squeeze(1)  # Remove sequence dimension
-            combined = self.attention_norm(attended + combined)  # Residual connection
+        # Apply attention fusion
+        attended = self.attention_fusion(combined)
 
-        # Final output
-        output = self.output(combined)
-        scaled_output = output * POSITION_RANGES["DEF"]
-        return scaled_output
+        # Final processing
+        processed = self.output_processor(attended)
+        output = self.final_layer(processed)
+
+        # Return squeezed output to match expected shape [batch_size]
+        return output.squeeze(-1)
 
 
 class QBNeuralModel(BaseNeuralModel):
@@ -3430,12 +2890,13 @@ class RBNeuralModel(BaseNeuralModel):
     def build_network(self, input_size: int) -> nn.Module:
         return RBNetwork(input_size)
 
-    def train_rb_model(self, X_train, y_train, X_val, y_val, salaries_train=None):
+    def train_rb_model(self, X_train, y_train, X_val, y_val):
         """Special training for RB models with validation."""
 
         # Validate input data
         assert y_train.min() >= 0, "Negative fantasy points in training"
-        assert y_train.max() <= 60, "Unrealistic max points in training"
+        max_allowed = POSITION_RANGES["RB"][1]
+        assert y_train.max() <= max_allowed, f"Unrealistic max points in training: {y_train.max()} > {max_allowed}"
         assert y_train.std() > 2, "Insufficient variance in training labels"
 
         # Add sample weights based on recency
@@ -3495,8 +2956,9 @@ class RBNeuralModel(BaseNeuralModel):
                 assert val_preds_np.min() >= 2, (
                     f"RB predictions too low: {val_preds_np.min()}"
                 )
-                assert val_preds_np.max() <= 40, (
-                    f"RB predictions too high: {val_preds_np.max()}"
+                max_allowed = POSITION_RANGES["RB"][1]
+                assert val_preds_np.max() <= max_allowed, (
+                    f"RB predictions too high: {val_preds_np.max()} > {max_allowed}"
                 )
                 assert val_preds_np.std() > 2, (
                     f"RB predictions lack variance: {val_preds_np.std()}"
@@ -3518,12 +2980,13 @@ class WRNeuralModel(BaseNeuralModel):
     def build_network(self, input_size: int) -> nn.Module:
         return WRNetwork(input_size)
 
-    def train_wr_model(self, X_train, y_train, X_val, y_val, salaries_train=None):
+    def train_wr_model(self, X_train, y_train, X_val, y_val):
         """Special training for WR models with target share validation."""
 
         # Validate input data
         assert y_train.min() >= 0, "Negative fantasy points in training"
-        assert y_train.max() <= 50, "Unrealistic max points for WR"
+        max_allowed = POSITION_RANGES["WR"][1]
+        assert y_train.max() <= max_allowed, f"Unrealistic max points for WR: {y_train.max()} > {max_allowed}"
         assert y_train.std() > 3, "Insufficient variance in WR training labels"
 
         # Custom loss for WR with target share importance
@@ -3577,8 +3040,9 @@ class WRNeuralModel(BaseNeuralModel):
                 assert val_preds_np.min() >= 1, (
                     f"WR predictions too low: {val_preds_np.min()}"
                 )
-                assert val_preds_np.max() <= 45, (
-                    f"WR predictions too high: {val_preds_np.max()}"
+                max_allowed = POSITION_RANGES["WR"][1]
+                assert val_preds_np.max() <= max_allowed, (
+                    f"WR predictions too high: {val_preds_np.max()} > {max_allowed}"
                 )
                 assert val_preds_np.std() > 3, (
                     f"WR predictions lack variance: {val_preds_np.std()}"
@@ -3602,13 +3066,14 @@ class TENeuralModel(BaseNeuralModel):
     def build_network(self, input_size: int) -> nn.Module:
         return TENetwork(input_size)
 
-    def train_te_model(self, X_train, y_train, X_val, y_val, salaries_train=None):
+    def train_te_model(self, X_train, y_train, X_val, y_val):
         """Specialized training for TE models focusing on TE-specific patterns."""
 
         # Validate input data for TE-specific ranges
         assert y_train.min() >= 0, "Negative fantasy points in training"
-        assert y_train.max() <= 50, (
-            "Unrealistic max points in training (TEs typically 2-35)"
+        max_allowed = POSITION_RANGES["TE"][1]
+        assert y_train.max() <= max_allowed, (
+            f"Unrealistic max points in training: {y_train.max()} > {max_allowed}"
         )
         assert y_train.std() > 1.5, "Insufficient variance in TE training labels"
 
@@ -3689,7 +3154,7 @@ class TENeuralModel(BaseNeuralModel):
 
         # Add learning rate scheduler for better convergence
         torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode="min", factor=0.7, patience=15, verbose=True
+            self.optimizer, mode="min", factor=0.7, patience=15
         )
 
         try:
@@ -3716,8 +3181,9 @@ class TENeuralModel(BaseNeuralModel):
                 assert val_preds_np.min() >= 1.5, (
                     f"TE predictions too low: {val_preds_np.min()}"
                 )
-                assert val_preds_np.max() <= 45, (
-                    f"TE predictions too high: {val_preds_np.max()}"
+                max_allowed = POSITION_RANGES["TE"][1]
+                assert val_preds_np.max() <= max_allowed, (
+                    f"TE predictions too high: {val_preds_np.max()} > {max_allowed}"
                 )
                 assert pred_std > 1.5, (
                     f"TE predictions lack variance (zero variance issue): {pred_std}"
@@ -3872,6 +3338,14 @@ class DEFCatBoostModel:
             1 - np.sum((y_val - val_pred) ** 2) / val_ss_tot if val_ss_tot > 0 else 0.0
         )
 
+        # Calculate Spearman correlation for DST (primary metric)
+        from scipy.stats import spearmanr
+        train_spearman, _ = spearmanr(y, train_pred)
+        val_spearman, _ = spearmanr(y_val, val_pred)
+
+        # Log Spearman for DST since it's the primary metric
+        logger.info(f"CatBoost Training: MAE={val_mae:.3f}, R²={val_r2:.3f}, Spearman={val_spearman:.3f}")
+
         self.is_trained = True
         training_time = time.time() - start_time
 
@@ -3898,6 +3372,8 @@ class DEFCatBoostModel:
             training_samples=len(X),
             validation_samples=len(X_val),
             feature_count=X.shape[1],
+            train_spearman=train_spearman,
+            val_spearman=val_spearman,
         )
 
         self.training_history.append(result.__dict__)
@@ -4648,17 +4124,27 @@ class EnsembleModel:
 
         # Save the optimized hyperparameters to YAML config if available
         # Only save neural network parameters (not XGBoost ones) to avoid confusion
+        # IMPORTANT: Only save if the trial was successful (not -1.0 score)
         if HAS_HYPERPARAMETER_MANAGER:
-            nn_only_params = {
-                k: v for k, v in combined_params.items() if not k.startswith("xgb_")
-            }
-            hyperparameter_manager = get_hyperparameter_manager()
-            hyperparameter_manager.update_hyperparameters(
-                position=self.position,
-                new_params=nn_only_params,
-                validation_r2=None,  # Will be updated after training
-                trials=n_trials,
-            )
+            # Check if the neural model training was successful
+            # The tuner sets _last_mae to best_score, which is -1.0 on failure
+            if (hasattr(self.neural_model, '_last_mae') and
+                self.neural_model._last_mae > -1.0 and
+                self.neural_model._last_mae != float('inf')):
+                nn_only_params = {
+                    k: v for k, v in combined_params.items() if not k.startswith("xgb_")
+                }
+                hyperparameter_manager = get_hyperparameter_manager()
+                hyperparameter_manager.update_hyperparameters(
+                    position=self.position,
+                    new_params=nn_only_params,
+                    validation_r2=None,  # Will be updated after training
+                    trials=n_trials,
+                )
+            else:
+                logger.warning(
+                    f"Not saving hyperparameters for {self.position} - trial failed or metrics didn't pass guardrails"
+                )
 
         return combined_params
 
@@ -4683,9 +4169,7 @@ class EnsembleModel:
         # Ensemble prediction: weighted average (XGBoost gets higher weight due to better performance)
         ensemble_pred = 0.7 * xgb_pred + 0.3 * nn_result.point_estimate
 
-        # Apply QB scaling if this is a QB model
-        if hasattr(self.config, "position") and self.config.position == "QB":
-            ensemble_pred = ensemble_pred * POSITION_RANGES["QB"]
+        # No need for scaling - models should output in the correct range
 
         # Use neural network uncertainty estimates with slight adjustment
         uncertainty = (
