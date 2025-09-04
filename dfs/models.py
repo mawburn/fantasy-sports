@@ -1356,8 +1356,13 @@ class CorrelationFeatureExtractor:
         self.db_path = db_path
 
     def _get_connection(self) -> sqlite3.Connection:
-        """Get database connection."""
-        return sqlite3.connect(self.db_path)
+        """Get database connection with fast timeout for concurrent access."""
+        conn = sqlite3.connect(self.db_path, timeout=5.0)
+        conn.execute("PRAGMA foreign_keys = ON")  # Enable foreign key constraints
+        conn.execute("PRAGMA journal_mode = WAL")  # Enable WAL mode for better concurrency
+        conn.execute("PRAGMA synchronous = NORMAL")  # Balance safety and performance
+        conn.execute("PRAGMA busy_timeout = 5000")  # 5 second busy timeout - fail fast
+        return conn
 
     def extract_qb_correlation_features(
         self, player_id: int, game_id: int, lookback_weeks: int = 4

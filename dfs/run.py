@@ -27,6 +27,7 @@ from data import (
     import_spreadspoke_data,
     load_draftkings_csv,
 )
+from calculate_snaps import calculate_snap_counts_from_pbp
 from models import ModelConfig, create_model
 from optimize import (
     LineupConstraints,
@@ -50,15 +51,20 @@ DEFAULT_OUTPUT_DIR = "lineups"
 
 
 def get_available_seasons(db_path: str = DEFAULT_DB_PATH) -> List[int]:
-    """Get all seasons available in the database."""
-    conn = get_db_connection(db_path)
-    try:
-        seasons = conn.execute(
-            "SELECT DISTINCT season FROM games ORDER BY season"
-        ).fetchall()
+    """Get all seasons with completed games available in the database."""
+    with get_db_connection(db_path) as conn:
+        # Only return seasons that have finished games with player stats
+        seasons = conn.execute("""
+            SELECT DISTINCT g.season
+            FROM games g
+            WHERE g.game_finished = 1
+            AND EXISTS (
+                SELECT 1 FROM player_stats ps
+                WHERE ps.game_id = g.id
+            )
+            ORDER BY g.season
+        """).fetchall()
         return [season[0] for season in seasons]
-    finally:
-        conn.close()
 
 
 def get_position_specific_seasons(
@@ -1164,12 +1170,25 @@ def main():
     if args.command == "collect":
         seasons = args.seasons or [2023, 2024]
         logger.info(f"Collecting data for seasons: {seasons}")
+
+        # Step 1: Collect base NFL data with enhanced columns
         collect_nfl_data(seasons, DEFAULT_DB_PATH)
 
+        # Step 2: Calculate snap counts and usage metrics from play-by-play
+        logger.info("Calculating snap counts and usage metrics from play-by-play data...")
+        for season in seasons:
+            try:
+                calculate_snap_counts_from_pbp(season, DEFAULT_DB_PATH)
+                logger.info(f"✓ Calculated snap counts for {season}")
+            except Exception as e:
+                logger.warning(f"Could not calculate snap counts for {season}: {e}")
+
+        # Step 3: Load DraftKings salaries if provided
         if args.csv:
             logger.info(f"Integrating DraftKings salaries from {args.csv}")
             load_draftkings_csv(args.csv, None, DEFAULT_DB_PATH)
 
+        # Note: Injuries option removed - only current injury data available
         if args.injuries:
             logger.info("Collecting injury data from NFL library...")
             collect_injury_data(seasons, DEFAULT_DB_PATH)

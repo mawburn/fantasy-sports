@@ -778,6 +778,9 @@ DB_SCHEMA = {
             passing_yards REAL DEFAULT 0,
             passing_tds INTEGER DEFAULT 0,
             passing_interceptions INTEGER DEFAULT 0,
+            passing_attempts INTEGER DEFAULT 0,
+            passing_completions INTEGER DEFAULT 0,
+            sack_yards REAL DEFAULT 0,
             rushing_yards REAL DEFAULT 0,
             rushing_attempts INTEGER DEFAULT 0,
             rushing_tds INTEGER DEFAULT 0,
@@ -785,11 +788,23 @@ DB_SCHEMA = {
             targets INTEGER DEFAULT 0,
             receptions INTEGER DEFAULT 0,
             receiving_tds INTEGER DEFAULT 0,
+            receiving_air_yards REAL DEFAULT 0,
+            receiving_yac REAL DEFAULT 0,
+            fumbles INTEGER DEFAULT 0,
             fumbles_lost INTEGER DEFAULT 0,
             passing_2pt_conversions INTEGER DEFAULT 0,
             rushing_2pt_conversions INTEGER DEFAULT 0,
             receiving_2pt_conversions INTEGER DEFAULT 0,
             special_teams_tds INTEGER DEFAULT 0,
+            return_yards REAL DEFAULT 0,
+            snap_count INTEGER DEFAULT 0,
+            snap_percentage REAL DEFAULT 0,
+            route_participation REAL DEFAULT 0,
+            target_share REAL DEFAULT 0,
+            rush_attempt_share REAL DEFAULT 0,
+            red_zone_targets INTEGER DEFAULT 0,
+            red_zone_touches INTEGER DEFAULT 0,
+            opportunity_share REAL DEFAULT 0,
             fantasy_points REAL DEFAULT 0,
             FOREIGN KEY (player_id) REFERENCES players (id),
             FOREIGN KEY (game_id) REFERENCES games (id),
@@ -955,11 +970,12 @@ def get_db_connection(db_path: str = "data/nfl_dfs.db") -> sqlite3.Connection:
     db_file = Path(db_path)
     db_file.parent.mkdir(parents=True, exist_ok=True)
 
-    # Use very short timeout - fail fast instead of waiting
-    conn = sqlite3.connect(db_path, timeout=1.0)
+    # Use short timeout to fail fast on locks
+    conn = sqlite3.connect(db_path, timeout=5.0)
     conn.execute("PRAGMA foreign_keys = ON")  # Enable foreign key constraints
     conn.execute("PRAGMA journal_mode = WAL")  # Enable WAL mode for better concurrency
     conn.execute("PRAGMA synchronous = NORMAL")  # Balance safety and performance
+    conn.execute("PRAGMA busy_timeout = 5000")  # 5 second busy timeout - fail fast
     return conn
 
 
@@ -1050,10 +1066,10 @@ def collect_nfl_data(seasons: List[int], db_path: str = "data/nfl_dfs.db") -> No
         logger.error("nfl_data_py not available")
         return
 
-    conn = get_db_connection(db_path)
-
-    try:
-        for season in seasons:
+    for season in seasons:
+        # Use a fresh connection for each season to avoid long-held locks
+        conn = get_db_connection(db_path)
+        try:
             logger.info(f"Collecting data for {season} season...")
 
             try:
@@ -1146,13 +1162,16 @@ def collect_nfl_data(seasons: List[int], db_path: str = "data/nfl_dfs.db") -> No
                         # Calculate DraftKings fantasy points
                         fantasy_points = calculate_dk_fantasy_points(player_week)
 
-                        # Convert and validate all numeric fields
+                        # Convert and validate all numeric fields - now with enhanced stats
                         stats_data = (
                             player_id,
                             game_id,
                             safe_float(player_week.get("passing_yards", 0)),
                             safe_int(player_week.get("passing_tds", 0)),
                             safe_int(player_week.get("interceptions", 0)),
+                            safe_int(player_week.get("attempts", 0)),  # passing attempts
+                            safe_int(player_week.get("completions", 0)),  # passing completions
+                            safe_float(player_week.get("sack_yards", 0)),
                             safe_float(player_week.get("rushing_yards", 0)),
                             safe_int(player_week.get("carries", 0)),
                             safe_int(player_week.get("rushing_tds", 0)),
@@ -1160,21 +1179,38 @@ def collect_nfl_data(seasons: List[int], db_path: str = "data/nfl_dfs.db") -> No
                             safe_int(player_week.get("targets", 0)),
                             safe_int(player_week.get("receptions", 0)),
                             safe_int(player_week.get("receiving_tds", 0)),
+                            safe_float(player_week.get("receiving_air_yards", 0)),
+                            safe_float(player_week.get("receiving_yards_after_catch", 0)),
+                            safe_int(player_week.get("sack_fumbles", 0)) + safe_int(player_week.get("rushing_fumbles", 0)) + safe_int(player_week.get("receiving_fumbles", 0)),  # total fumbles
                             safe_int(player_week.get("fumbles_lost", 0)),
                             safe_int(player_week.get("passing_2pt_conversions", 0)),
                             safe_int(player_week.get("rushing_2pt_conversions", 0)),
                             safe_int(player_week.get("receiving_2pt_conversions", 0)),
                             safe_int(player_week.get("special_teams_tds", 0)),
+                            0,  # return_yards not available in nfl_data_py
+                            0,  # snap_count - will be updated by calculate_snap_counts_from_pbp
+                            0,  # snap_percentage - will be updated by calculate_snap_counts_from_pbp
+                            0,  # route_participation not available without NGS data
+                            safe_float(player_week.get("target_share", 0)),
+                            safe_float(player_week.get("carry_share", 0)) if player_week.get("carry_share") else 0,
+                            safe_int(player_week.get("red_zone_targets", 0)) if player_week.get("red_zone_targets") else 0,
+                            safe_int(player_week.get("red_zone_carries", 0)) if player_week.get("red_zone_carries") else 0,  # red zone touches
+                            safe_float(player_week.get("wopr", 0)) if player_week.get("wopr") else 0,  # opportunity share (Weighted Opportunity Rating)
                             fantasy_points,
                         )
 
                         conn.execute(
                             """INSERT OR REPLACE INTO player_stats
                                (player_id, game_id, passing_yards, passing_tds, passing_interceptions,
+                                passing_attempts, passing_completions, sack_yards,
                                 rushing_yards, rushing_attempts, rushing_tds, receiving_yards, targets,
-                                receptions, receiving_tds, fumbles_lost, passing_2pt_conversions,
-                                rushing_2pt_conversions, receiving_2pt_conversions, special_teams_tds, fantasy_points)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                receptions, receiving_tds, receiving_air_yards, receiving_yac,
+                                fumbles, fumbles_lost, passing_2pt_conversions,
+                                rushing_2pt_conversions, receiving_2pt_conversions, special_teams_tds,
+                                return_yards, snap_count, snap_percentage, route_participation,
+                                target_share, rush_attempt_share, red_zone_targets, red_zone_touches,
+                                opportunity_share, fantasy_points)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                             stats_data,
                         )
                     except Exception as e:
@@ -1198,18 +1234,23 @@ def collect_nfl_data(seasons: List[int], db_path: str = "data/nfl_dfs.db") -> No
             conn.commit()
             logger.info(f"Completed {season} season")
 
-            # Populate DFS scores table for the completed season
+            # Close the connection BEFORE populating DFS scores to avoid locks
+            conn.close()
+
+            # Populate DFS scores table for the completed season (opens its own connection)
             try:
                 logger.info(f"Populating DFS scores for {season} season...")
                 populate_dfs_scores_for_season(season, db_path)
             except Exception as e:
                 logger.warning(f"Could not populate DFS scores for {season}: {e}")
 
-    except Exception as e:
-        logger.error(f"Error collecting NFL data: {e}")
-        raise
-    finally:
-        conn.close()
+        except Exception as e:
+            logger.error(f"Error collecting NFL data for season {season}: {e}")
+            conn.rollback()
+            raise
+        finally:
+            # Always close the connection for this season
+            conn.close()
 
 
 def get_team_id_by_abbr(team_abbr: str, conn: sqlite3.Connection) -> Optional[int]:
@@ -4030,9 +4071,7 @@ def get_dst_training_data(
     seasons: List[int], db_path: str = "data/nfl_dfs.db"
 ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     """Get DST training data using ONLY historical features (no current-game data leakage)."""
-    conn = get_db_connection(db_path)
-
-    try:
+    with get_db_connection(db_path) as conn:
         # FIXED: Get DST features without using current game stats (prevents data leakage)
         data_query = """
             SELECT
@@ -4296,12 +4335,6 @@ def get_dst_training_data(
         logger.info(f"Features: {feature_names}")
         return X, y, feature_names
 
-    except Exception as e:
-        logger.error(f"Error getting DST training data: {e}")
-        return np.array([]), np.array([]), []
-    finally:
-        conn.close()
-
 
 def batch_get_defensive_features(
     opponent_abbr: str, season: int, week: int, conn: sqlite3.Connection
@@ -4368,9 +4401,7 @@ def get_training_data(
     if position in ["DST", "DEF"]:
         return get_dst_training_data(seasons, db_path)
 
-    conn = get_db_connection(db_path)
-
-    try:
+    with get_db_connection(db_path) as conn:
         logger.info(f"Loading training data for {position} position...")
 
         # Get all player-game combinations for the position from dfs_scores table
@@ -4405,13 +4436,18 @@ def get_training_data(
         # Pre-compute all player stats in batch to avoid N+1 queries
         player_ids = list(set(row[0] for row in rows))
 
-        # Batch load recent stats for all players with ALL columns
+        # Batch load recent stats for all players with ALL columns including new ones
         player_stats_query = """
             SELECT ps.player_id, ps.game_id, ps.fantasy_points, ps.passing_yards,
                    ps.rushing_yards, ps.receiving_yards, ps.targets, ps.passing_tds,
                    ps.rushing_tds, ps.receiving_tds, ps.passing_interceptions, ps.fumbles_lost,
                    ps.rushing_attempts, ps.receptions,
-                   g.game_date, g.season, g.week
+                   g.game_date, g.season, g.week,
+                   ps.passing_attempts, ps.passing_completions, ps.sack_yards,
+                   ps.receiving_air_yards, ps.receiving_yac, ps.fumbles,
+                   ps.snap_count, ps.snap_percentage, ps.target_share,
+                   ps.rush_attempt_share, ps.red_zone_targets, ps.red_zone_touches,
+                   ps.opportunity_share, ps.route_participation, ps.return_yards
             FROM player_stats ps
             JOIN games g ON ps.game_id = g.id
             WHERE ps.player_id IN ({})
@@ -5737,12 +5773,6 @@ def get_training_data(
         )
         return X, y, feature_names
 
-    except Exception as e:
-        logger.error(f"Error getting training data for {position}: {e}")
-        return np.array([]), np.array([]), []
-    finally:
-        conn.close()
-
 
 def compute_features_from_stats(
     player_stats: List[Tuple], target_game_date, lookback_weeks: int = 4
@@ -5777,11 +5807,16 @@ def compute_features_from_stats(
     if not recent_stats:
         return features
 
-    # Extract all stats from enhanced query
+    # Extract all stats from enhanced query with new columns
     # Schema: player_id(0), game_id(1), fantasy_points(2), passing_yards(3),
     #         rushing_yards(4), receiving_yards(5), targets(6), passing_tds(7),
     #         rushing_tds(8), receiving_tds(9), passing_interceptions(10), fumbles_lost(11),
-    #         rushing_attempts(12), receptions(13), game_date(14), season(15), week(16)
+    #         rushing_attempts(12), receptions(13), game_date(14), season(15), week(16),
+    #         passing_attempts(17), passing_completions(18), sack_yards(19),
+    #         receiving_air_yards(20), receiving_yac(21), fumbles(22),
+    #         snap_count(23), snap_percentage(24), target_share(25),
+    #         rush_attempt_share(26), red_zone_targets(27), red_zone_touches(28),
+    #         opportunity_share(29), route_participation(30), return_yards(31)
 
     recent_points = [stat[2] for stat in recent_stats if stat[2] is not None]
     recent_pass_yards = [stat[3] for stat in recent_stats if stat[3] is not None]
@@ -5795,6 +5830,18 @@ def compute_features_from_stats(
     recent_fumbles = [stat[11] for stat in recent_stats if stat[11] is not None]
     recent_rush_attempts = [stat[12] for stat in recent_stats if stat[12] is not None]
     recent_receptions = [stat[13] for stat in recent_stats if stat[13] is not None]
+
+    # Extract new advanced stats if available (indices 17+)
+    recent_pass_att = [stat[17] for stat in recent_stats if len(stat) > 17 and stat[17] is not None]
+    recent_completions = [stat[18] for stat in recent_stats if len(stat) > 18 and stat[18] is not None]
+    recent_air_yards = [stat[20] for stat in recent_stats if len(stat) > 20 and stat[20] is not None]
+    recent_yac = [stat[21] for stat in recent_stats if len(stat) > 21 and stat[21] is not None]
+    # Skip snap_pct (24) and route_participation (30) as they're unreliable/empty
+    recent_target_share = [stat[25] for stat in recent_stats if len(stat) > 25 and stat[25] is not None]
+    recent_rush_share = [stat[26] for stat in recent_stats if len(stat) > 26 and stat[26] is not None]
+    recent_rz_targets = [stat[27] for stat in recent_stats if len(stat) > 27 and stat[27] is not None]
+    recent_rz_touches = [stat[28] for stat in recent_stats if len(stat) > 28 and stat[28] is not None]
+    recent_opp_share = [stat[29] for stat in recent_stats if len(stat) > 29 and stat[29] is not None]
 
     # Compute basic averages
     features["avg_fantasy_points"] = np.mean(recent_points) if recent_points else 0
@@ -5819,6 +5866,21 @@ def compute_features_from_stats(
         np.mean(recent_rush_attempts) if recent_rush_attempts else 0
     )
     features["avg_receptions"] = np.mean(recent_receptions) if recent_receptions else 0
+
+    # Add new advanced metrics (skip snap_pct as calculation is incorrect)
+    features["avg_target_share"] = np.mean(recent_target_share) if recent_target_share else 0
+    features["avg_rush_share"] = np.mean(recent_rush_share) if recent_rush_share else 0
+    features["avg_rz_targets"] = np.mean(recent_rz_targets) if recent_rz_targets else 0
+    features["avg_rz_touches"] = np.mean(recent_rz_touches) if recent_rz_touches else 0
+    features["avg_opportunity_share"] = np.mean(recent_opp_share) if recent_opp_share else 0
+    features["avg_air_yards"] = np.mean(recent_air_yards) if recent_air_yards else 0
+    features["avg_yac"] = np.mean(recent_yac) if recent_yac else 0
+
+    # Passing efficiency metrics if we have attempts
+    if recent_pass_att and recent_completions:
+        features["completion_pct"] = np.mean([c/a for c, a in zip(recent_completions, recent_pass_att) if a > 0])
+    else:
+        features["completion_pct"] = 0
 
     # Advanced metrics
     if recent_rush_attempts and recent_rush_yards:
@@ -6810,13 +6872,14 @@ def populate_dfs_scores_for_season(
     """
     Populate DFS scores table with data from player_stats and dst_stats for a given season.
 
+    This version avoids connection locks by closing connections before inserts.
+
     Args:
         season: Season year to populate data for
         db_path: Path to SQLite database
     """
-    conn = get_db_connection(db_path)
-
-    try:
+    # Step 1: Get player data and close connection
+    with get_db_connection(db_path) as conn:
         # Query all player stats and game data for the season
         player_query = """
             SELECT
@@ -6836,14 +6899,16 @@ def populate_dfs_scores_for_season(
             JOIN games g ON ps.game_id = g.id
             WHERE g.season = ? AND ps.fantasy_points > 0
         """
-
         player_data = pd.read_sql_query(player_query, conn, params=[season])
+    # Connection closed here
 
-        if not player_data.empty:
-            # Insert player DFS scores
-            insert_dfs_scores(player_data, db_path)
-            logger.info(f"Populated {len(player_data)} player DFS scores for {season}")
+    # Step 2: Insert player scores (with its own connection)
+    if not player_data.empty:
+        insert_dfs_scores(player_data, db_path)
+        logger.info(f"Populated {len(player_data)} player DFS scores for {season}")
 
+    # Step 3: Get DST data and handle missing players
+    with get_db_connection(db_path) as conn:
         # Query all DST stats for the season
         dst_query = """
             SELECT
@@ -6864,7 +6929,6 @@ def populate_dfs_scores_for_season(
             LEFT JOIN players p ON p.team_id = t.id AND p.position = 'DST'
             WHERE g.season = ? AND ds.fantasy_points > 0
         """
-
         dst_data = pd.read_sql_query(dst_query, conn, params=[season])
 
         if not dst_data.empty:
@@ -6883,23 +6947,17 @@ def populate_dfs_scores_for_season(
 
             # Remove any rows that still have -1 player_id
             dst_data = dst_data[dst_data["player_id"] != -1]
+    # Connection closed here
 
-            if not dst_data.empty:
-                insert_dfs_scores(dst_data, db_path)
-                logger.info(f"Populated {len(dst_data)} DST DFS scores for {season}")
-
-        # DFS scores populated successfully
-
-    except Exception as e:
-        logger.error(f"Failed to populate DFS scores for season {season}: {e}")
-        raise
-    finally:
-        conn.close()
+    # Step 4: Insert DST scores (with its own connection)
+    if not dst_data.empty:
+        insert_dfs_scores(dst_data, db_path)
+        logger.info(f"Populated {len(dst_data)} DST DFS scores for {season}")
 
 
 def insert_dfs_scores(df: pd.DataFrame, db_path: str = "data/nfl_dfs.db") -> None:
     """
-    Insert or replace DFS scores into the dfs_scores table.
+    Insert or replace DFS scores into the dfs_scores table with retry logic for locks.
 
     Args:
         df: DataFrame containing DFS scores with columns:
@@ -6913,64 +6971,103 @@ def insert_dfs_scores(df: pd.DataFrame, db_path: str = "data/nfl_dfs.db") -> Non
             - dfs_points: REAL
         db_path: Path to SQLite database
     """
-    conn = get_db_connection(db_path)
+    import time
 
-    try:
-        # Prepare data for insertion - handle NaN values
-        insert_data = []
-        for _, row in df.iterrows():
-            try:
-                # Skip rows with invalid data
-                if (
-                    pd.isna(row["player_id"])
-                    or pd.isna(row["team_id"])
-                    or pd.isna(row["opponent_id"])
-                ):
-                    continue
-                if (
-                    pd.isna(row["season"])
-                    or pd.isna(row["week"])
-                    or pd.isna(row["dfs_points"])
-                ):
-                    continue
-
-                data_tuple = (
-                    int(row["player_id"]),
-                    int(row["season"]),
-                    int(row["week"]),
-                    int(row["team_id"]),
-                    str(row["position"]),
-                    int(row["opponent_id"]),
-                    row.get("game_id"),  # Can be None
-                    float(row["dfs_points"]),
-                )
-                insert_data.append(data_tuple)
-            except (ValueError, TypeError) as e:
-                logger.warning(f"Skipping invalid row: {e}")
+    # Prepare data for insertion - handle NaN values
+    insert_data = []
+    for _, row in df.iterrows():
+        try:
+            # Skip rows with invalid data
+            if (
+                pd.isna(row["player_id"])
+                or pd.isna(row["team_id"])
+                or pd.isna(row["opponent_id"])
+            ):
+                continue
+            if (
+                pd.isna(row["season"])
+                or pd.isna(row["week"])
+                or pd.isna(row["dfs_points"])
+            ):
                 continue
 
-        # Use INSERT OR REPLACE to handle uniqueness constraint
-        insert_sql = """
-            INSERT OR REPLACE INTO dfs_scores
-            (player_id, season, week, team_id, position, opponent_id, game_id, dfs_points)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """
+            data_tuple = (
+                int(row["player_id"]),
+                int(row["season"]),
+                int(row["week"]),
+                int(row["team_id"]),
+                str(row["position"]),
+                int(row["opponent_id"]),
+                row.get("game_id"),  # Can be None
+                float(row["dfs_points"]),
+            )
+            insert_data.append(data_tuple)
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Skipping invalid row: {e}")
+            continue
 
-        # Insert in batches for efficiency
-        batch_size = 1000
-        for i in range(0, len(insert_data), batch_size):
-            batch = insert_data[i : i + batch_size]
-            conn.executemany(insert_sql, batch)
+    # Now attempt to insert with retry logic
+    max_retries = 5
+    retry_count = 0
+    base_wait = 1.0  # Start with 1 second wait
 
-        conn.commit()
-        logger.info(f"Inserted/updated {len(insert_data)} DFS scores")
+    while retry_count <= max_retries:
+        conn = None
+        try:
+            conn = get_db_connection(db_path)
+            # Set a longer timeout for busy database
+            conn.execute("PRAGMA busy_timeout = 30000")  # 30 seconds
 
-    except Exception as e:
-        logger.error(f"Failed to insert DFS scores: {e}")
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+            # Use INSERT OR REPLACE to handle uniqueness constraint
+            insert_sql = """
+                INSERT OR REPLACE INTO dfs_scores
+                (player_id, season, week, team_id, position, opponent_id, game_id, dfs_points)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """
+
+            # Insert in smaller batches to reduce lock duration
+            batch_size = 100  # Smaller batches = shorter lock time
+            for i in range(0, len(insert_data), batch_size):
+                batch = insert_data[i : i + batch_size]
+                conn.executemany(insert_sql, batch)
+                # Commit after each batch to release locks faster
+                conn.commit()
+
+            logger.info(f"Inserted/updated {len(insert_data)} DFS scores")
+            break  # Success! Exit the retry loop
+
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower() or "database is locked" in str(e).lower():
+                if conn:
+                    try:
+                        conn.rollback()
+                    except:
+                        pass
+                    conn.close()
+
+                retry_count += 1
+                if retry_count <= max_retries:
+                    wait_time = min(base_wait * retry_count, 5.0)  # Linear backoff, max 5 seconds
+                    logger.warning(f"Database locked, waiting {wait_time:.1f}s before retry {retry_count}/{max_retries}")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"Database remained locked after {max_retries} retries")
+                    raise sqlite3.OperationalError(f"Database locked after {max_retries} attempts")
+            else:
+                logger.error(f"Database error: {e}")
+                if conn:
+                    conn.rollback()
+                    conn.close()
+                raise
+        except Exception as e:
+            logger.error(f"Failed to insert DFS scores: {e}")
+            if conn:
+                conn.rollback()
+                conn.close()
+            raise
+        finally:
+            if conn and retry_count > max_retries:
+                conn.close()
 
 
 def calculate_vs_team_avg(

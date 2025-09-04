@@ -14,26 +14,26 @@ defaults:
 positions:
   DST:
     batch_size: 64
-    best_validation_r2: 0.05782438766373965
-    best_validation_mae: 3.708309687192491
-    best_validation_spearman: 0.2516166274255649
+    best_validation_r2: 0.04331141605243072
+    best_validation_mae: 3.6445401949463596
+    best_validation_spearman: 0.2661997618714862
     best_validation_ndcg_at_k: null
-    catboost_bagging_temperature: 0.2779397711994165
-    catboost_border_count: 185
-    catboost_depth: 5
-    catboost_iterations: 3500
-    catboost_l2_leaf_reg: 7.224595318740729
-    catboost_learning_rate: 0.07951773559697924
-    catboost_min_data_in_leaf: 7
-    catboost_random_strength: 0.7760668449262453
+    catboost_bagging_temperature: 0.3184925303881691
+    catboost_border_count: 204
+    catboost_depth: 10
+    catboost_iterations: 4000
+    catboost_l2_leaf_reg: 9.467935384933472
+    catboost_learning_rate: 0.028645750609488086
+    catboost_min_data_in_leaf: 9
+    catboost_random_strength: 1.3679446598447034
     dropout_rate: 0.2
-    epochs: 3500
+    epochs: 4000
     hidden_size: 128
-    last_tuned: "2025-08-22T11:10:00.161164"
-    learning_rate: 0.07951773559697924
+    last_tuned: '2025-09-03T21:58:26.562233'
+    learning_rate: 0.028645750609488086
     num_layers: 2
-    tuning_trials: 500
-    weight_decay: 7.224595318740729
+    tuning_trials: 1000
+    weight_decay: 9.467935384933472
     xgb_colsample_bytree: 0.8
     xgb_learning_rate: 0.1
     xgb_max_depth: 5
@@ -47,7 +47,7 @@ positions:
     dropout_rate: null
     epochs: 500
     hidden_size: 192
-    last_tuned: "2025-08-22T16:17:54.700121"
+    last_tuned: '2025-08-22T16:17:54.700121'
     learning_rate: 0.0044809759182149545
     num_layers: 2
     tuning_trials: 5
@@ -65,7 +65,7 @@ positions:
     dropout_rate: null
     epochs: 500
     hidden_size: 192
-    last_tuned: "2025-08-22T14:59:24.573004"
+    last_tuned: '2025-08-22T14:59:24.573004'
     learning_rate: 0.0044809759182149545
     num_layers: 2
     tuning_trials: 5
@@ -101,7 +101,7 @@ positions:
     dropout_rate: null
     epochs: 500
     hidden_size: 192
-    last_tuned: "2025-08-22T15:04:54.013486"
+    last_tuned: '2025-08-22T15:04:54.013486'
     learning_rate: 0.0044809759182149545
     num_layers: 2
     tuning_trials: 5

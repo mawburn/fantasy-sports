@@ -340,7 +340,7 @@ uv run python test_hyperparameter_tuning.py --position QB --method all
 
 ```bash
 # Step 1: Tune QB model (most complex, benefits most from tuning)
-uv run python run.py train --positions QB --tune-all --trials 30
+uv run python run.py train --positions QB --tune-all --trials 30 --epochs 50
 
 # Step 2: Tune RB model
 uv run python run.py train --positions RB --tune-all --trials 20
