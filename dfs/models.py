@@ -26,7 +26,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
-from helpers import log_model_metrics
+from helpers import log_model_metrics, parse_date_flexible
 
 logger = logging.getLogger(__name__)
 
@@ -1396,7 +1396,7 @@ class CorrelationFeatureExtractor:
             # Parse game_date
             if isinstance(game_date, str):
                 try:
-                    game_date = datetime.strptime(game_date[:10], "%Y-%m-%d").date()
+                    game_date = parse_date_flexible(game_date).date()
                 except ValueError:
                     logger.warning(f"Could not parse game_date: {game_date}")
                     return {}
@@ -1488,7 +1488,7 @@ class CorrelationFeatureExtractor:
             game_date = game_result[0]
             if isinstance(game_date, str):
                 try:
-                    game_date = datetime.strptime(game_date[:10], "%Y-%m-%d").date()
+                    game_date = parse_date_flexible(game_date).date()
                 except ValueError:
                     return {}
 
@@ -1565,7 +1565,7 @@ class CorrelationFeatureExtractor:
 
             if isinstance(game_date, str):
                 try:
-                    game_date = datetime.strptime(game_date[:10], "%Y-%m-%d").date()
+                    game_date = parse_date_flexible(game_date).date()
                 except ValueError:
                     return {}
 

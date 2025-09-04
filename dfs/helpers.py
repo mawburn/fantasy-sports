@@ -5,11 +5,15 @@ calculations or model behavior. They only handle:
 1. Data type conversions
 2. Logging formatting
 3. File path validation
+4. Currency and percentage formatting
+5. Progress display for long-running operations
+6. Date parsing utilities
 
 NO business logic or DFS calculations are included here.
 """
 
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Union
 
@@ -114,3 +118,90 @@ def format_percentage(value: float, decimals: int = 1) -> str:
         Formatted percentage (e.g., "23.4%")
     """
     return f"{value * 100:.{decimals}f}%"
+
+
+class ProgressDisplay:
+    """Simple progress display that updates in place.
+
+    Usage:
+        progress = ProgressDisplay("Loading data")
+        for i, item in enumerate(items):
+            progress.update(i + 1, len(items))
+            # process item
+        progress.finish("Data loaded successfully!")
+    """
+
+    def __init__(self, description: str = "Processing"):
+        self.description = description
+        self.last_percentage = -1
+        self._finished = False
+
+    def update(self, current: int, total: int):
+        """Update progress display with current/total."""
+        if self._finished or total == 0:
+            return
+
+        percentage = int((current / total) * 100)
+
+        # Only update if percentage changed to reduce output
+        if percentage != self.last_percentage:
+            print(f"\r{self.description}: {percentage}%", end="", flush=True)
+            self.last_percentage = percentage
+
+    def finish(self, message: str = None):
+        """Clear the progress line and optionally print a completion message."""
+        if self._finished:
+            return
+
+        self._finished = True
+        if message:
+            print(f"\r{message}")
+        else:
+            print()  # Just add newline to clear the line
+
+
+def parse_date_flexible(date_value: Any) -> datetime:
+    """Parse various date formats flexibly.
+
+    Args:
+        date_value: Date in various formats (datetime object, string, etc.)
+
+    Returns:
+        datetime object
+
+    Raises:
+        ValueError: If the date cannot be parsed
+    """
+    if isinstance(date_value, datetime):
+        return date_value
+
+    if not date_value:
+        raise ValueError("Date value is empty")
+
+    # Convert to string if needed
+    date_str = str(date_value)
+
+    # Remove any time component if present
+    date_str = date_str.split(" ")[0]
+
+    # Try common date formats
+    formats = [
+        "%Y-%m-%d",      # ISO format: 2024-01-15
+        "%m/%d/%Y",      # American: 1/15/2024 or 01/15/2024
+        "%Y/%m/%d",      # Alternative: 2024/01/15
+        "%d-%m-%Y",      # European: 15-01-2024
+        "%d/%m/%Y",      # European: 15/01/2024
+        "%Y%m%d",        # Compact: 20240115
+        "%m-%d-%Y",      # Alternative American: 01-15-2024
+    ]
+
+    for fmt in formats:
+        try:
+            return datetime.strptime(date_str, fmt)
+        except ValueError:
+            continue
+
+    raise ValueError(
+        f"Unable to parse date: '{date_str}'. "
+        f"Expected formats: YYYY-MM-DD, M/D/YYYY, or other common formats"
+    )
