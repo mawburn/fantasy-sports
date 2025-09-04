@@ -32,6 +32,8 @@ from weather import (
     is_outdoor_stadium,
     parse_wind_speed,
 )
+# Import DB_SCHEMA and get_db_connection from db_manager
+from db_manager import DB_SCHEMA, get_db_connection
 
 try:
     import nfl_data_py as nfl
@@ -664,257 +666,6 @@ def create_comprehensive_qb_features(
     return processed_features
 
 
-
-# Database schema - simplified tables
-DB_SCHEMA = {
-    "games": """
-        CREATE TABLE IF NOT EXISTS games (
-            id TEXT PRIMARY KEY,
-            game_date TEXT,
-            season INTEGER,
-            week INTEGER,
-            home_team_id INTEGER,
-            away_team_id INTEGER,
-            home_score INTEGER,
-            away_score INTEGER,
-            game_finished INTEGER DEFAULT 0,
-            stadium TEXT,
-            stadium_neutral INTEGER DEFAULT 0,
-            weather_temperature INTEGER,
-            weather_wind_mph INTEGER,
-            weather_humidity INTEGER,
-            weather_detail TEXT
-        )
-    """,
-    "teams": """
-        CREATE TABLE IF NOT EXISTS teams (
-            id INTEGER PRIMARY KEY,
-            team_abbr TEXT UNIQUE,
-            team_name TEXT,
-            division TEXT,
-            conference TEXT
-        )
-    """,
-    "players": """
-        CREATE TABLE IF NOT EXISTS players (
-            id INTEGER PRIMARY KEY,
-            player_name TEXT,
-            display_name TEXT,
-            position TEXT,
-            team_id INTEGER,
-            gsis_id TEXT,
-            status TEXT DEFAULT 'Active',
-            injury_status TEXT DEFAULT NULL,
-            FOREIGN KEY (team_id) REFERENCES teams (id)
-        )
-    """,
-    "player_stats": """
-        CREATE TABLE IF NOT EXISTS player_stats (
-            id INTEGER PRIMARY KEY,
-            player_id INTEGER,
-            game_id TEXT,
-            passing_yards REAL DEFAULT 0,
-            passing_tds INTEGER DEFAULT 0,
-            passing_interceptions INTEGER DEFAULT 0,
-            passing_attempts INTEGER DEFAULT 0,
-            passing_completions INTEGER DEFAULT 0,
-            sack_yards REAL DEFAULT 0,
-            rushing_yards REAL DEFAULT 0,
-            rushing_attempts INTEGER DEFAULT 0,
-            rushing_tds INTEGER DEFAULT 0,
-            receiving_yards REAL DEFAULT 0,
-            targets INTEGER DEFAULT 0,
-            receptions INTEGER DEFAULT 0,
-            receiving_tds INTEGER DEFAULT 0,
-            receiving_air_yards REAL DEFAULT 0,
-            receiving_yac REAL DEFAULT 0,
-            fumbles INTEGER DEFAULT 0,
-            fumbles_lost INTEGER DEFAULT 0,
-            passing_2pt_conversions INTEGER DEFAULT 0,
-            rushing_2pt_conversions INTEGER DEFAULT 0,
-            receiving_2pt_conversions INTEGER DEFAULT 0,
-            special_teams_tds INTEGER DEFAULT 0,
-            return_yards REAL DEFAULT 0,
-            snap_count INTEGER DEFAULT 0,
-            snap_percentage REAL DEFAULT 0,
-            route_participation REAL DEFAULT 0,
-            target_share REAL DEFAULT 0,
-            rush_attempt_share REAL DEFAULT 0,
-            red_zone_targets INTEGER DEFAULT 0,
-            red_zone_touches INTEGER DEFAULT 0,
-            opportunity_share REAL DEFAULT 0,
-            fantasy_points REAL DEFAULT 0,
-            FOREIGN KEY (player_id) REFERENCES players (id),
-            FOREIGN KEY (game_id) REFERENCES games (id),
-            UNIQUE(player_id, game_id)
-        )
-    """,
-    "draftkings_salaries": """
-        CREATE TABLE IF NOT EXISTS draftkings_salaries (
-            id INTEGER PRIMARY KEY,
-            contest_id TEXT,
-            player_id INTEGER,
-            salary INTEGER,
-            roster_position TEXT,
-            game_info TEXT,
-            team_abbr TEXT,
-            opponent TEXT,
-            FOREIGN KEY (player_id) REFERENCES players (id)
-        )
-    """,
-    "dst_stats": """
-        CREATE TABLE IF NOT EXISTS dst_stats (
-            id INTEGER PRIMARY KEY,
-            game_id TEXT,
-            team_abbr TEXT,
-            season INTEGER,
-            week INTEGER,
-            points_allowed INTEGER DEFAULT 0,
-            sacks INTEGER DEFAULT 0,
-            interceptions INTEGER DEFAULT 0,
-            fumbles_recovered INTEGER DEFAULT 0,
-            fumbles_forced INTEGER DEFAULT 0,
-            safeties INTEGER DEFAULT 0,
-            defensive_tds INTEGER DEFAULT 0,
-            return_tds INTEGER DEFAULT 0,
-            special_teams_tds INTEGER DEFAULT 0,
-            fantasy_points REAL DEFAULT 0.0,
-            UNIQUE(team_abbr, game_id)
-        )
-    """,
-    "historical_ownership": """
-        CREATE TABLE IF NOT EXISTS historical_ownership (
-            id INTEGER PRIMARY KEY,
-            contest_date TEXT,
-            slate_type TEXT,
-            player_id INTEGER,
-            actual_ownership REAL,
-            projected_ownership REAL,
-            salary INTEGER,
-            projected_points REAL,
-            actual_points REAL,
-            contest_entries INTEGER,
-            FOREIGN KEY (player_id) REFERENCES players (id),
-            UNIQUE(contest_date, slate_type, player_id)
-        )
-    """,
-    "play_by_play": """
-        CREATE TABLE IF NOT EXISTS play_by_play (
-            id INTEGER PRIMARY KEY,
-            play_id TEXT UNIQUE,
-            game_id TEXT,
-            season INTEGER,
-            week INTEGER,
-            home_team TEXT,
-            away_team TEXT,
-            posteam TEXT,
-            defteam TEXT,
-            play_type TEXT,
-            description TEXT,
-            down INTEGER,
-            ydstogo INTEGER,
-            yardline_100 INTEGER,
-            quarter_seconds_remaining INTEGER,
-            yards_gained INTEGER DEFAULT 0,
-            touchdown INTEGER DEFAULT 0,
-            pass_attempt INTEGER DEFAULT 0,
-            rush_attempt INTEGER DEFAULT 0,
-            complete_pass INTEGER DEFAULT 0,
-            incomplete_pass INTEGER DEFAULT 0,
-            interception INTEGER DEFAULT 0,
-            fumble INTEGER DEFAULT 0,
-            fumble_lost INTEGER DEFAULT 0,
-            sack INTEGER DEFAULT 0,
-            safety INTEGER DEFAULT 0,
-            penalty INTEGER DEFAULT 0,
-            FOREIGN KEY (game_id) REFERENCES games (id)
-        )
-    """,
-    "weather": """
-        CREATE TABLE IF NOT EXISTS weather (
-            id INTEGER PRIMARY KEY,
-            game_id TEXT,
-            stadium_name TEXT,
-            latitude REAL,
-            longitude REAL,
-            temperature INTEGER,
-            feels_like INTEGER,
-            humidity INTEGER,
-            wind_speed INTEGER,
-            wind_direction TEXT,
-            precipitation_chance INTEGER,
-            conditions TEXT,
-            visibility INTEGER,
-            pressure REAL,
-            collected_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(game_id),
-            FOREIGN KEY (game_id) REFERENCES games (id)
-        )
-    """,
-    "betting_odds": """
-        CREATE TABLE IF NOT EXISTS betting_odds (
-            id INTEGER PRIMARY KEY,
-            game_id TEXT,
-            favorite_team TEXT,
-            spread_favorite REAL,
-            over_under_line REAL,
-            home_team_spread REAL,
-            away_team_spread REAL,
-            source TEXT DEFAULT 'spreadspoke',
-            UNIQUE(game_id),
-            FOREIGN KEY (game_id) REFERENCES games (id)
-        )
-    """,
-    "dfs_scores": """
-        CREATE TABLE IF NOT EXISTS dfs_scores (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            player_id INTEGER NOT NULL,
-            season INTEGER NOT NULL,
-            week INTEGER NOT NULL,
-            team_id INTEGER NOT NULL,
-            position TEXT NOT NULL,
-            opponent_id INTEGER NOT NULL,
-            game_id TEXT,
-            dfs_points REAL NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (player_id) REFERENCES players (id),
-            FOREIGN KEY (team_id) REFERENCES teams (id),
-            FOREIGN KEY (opponent_id) REFERENCES teams (id),
-            FOREIGN KEY (game_id) REFERENCES games (id),
-            UNIQUE(player_id, game_id)
-        )
-    """,
-    "stat_corrections": """
-        CREATE TABLE IF NOT EXISTS stat_corrections (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            player_id INTEGER NOT NULL,
-            game_id TEXT NOT NULL,
-            stat_type TEXT NOT NULL,
-            original_value REAL,
-            corrected_value REAL NOT NULL,
-            source TEXT NOT NULL,
-            reason TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (player_id) REFERENCES players (id),
-            FOREIGN KEY (game_id) REFERENCES games (id),
-            UNIQUE(player_id, game_id, stat_type)
-        )
-    """,
-}
-
-
-def get_db_connection(db_path: str = "data/nfl_dfs.db") -> sqlite3.Connection:
-    """Get database connection with fast timeout for concurrent access."""
-    db_file = Path(db_path)
-    db_file.parent.mkdir(parents=True, exist_ok=True)
-
-    # Use short timeout to fail fast on locks
-    conn = sqlite3.connect(db_path, timeout=5.0)
-    conn.execute("PRAGMA foreign_keys = ON")  # Enable foreign key constraints
-    conn.execute("PRAGMA journal_mode = WAL")  # Enable WAL mode for better concurrency
-    conn.execute("PRAGMA synchronous = NORMAL")  # Balance safety and performance
-    conn.execute("PRAGMA busy_timeout = 5000")  # 5 second busy timeout - fail fast
-    return conn
 
 
 def init_database(db_path: str = "data/nfl_dfs.db") -> None:
@@ -3536,8 +3287,25 @@ def get_player_features(
 
         features["games_missed_last4"] = games_missed[0] if games_missed else 0
 
-        # NOTE: Injury status features removed from training to prevent data corruption
-        # Current injury status will be applied only during predictions, not training
+        # Add injury features for backtesting (these are point-in-time accurate)
+        try:
+            from features import FeatureEngineer
+            fe = FeatureEngineer(db_path)
+            injury_features = fe.get_injury_features(player_id, season, week)
+            features.update(injury_features)
+        except Exception as e:
+            logger.debug(f"Could not get injury features for player {player_id}: {e}")
+            # Add default injury features if fetch fails
+            features.update({
+                'has_injury': 0.0,
+                'injury_severity': 0.0,
+                'weeks_injured_recent': 0.0,
+                'games_missed_recent': 0.0,
+                'practice_status_limited': 0.0,
+                'practice_status_dnp': 0.0,
+                'injury_risk_score': 0.0,
+                'consecutive_weeks_injured': 0.0,
+            })
 
         # Add enhanced betting odds features (prioritize live odds from odds_api)
         betting_data = conn.execute(
@@ -4309,6 +4077,12 @@ def get_training_data(
                 }
             )
 
+            # Add injury features using FeatureEngineer
+            from features import FeatureEngineer
+            fe = FeatureEngineer(db_path)
+            injury_features = fe.get_injury_features(player_id, season, week)
+            features.update(injury_features)
+
             # Defensive matchup features
             def_features = defensive_features_cache.get(
                 (opponent_abbr, season, week), {}
@@ -4428,7 +4202,25 @@ def get_training_data(
 
             features.update(weather_betting_features)
 
-            # Note: Injury features removed from training to prevent data corruption
+            # Add injury features using FeatureEngineer
+            try:
+                from features import FeatureEngineer
+                fe = FeatureEngineer(db_path)
+                injury_features = fe.get_injury_features(player_id, season, week)
+                features.update(injury_features)
+            except Exception as e:
+                logger.debug(f"Could not get injury features for player {player_id}: {e}")
+                # Add default injury features if fetch fails
+                features.update({
+                    'has_injury': 0.0,
+                    'injury_severity': 0.0,
+                    'weeks_injured_recent': 0.0,
+                    'games_missed_recent': 0.0,
+                    'practice_status_limited': 0.0,
+                    'practice_status_dnp': 0.0,
+                    'injury_risk_score': 0.0,
+                    'consecutive_weeks_injured': 0.0,
+                })
 
             # Add advanced QB-specific features for better prediction
             try:
@@ -5431,7 +5223,8 @@ def compute_features_from_stats(
 
     # Passing efficiency metrics if we have attempts
     if recent_pass_att and recent_completions:
-        features["completion_pct"] = np.mean([c/a for c, a in zip(recent_completions, recent_pass_att) if a > 0])
+        valid_pcts = [c/a for c, a in zip(recent_completions, recent_pass_att) if a > 0]
+        features["completion_pct"] = np.mean(valid_pcts) if valid_pcts else 0
     else:
         features["completion_pct"] = 0
 
@@ -6000,7 +5793,7 @@ def collect_odds_data(
                     ).fetchone()
 
                     # Use a meaningful game_id for upcoming games regardless of DK slate availability
-                    db_game_id = f"{game_date}_{away_abbr}@{home_abbr}"
+                    db_game_id = f"{game_date}_{away_abbr}_{home_abbr}"
 
                     # Create minimal game record for foreign key constraint
                     away_team_id = conn.execute(
@@ -6134,10 +5927,112 @@ def collect_odds_data(
         conn.close()
 
 
+def get_historical_injury_data(
+    seasons: List[int],
+    db_path: str = "data/nfl_dfs.db"
+) -> pd.DataFrame:
+    """Get comprehensive historical injury data for analysis.
+
+    Args:
+        seasons: List of seasons to retrieve
+        db_path: Database path
+
+    Returns:
+        DataFrame with all injury reports for specified seasons
+    """
+    conn = get_db_connection(db_path)
+
+    query = """
+    SELECT
+        ir.*,
+        p.player_name,
+        p.display_name,
+        p.position,
+        t.team_abbr,
+        g.game_date,
+        g.home_team_id,
+        g.away_team_id
+    FROM injury_reports ir
+    JOIN players p ON ir.player_id = p.id
+    LEFT JOIN teams t ON p.team_id = t.id
+    LEFT JOIN games g ON ir.game_id = g.id
+    WHERE ir.season IN ({})
+    ORDER BY ir.season, ir.week, ir.report_date
+    """.format(','.join('?' * len(seasons)))
+
+    df = pd.read_sql(query, conn, params=seasons)
+    conn.close()
+
+    return df
+
+
+def get_player_injury_history(
+    player_name: str,
+    seasons: List[int] = None,
+    db_path: str = "data/nfl_dfs.db"
+) -> pd.DataFrame:
+    """Get injury history for a specific player.
+
+    Args:
+        player_name: Player name to search for
+        seasons: List of seasons (default: last 2 seasons)
+        db_path: Database path
+
+    Returns:
+        DataFrame with player's injury history
+    """
+    if seasons is None:
+        current_year = datetime.now().year
+        if datetime.now().month >= 9:
+            seasons = [current_year - 1, current_year]
+        else:
+            seasons = [current_year - 2, current_year - 1]
+
+    conn = get_db_connection(db_path)
+
+    query = """
+    SELECT
+        ir.season,
+        ir.week,
+        ir.report_date,
+        ir.injury_status,
+        ir.injury_designation,
+        ir.injury_body_part,
+        ir.practice_status,
+        p.player_name,
+        p.position,
+        t.team_abbr,
+        g.game_date
+    FROM injury_reports ir
+    JOIN players p ON ir.player_id = p.id
+    LEFT JOIN teams t ON p.team_id = t.id
+    LEFT JOIN games g ON ir.game_id = g.id
+    WHERE (p.player_name LIKE ? OR p.display_name LIKE ?)
+    AND ir.season IN ({})
+    ORDER BY ir.season DESC, ir.week DESC, ir.report_date DESC
+    """.format(','.join('?' * len(seasons)))
+
+    params = [f"%{player_name}%", f"%{player_name}%"] + seasons
+    df = pd.read_sql(query, conn, params=params)
+    conn.close()
+
+    return df
+
+
 def collect_injury_data(
     seasons: List[int] = None, db_path: str = "data/nfl_dfs.db"
 ) -> None:
     """Collect NFL injury data from nfl_data_py.
+
+    nfl_data_py provides comprehensive weekly injury reports including:
+    - report_status: Game status (Out, Doubtful, Questionable, etc.)
+    - injury: Body part or injury description
+    - practice_status: Practice participation (DNP, Limited, Full)
+    - week: NFL week number
+    - report_date: Date of the injury report
+    - full_name: Player's full name
+    - gsis_id: Player's GSIS ID for matching
+    - team: Team abbreviation
 
     Args:
         seasons: List of seasons to collect injury data for. If None, collects current season.
@@ -6158,30 +6053,27 @@ def collect_injury_data(
     conn = get_db_connection(db_path)
 
     try:
-        # Ensure injury_status column exists in players table
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA table_info(players)")
-        columns = [col[1] for col in cursor.fetchall()]
-
-        if "injury_status" not in columns:
-            logger.info("Adding injury_status column to players table...")
-            cursor.execute(
-                "ALTER TABLE players ADD COLUMN injury_status TEXT DEFAULT NULL"
-            )
-            conn.commit()
-
         total_updates = 0
 
         for season in seasons:
             try:
                 logger.info(f"Fetching injury data for season {season}...")
 
-                # Import injury data from nfl_data_py
+                # Import injury data from nfl_data_py - gets ALL weeks for the season
                 injury_df = nfl.import_injuries([season])
 
                 if injury_df is None or injury_df.empty:
                     logger.warning(f"No injury data found for season {season}")
                     continue
+
+                # Log available columns to understand the data structure
+                logger.info(f"Injury data columns available: {injury_df.columns.tolist()}")
+                logger.info(f"Total injury records for season {season}: {len(injury_df)}")
+
+                # Get unique weeks in the data
+                if 'week' in injury_df.columns:
+                    weeks = injury_df['week'].unique()
+                    logger.info(f"Weeks with injury data: {sorted(weeks)}")
 
                 injury_progress = ProgressDisplay(f"Processing injury data {season}")
                 season_updates = 0
@@ -6224,12 +6116,16 @@ def collect_injury_data(
                         if not injury_status:
                             continue
 
-                        # Get player identifiers
+                        # Get injury details from the dataframe
                         gsis_id = injury_row.get("gsis_id")
                         player_name = injury_row.get("full_name", "")
                         team_abbr = injury_row.get("team")
+                        week = injury_row.get("week")
+                        report_date = injury_row.get("report_date", datetime.now().strftime("%Y-%m-%d"))
+                        practice_status = injury_row.get("practice_status", "")
+                        injury_description = injury_row.get("injury", "")  # Body part or description
 
-                        if not gsis_id:
+                        if not gsis_id or not week:
                             continue
 
                         # Try to find player by GSIS ID first (most reliable)
@@ -6257,10 +6153,24 @@ def collect_injury_data(
                         if player_record:
                             player_id = player_record[0]
 
-                            # Update injury status
+                            # Find the game_id for this player's team in this week
+                            game_record = conn.execute(
+                                """SELECT g.id FROM games g
+                                   JOIN teams t ON (g.home_team_id = t.id OR g.away_team_id = t.id)
+                                   WHERE t.team_abbr = ? AND g.season = ? AND g.week = ?""",
+                                (team_abbr, season, week)
+                            ).fetchone()
+
+                            game_id = game_record[0] if game_record else None
+
+                            # Insert or update injury report
                             conn.execute(
-                                "UPDATE players SET injury_status = ? WHERE id = ?",
-                                (injury_status, player_id),
+                                """INSERT OR REPLACE INTO injury_reports
+                                   (player_id, season, week, game_id, report_date, injury_status,
+                                    injury_designation, injury_body_part, practice_status)
+                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                (player_id, season, week, game_id, report_date, injury_status,
+                                 nfl_status, injury_description, practice_status),
                             )
                             season_updates += 1
 

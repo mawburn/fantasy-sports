@@ -6,6 +6,7 @@ Optimized CLI for DFS optimization system with faster predictions.
 import argparse
 import logging
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -228,6 +229,8 @@ def update_injury_statuses(
     injury_file: str = None,
     manual_updates: Dict[str, str] = None,
     db_path: str = DEFAULT_DB_PATH,
+    season: int = None,
+    week: int = None,
 ):
     """Update player injury statuses from CSV file or manual input.
 
@@ -235,6 +238,8 @@ def update_injury_statuses(
         injury_file: Path to CSV file with columns: player_name, injury_status
         manual_updates: Dictionary of player_name -> injury_status
         db_path: Database path
+        season: Season to update injuries for
+        week: Week to update injuries for
 
     Injury status codes:
         Q: Questionable (75% likely to play)
@@ -247,9 +252,29 @@ def update_injury_statuses(
     conn = get_db_connection(db_path)
     updated_count = 0
 
+    # Get current season/week if not provided
+    if not season or not week:
+        latest = conn.execute(
+            "SELECT MAX(season), MAX(week) FROM games WHERE game_finished = 0"
+        ).fetchone()
+        if latest and latest[0]:
+            season = season or latest[0]
+            week = week or latest[1]
+        else:
+            # Fall back to most recent data
+            latest = conn.execute(
+                "SELECT season, MAX(week) FROM games GROUP BY season ORDER BY season DESC LIMIT 1"
+            ).fetchone()
+            if latest:
+                season = season or latest[0]
+                week = week or latest[1]
+
+    if not season or not week:
+        logger.error("Could not determine season/week for injury updates")
+        return 0
+
     try:
-        # Clear existing injury statuses
-        conn.execute("UPDATE players SET injury_status = NULL")
+        report_date = datetime.now().strftime("%Y-%m-%d")
 
         # Update from CSV file if provided
         if injury_file and Path(injury_file).exists():
@@ -259,24 +284,74 @@ def update_injury_statuses(
             for _, row in df.iterrows():
                 player_name = row["player_name"]
                 injury_status = row["injury_status"].upper()
+                injury_description = row.get("injury_description", "")
+                practice_status = row.get("practice_status", "")
 
-                cursor = conn.execute(
-                    "UPDATE players SET injury_status = ? WHERE display_name = ? OR player_name = ?",
-                    (injury_status, player_name, player_name),
-                )
-                updated_count += cursor.rowcount
+                # Find player
+                player_record = conn.execute(
+                    "SELECT id, team_id FROM players WHERE display_name = ? OR player_name = ?",
+                    (player_name, player_name),
+                ).fetchone()
+
+                if player_record:
+                    player_id, team_id = player_record
+
+                    # Find game for this week
+                    game_record = conn.execute(
+                        """SELECT id FROM games
+                           WHERE season = ? AND week = ?
+                           AND (home_team_id = ? OR away_team_id = ?)""",
+                        (season, week, team_id, team_id)
+                    ).fetchone()
+
+                    game_id = game_record[0] if game_record else None
+
+                    # Insert or update injury report
+                    conn.execute(
+                        """INSERT OR REPLACE INTO injury_reports
+                           (player_id, season, week, game_id, report_date, injury_status,
+                            injury_designation, injury_body_part, practice_status)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (player_id, season, week, game_id, report_date, injury_status,
+                         injury_status, injury_description, practice_status),
+                    )
+                    updated_count += 1
 
         # Update from manual dictionary if provided
         if manual_updates:
             for player_name, injury_status in manual_updates.items():
-                cursor = conn.execute(
-                    "UPDATE players SET injury_status = ? WHERE display_name = ? OR player_name = ?",
-                    (injury_status.upper(), player_name, player_name),
-                )
-                updated_count += cursor.rowcount
+                # Find player
+                player_record = conn.execute(
+                    "SELECT id, team_id FROM players WHERE display_name = ? OR player_name = ?",
+                    (player_name, player_name),
+                ).fetchone()
+
+                if player_record:
+                    player_id, team_id = player_record
+
+                    # Find game for this week
+                    game_record = conn.execute(
+                        """SELECT id FROM games
+                           WHERE season = ? AND week = ?
+                           AND (home_team_id = ? OR away_team_id = ?)""",
+                        (season, week, team_id, team_id)
+                    ).fetchone()
+
+                    game_id = game_record[0] if game_record else None
+
+                    # Insert or update injury report
+                    conn.execute(
+                        """INSERT OR REPLACE INTO injury_reports
+                           (player_id, season, week, game_id, report_date, injury_status,
+                            injury_designation, injury_body_part, practice_status)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (player_id, season, week, game_id, report_date, injury_status.upper(),
+                         injury_status.upper(), "", ""),
+                    )
+                    updated_count += 1
 
         conn.commit()
-        logger.info(f"Updated injury status for {updated_count} players")
+        logger.info(f"Updated injury status for {updated_count} players for season {season} week {week}")
 
     finally:
         conn.close()
@@ -418,19 +493,38 @@ def predict_players_optimized(
         recent_games[row[0]] = row[1]
 
     # Fetch injury statuses for all players
-    injury_status_query = f"""
-        SELECT id, injury_status
-        FROM players
-        WHERE id IN ({placeholders})
-    """
+    # Get current season/week for injury lookups
+    current_game = conn.execute(
+        """SELECT DISTINCT g.season, g.week
+           FROM draftkings_salaries dk
+           JOIN players p ON dk.player_id = p.id
+           JOIN teams t ON p.team_id = t.id
+           JOIN games g ON (g.home_team_id = t.id OR g.away_team_id = t.id)
+           WHERE dk.contest_id = ?
+           LIMIT 1""",
+        (contest_id,)
+    ).fetchone()
 
-    injury_statuses = {}
-    for row in conn.execute(injury_status_query, player_ids).fetchall():
-        if row[1]:  # Only store if injury status is not NULL
-            injury_statuses[row[0]] = row[1]
+    if current_game:
+        season, week = current_game
+        injury_status_query = f"""
+            SELECT ir.player_id, ir.injury_status
+            FROM injury_reports ir
+            WHERE ir.player_id IN ({placeholders})
+            AND ir.season = ? AND ir.week = ?
+            ORDER BY ir.report_date DESC
+        """
 
-    if injury_statuses:
-        logger.info(f"Found injury statuses for {len(injury_statuses)} players")
+        injury_statuses = {}
+        for row in conn.execute(injury_status_query, player_ids + [season, week]).fetchall():
+            if row[1]:  # Only store if injury status is not NULL
+                injury_statuses[row[0]] = row[1]
+
+        if injury_statuses:
+            logger.info(f"Found injury statuses for {len(injury_statuses)} players for season {season} week {week}")
+    else:
+        injury_statuses = {}
+        logger.warning(f"Could not determine season/week for contest {contest_id}")
 
     conn.close()
 
@@ -542,21 +636,35 @@ def predict_players_optimized(
                             player_id = player_data["player_id"]
                             injury_status = injury_statuses.get(player_id)
 
-                            # Get injury multipliers
-                            proj_mult, floor_mult, ceil_mult = get_injury_multiplier(
-                                injury_status
-                            )
+                            # Get base predictions from model
+                            base_proj = float(prediction_result.point_estimate[i])
+                            base_floor = float(prediction_result.floor[i])
+                            base_ceiling = float(prediction_result.ceiling[i])
 
-                            # Apply injury multipliers to predictions
-                            proj_points = (
-                                float(prediction_result.point_estimate[i]) * proj_mult
-                            )
-                            floor_points = (
-                                float(prediction_result.floor[i]) * floor_mult
-                            )
-                            ceiling_points = (
-                                float(prediction_result.ceiling[i]) * ceil_mult
-                            )
+                            # Apply injury adjustments using FeatureEngineer if injury data available
+                            if season and week:
+                                try:
+                                    from features import FeatureEngineer
+                                    fe = FeatureEngineer(DEFAULT_DB_PATH)
+                                    injury_features = fe.get_injury_features(player_id, season, week)
+
+                                    # Use sophisticated injury adjustments
+                                    proj_points, floor_points, ceiling_points = fe.get_injury_adjusted_projections(
+                                        base_proj, base_floor, base_ceiling, injury_features
+                                    )
+                                except Exception as e:
+                                    logger.debug(f"Could not get injury features for {player_data['name']}: {e}")
+                                    # Fall back to simple multipliers
+                                    proj_mult, floor_mult, ceil_mult = get_injury_multiplier(injury_status)
+                                    proj_points = base_proj * proj_mult
+                                    floor_points = base_floor * floor_mult
+                                    ceiling_points = base_ceiling * ceil_mult
+                            else:
+                                # Fall back to simple multipliers if no season/week context
+                                proj_mult, floor_mult, ceil_mult = get_injury_multiplier(injury_status)
+                                proj_points = base_proj * proj_mult
+                                floor_points = base_floor * floor_mult
+                                ceiling_points = base_ceiling * ceil_mult
 
                             pred_dict = {
                                 "player_id": player_id,
@@ -588,14 +696,14 @@ def predict_players_optimized(
                 for player_data in fallback_players:
                     injury_status = injury_statuses.get(player_data["player_id"])
                     predictions.append(
-                        generate_fallback_prediction(player_data, injury_status)
+                        generate_fallback_prediction(player_data, injury_status, season, week)
                     )
             else:
                 # No features available, use fallback for all
                 for player_data in position_players:
                     injury_status = injury_statuses.get(player_data["player_id"])
                     predictions.append(
-                        generate_fallback_prediction(player_data, injury_status)
+                        generate_fallback_prediction(player_data, injury_status, season, week)
                     )
 
         elif position in ["DST", "DEF"]:
@@ -643,19 +751,19 @@ def predict_players_optimized(
                         )
                         injury_status = injury_statuses.get(player_data["player_id"])
                         predictions.append(
-                            generate_fallback_prediction(player_data, injury_status)
+                            generate_fallback_prediction(player_data, injury_status, season, week)
                         )
                 else:
                     injury_status = injury_statuses.get(player_data["player_id"])
                     predictions.append(
-                        generate_fallback_prediction(player_data, injury_status)
+                        generate_fallback_prediction(player_data, injury_status, season, week)
                     )
         else:
             # Fallback for positions without models
             for player_data in position_players:
                 injury_status = injury_statuses.get(player_data["player_id"])
                 predictions.append(
-                    generate_fallback_prediction(player_data, injury_status)
+                    generate_fallback_prediction(player_data, injury_status, season, week)
                 )
 
     # Save predictions if requested
@@ -670,7 +778,7 @@ def predict_players_optimized(
     return predictions
 
 
-def generate_fallback_prediction(player_data, injury_status=None):
+def generate_fallback_prediction(player_data, injury_status=None, season=None, week=None):
     """Generate fallback prediction based on salary and position."""
     # Use DK position if available, otherwise fall back to database position
     position = player_data.get("dk_position", player_data["position"])
@@ -698,13 +806,31 @@ def generate_fallback_prediction(player_data, injury_status=None):
             base_projection * salary_factor * 0.5
         )  # Conservative 50% for fallbacks
 
-    projected_points = base_projection
+    # Base floor and ceiling
+    base_floor = base_projection * 0.7
+    base_ceiling = base_projection * 1.5
 
-    # Apply injury multipliers
-    proj_mult, floor_mult, ceil_mult = get_injury_multiplier(injury_status)
-    projected_points *= proj_mult
-    floor = projected_points * 0.7 * floor_mult
-    ceiling = projected_points * 1.5 * ceil_mult
+    # Apply injury adjustments using FeatureEngineer if available
+    if season and week and player_data.get("player_id"):
+        try:
+            from features import FeatureEngineer
+            fe = FeatureEngineer(DEFAULT_DB_PATH)
+            injury_features = fe.get_injury_features(player_data["player_id"], season, week)
+            projected_points, floor, ceiling = fe.get_injury_adjusted_projections(
+                base_projection, base_floor, base_ceiling, injury_features
+            )
+        except Exception:
+            # Fall back to simple multipliers
+            proj_mult, floor_mult, ceil_mult = get_injury_multiplier(injury_status)
+            projected_points = base_projection * proj_mult
+            floor = base_floor * floor_mult
+            ceiling = base_ceiling * ceil_mult
+    else:
+        # Use simple multipliers if no season/week context
+        proj_mult, floor_mult, ceil_mult = get_injury_multiplier(injury_status)
+        projected_points = base_projection * proj_mult
+        floor = base_floor * floor_mult
+        ceiling = base_ceiling * ceil_mult
 
     result = {
         "player_id": player_data["player_id"],

@@ -188,22 +188,58 @@ class PointInTimeBacktester:
     def _get_injury_status_at_time(
         self, conn: sqlite3.Connection, player_id: int, lock_time: datetime
     ) -> Dict[str, Any]:
-        """Get injury status as it was at lock time."""
+        """Get injury status as it was at lock time using FeatureEngineer."""
 
-        query = """
-        SELECT injury_status, status FROM players
-        WHERE id = ?
+        # First get the game info to determine the season/week
+        game_query = """
+        SELECT g.season, g.week FROM games g
+        JOIN players p ON p.team_id IN (g.home_team_id, g.away_team_id)
+        WHERE p.id = ?
+        AND datetime(g.game_date) >= datetime(?)
+        ORDER BY g.game_date ASC
+        LIMIT 1
         """
 
-        result = conn.execute(query, (player_id,)).fetchone()
+        game_result = conn.execute(game_query, (player_id, lock_time.isoformat())).fetchone()
 
-        if not result:
-            return {"status": "Active", "injury_status": None}
+        if game_result:
+            season, week = game_result
 
+            try:
+                # Use FeatureEngineer to get comprehensive injury features
+                from features import FeatureEngineer
+                fe = FeatureEngineer(self.config.db_path if hasattr(self, 'config') else "data/nfl_dfs.db")
+                injury_features = fe.get_injury_features(player_id, season, week)
+
+                # Map features to expected format
+                return {
+                    "status": "OUT" if injury_features.get('injury_severity', 0) >= 1.0 else
+                             ("Q" if injury_features.get('has_injury', 0) > 0 else "Active"),
+                    "injury_status": "OUT" if injury_features.get('injury_severity', 0) >= 1.0 else
+                                   ("D" if injury_features.get('injury_severity', 0) >= 0.5 else
+                                    ("Q" if injury_features.get('injury_severity', 0) > 0 else None)),
+                    "injury_risk": injury_features.get('injury_risk_score', 0.0),
+                    "practice_limited": injury_features.get('practice_status_limited', 0.0),
+                    "practice_dnp": injury_features.get('practice_status_dnp', 0.0),
+                    "weeks_injured": injury_features.get('weeks_injured_recent', 0.0),
+                    "games_missed": injury_features.get('games_missed_recent', 0.0),
+                    "consecutive_weeks_injured": injury_features.get('consecutive_weeks_injured', 0.0),
+                }
+            except Exception as e:
+                # Log the error and fall back to basic query
+                import logging
+                logging.debug(f"Could not get injury features for player {player_id}: {e}")
+
+        # Fallback if no game found or FeatureEngineer fails
         return {
-            "status": result[0] or "Active",
-            "injury_status": result[1],
-            "injury_risk": self._calculate_injury_risk(result[1]),
+            "status": "Active",
+            "injury_status": None,
+            "injury_risk": 0.0,
+            "practice_limited": 0.0,
+            "practice_dnp": 0.0,
+            "weeks_injured": 0.0,
+            "games_missed": 0.0,
+            "consecutive_weeks_injured": 0.0,
         }
 
     def _get_weather_at_time(

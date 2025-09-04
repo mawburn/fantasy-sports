@@ -6,6 +6,7 @@ Provides:
 3. Cached queries using LRU cache
 4. Batch operations for inserts/updates
 5. Index management for query optimization
+6. Database schema definitions and migrations
 
 Designed to replace direct SQL queries in data.py with optimized batch operations.
 """
@@ -13,13 +14,282 @@ Designed to replace direct SQL queries in data.py with optimized batch operation
 import logging
 import sqlite3
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Dict, List, Tuple
 
 import pandas as pd
 
-from data import ProgressDisplay
+from helpers import ProgressDisplay
 
 logger = logging.getLogger(__name__)
+
+# Database schema definitions
+DB_SCHEMA = {
+    "games": """
+        CREATE TABLE IF NOT EXISTS games (
+            id TEXT PRIMARY KEY,
+            game_date TEXT,
+            season INTEGER,
+            week INTEGER,
+            home_team_id INTEGER,
+            away_team_id INTEGER,
+            home_score INTEGER,
+            away_score INTEGER,
+            game_finished INTEGER DEFAULT 0,
+            stadium TEXT,
+            stadium_neutral INTEGER DEFAULT 0,
+            weather_temperature INTEGER,
+            weather_wind_mph INTEGER,
+            weather_humidity INTEGER,
+            weather_detail TEXT
+        )
+    """,
+    "teams": """
+        CREATE TABLE IF NOT EXISTS teams (
+            id INTEGER PRIMARY KEY,
+            team_abbr TEXT UNIQUE,
+            team_name TEXT,
+            division TEXT,
+            conference TEXT
+        )
+    """,
+    "players": """
+        CREATE TABLE IF NOT EXISTS players (
+            id INTEGER PRIMARY KEY,
+            player_name TEXT,
+            display_name TEXT,
+            position TEXT,
+            team_id INTEGER,
+            gsis_id TEXT,
+            status TEXT DEFAULT 'Active',
+            FOREIGN KEY (team_id) REFERENCES teams (id)
+        )
+    """,
+    "injury_reports": """
+        CREATE TABLE IF NOT EXISTS injury_reports (
+            id INTEGER PRIMARY KEY,
+            player_id INTEGER NOT NULL,
+            season INTEGER NOT NULL,
+            week INTEGER NOT NULL,
+            game_id TEXT,
+            report_date TEXT NOT NULL,
+            injury_status TEXT,
+            injury_designation TEXT,
+            injury_body_part TEXT,
+            practice_status TEXT,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (player_id) REFERENCES players (id),
+            FOREIGN KEY (game_id) REFERENCES games (id),
+            UNIQUE(player_id, season, week, report_date)
+        )
+    """,
+    "player_stats": """
+        CREATE TABLE IF NOT EXISTS player_stats (
+            id INTEGER PRIMARY KEY,
+            player_id INTEGER,
+            game_id TEXT,
+            passing_yards REAL DEFAULT 0,
+            passing_tds INTEGER DEFAULT 0,
+            passing_interceptions INTEGER DEFAULT 0,
+            passing_attempts INTEGER DEFAULT 0,
+            passing_completions INTEGER DEFAULT 0,
+            sack_yards REAL DEFAULT 0,
+            rushing_yards REAL DEFAULT 0,
+            rushing_attempts INTEGER DEFAULT 0,
+            rushing_tds INTEGER DEFAULT 0,
+            receiving_yards REAL DEFAULT 0,
+            targets INTEGER DEFAULT 0,
+            receptions INTEGER DEFAULT 0,
+            receiving_tds INTEGER DEFAULT 0,
+            receiving_air_yards REAL DEFAULT 0,
+            receiving_yac REAL DEFAULT 0,
+            fumbles INTEGER DEFAULT 0,
+            fumbles_lost INTEGER DEFAULT 0,
+            passing_2pt_conversions INTEGER DEFAULT 0,
+            rushing_2pt_conversions INTEGER DEFAULT 0,
+            receiving_2pt_conversions INTEGER DEFAULT 0,
+            special_teams_tds INTEGER DEFAULT 0,
+            return_yards REAL DEFAULT 0,
+            snap_count INTEGER DEFAULT 0,
+            snap_percentage REAL DEFAULT 0,
+            route_participation REAL DEFAULT 0,
+            target_share REAL DEFAULT 0,
+            rush_attempt_share REAL DEFAULT 0,
+            red_zone_targets INTEGER DEFAULT 0,
+            red_zone_touches INTEGER DEFAULT 0,
+            opportunity_share REAL DEFAULT 0,
+            fantasy_points REAL DEFAULT 0,
+            FOREIGN KEY (player_id) REFERENCES players (id),
+            FOREIGN KEY (game_id) REFERENCES games (id),
+            UNIQUE(player_id, game_id)
+        )
+    """,
+    "draftkings_salaries": """
+        CREATE TABLE IF NOT EXISTS draftkings_salaries (
+            id INTEGER PRIMARY KEY,
+            contest_id TEXT,
+            player_id INTEGER,
+            salary INTEGER,
+            roster_position TEXT,
+            game_info TEXT,
+            team_abbr TEXT,
+            opponent TEXT,
+            FOREIGN KEY (player_id) REFERENCES players (id)
+        )
+    """,
+    "dst_stats": """
+        CREATE TABLE IF NOT EXISTS dst_stats (
+            id INTEGER PRIMARY KEY,
+            game_id TEXT,
+            team_abbr TEXT,
+            season INTEGER,
+            week INTEGER,
+            points_allowed INTEGER DEFAULT 0,
+            sacks INTEGER DEFAULT 0,
+            interceptions INTEGER DEFAULT 0,
+            fumbles_recovered INTEGER DEFAULT 0,
+            fumbles_forced INTEGER DEFAULT 0,
+            safeties INTEGER DEFAULT 0,
+            defensive_tds INTEGER DEFAULT 0,
+            return_tds INTEGER DEFAULT 0,
+            special_teams_tds INTEGER DEFAULT 0,
+            fantasy_points REAL DEFAULT 0.0,
+            UNIQUE(team_abbr, game_id)
+        )
+    """,
+    "historical_ownership": """
+        CREATE TABLE IF NOT EXISTS historical_ownership (
+            id INTEGER PRIMARY KEY,
+            contest_date TEXT,
+            slate_type TEXT,
+            player_id INTEGER,
+            actual_ownership REAL,
+            projected_ownership REAL,
+            salary INTEGER,
+            projected_points REAL,
+            actual_points REAL,
+            contest_entries INTEGER,
+            FOREIGN KEY (player_id) REFERENCES players (id),
+            UNIQUE(contest_date, slate_type, player_id)
+        )
+    """,
+    "play_by_play": """
+        CREATE TABLE IF NOT EXISTS play_by_play (
+            id INTEGER PRIMARY KEY,
+            play_id TEXT UNIQUE,
+            game_id TEXT,
+            season INTEGER,
+            week INTEGER,
+            home_team TEXT,
+            away_team TEXT,
+            posteam TEXT,
+            defteam TEXT,
+            play_type TEXT,
+            description TEXT,
+            down INTEGER,
+            ydstogo INTEGER,
+            yardline_100 INTEGER,
+            quarter_seconds_remaining INTEGER,
+            yards_gained INTEGER DEFAULT 0,
+            touchdown INTEGER DEFAULT 0,
+            pass_attempt INTEGER DEFAULT 0,
+            rush_attempt INTEGER DEFAULT 0,
+            complete_pass INTEGER DEFAULT 0,
+            incomplete_pass INTEGER DEFAULT 0,
+            interception INTEGER DEFAULT 0,
+            fumble INTEGER DEFAULT 0,
+            fumble_lost INTEGER DEFAULT 0,
+            sack INTEGER DEFAULT 0,
+            safety INTEGER DEFAULT 0,
+            penalty INTEGER DEFAULT 0,
+            FOREIGN KEY (game_id) REFERENCES games (id)
+        )
+    """,
+    "weather": """
+        CREATE TABLE IF NOT EXISTS weather (
+            id INTEGER PRIMARY KEY,
+            game_id TEXT,
+            stadium_name TEXT,
+            latitude REAL,
+            longitude REAL,
+            temperature INTEGER,
+            feels_like INTEGER,
+            humidity INTEGER,
+            wind_speed INTEGER,
+            wind_direction TEXT,
+            precipitation_chance INTEGER,
+            conditions TEXT,
+            visibility INTEGER,
+            pressure REAL,
+            collected_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(game_id),
+            FOREIGN KEY (game_id) REFERENCES games (id)
+        )
+    """,
+    "betting_odds": """
+        CREATE TABLE IF NOT EXISTS betting_odds (
+            id INTEGER PRIMARY KEY,
+            game_id TEXT,
+            favorite_team TEXT,
+            spread_favorite REAL,
+            over_under_line REAL,
+            home_team_spread REAL,
+            away_team_spread REAL,
+            source TEXT DEFAULT 'spreadspoke',
+            UNIQUE(game_id),
+            FOREIGN KEY (game_id) REFERENCES games (id)
+        )
+    """,
+    "dfs_scores": """
+        CREATE TABLE IF NOT EXISTS dfs_scores (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player_id INTEGER NOT NULL,
+            season INTEGER NOT NULL,
+            week INTEGER NOT NULL,
+            team_id INTEGER NOT NULL,
+            position TEXT NOT NULL,
+            opponent_id INTEGER NOT NULL,
+            game_id TEXT,
+            dfs_points REAL NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (player_id) REFERENCES players (id),
+            FOREIGN KEY (team_id) REFERENCES teams (id),
+            FOREIGN KEY (opponent_id) REFERENCES teams (id),
+            FOREIGN KEY (game_id) REFERENCES games (id),
+            UNIQUE(player_id, game_id)
+        )
+    """,
+    "stat_corrections": """
+        CREATE TABLE IF NOT EXISTS stat_corrections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player_id INTEGER NOT NULL,
+            game_id TEXT NOT NULL,
+            stat_type TEXT NOT NULL,
+            original_value REAL,
+            corrected_value REAL NOT NULL,
+            source TEXT NOT NULL,
+            reason TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (player_id) REFERENCES players (id),
+            FOREIGN KEY (game_id) REFERENCES games (id),
+            UNIQUE(player_id, game_id, stat_type)
+        )
+    """,
+}
+
+
+def get_db_connection(db_path: str = "data/nfl_dfs.db") -> sqlite3.Connection:
+    """Get database connection with fast timeout for concurrent access."""
+    db_file = Path(db_path)
+    db_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # Use short timeout to fail fast on locks
+    conn = sqlite3.connect(db_path, timeout=5.0)
+    conn.execute("PRAGMA foreign_keys = ON")  # Enable foreign key constraints
+    conn.execute("PRAGMA journal_mode = WAL")  # Enable WAL mode for better concurrency
+    conn.execute("PRAGMA synchronous = NORMAL")  # Balance safety and performance
+    conn.execute("PRAGMA busy_timeout = 5000")  # 5 second busy timeout - fail fast
+    return conn
 
 
 @contextmanager
@@ -80,6 +350,12 @@ class DatabaseManager:
             "CREATE INDEX IF NOT EXISTS idx_games_season_week ON games(season, week)",
             "CREATE INDEX IF NOT EXISTS idx_games_date ON games(game_date)",
             "CREATE INDEX IF NOT EXISTS idx_games_home_away ON games(home_team_id, away_team_id)",
+            # Injury reports queries (new temporal injury tracking)
+            "CREATE INDEX IF NOT EXISTS idx_injury_player_season_week ON injury_reports(player_id, season, week)",
+            "CREATE INDEX IF NOT EXISTS idx_injury_game_id ON injury_reports(game_id)",
+            "CREATE INDEX IF NOT EXISTS idx_injury_report_date ON injury_reports(report_date)",
+            "CREATE INDEX IF NOT EXISTS idx_injury_status ON injury_reports(injury_status)",
+            "CREATE INDEX IF NOT EXISTS idx_injury_season_week ON injury_reports(season, week)",
             # Play by play queries
             "CREATE INDEX IF NOT EXISTS idx_pbp_game ON play_by_play(game_id)",
             "CREATE INDEX IF NOT EXISTS idx_pbp_season_week ON play_by_play(season, week)",
@@ -90,12 +366,11 @@ class DatabaseManager:
             # DST queries
             "CREATE INDEX IF NOT EXISTS idx_dst_stats_team_game ON dst_stats(team_abbr, game_id)",
             "CREATE INDEX IF NOT EXISTS idx_dst_stats_season_week ON dst_stats(season, week)",
-            # Weather queries (new)
+            # Weather queries
             "CREATE INDEX IF NOT EXISTS idx_weather_game_id ON weather(game_id)",
-            # Betting odds queries (new)
+            # Betting odds queries
             "CREATE INDEX IF NOT EXISTS idx_betting_odds_game_id ON betting_odds(game_id)",
-            # Player queries with injury status (new)
-            "CREATE INDEX IF NOT EXISTS idx_players_injury_status ON players(injury_status, team_id)",
+            # Player queries
             "CREATE INDEX IF NOT EXISTS idx_players_name_team ON players(player_name, team_id)",
             "CREATE INDEX IF NOT EXISTS idx_players_display_name ON players(display_name)",
             "CREATE INDEX IF NOT EXISTS idx_players_gsis_id ON players(gsis_id)",
@@ -141,7 +416,6 @@ class DatabaseManager:
             p.display_name,
             p.position,
             p.team_id,
-            p.injury_status,
             t.team_abbr,
             g.game_date,
             g.season,
@@ -177,7 +451,7 @@ class DatabaseManager:
                 ps.player_id, ps.game_id, ps.fantasy_points,
                 ps.passing_yards, ps.passing_tds, ps.passing_interceptions,
                 ps.rushing_yards, ps.rushing_tds, ps.fumbles_lost,
-                p.player_name, p.display_name, p.position, p.team_id, p.injury_status,
+                p.player_name, p.display_name, p.position, p.team_id,
                 t.team_abbr,
                 g.game_date, g.season, g.week, g.home_team_id, g.away_team_id,
                 ht.team_abbr as home_abbr, at.team_abbr as away_abbr,
@@ -208,7 +482,7 @@ class DatabaseManager:
                 ps.rushing_yards, ps.rushing_attempts, ps.rushing_tds,
                 ps.receiving_yards, ps.targets, ps.receptions, ps.receiving_tds,
                 ps.fumbles_lost,
-                p.player_name, p.display_name, p.position, p.team_id, p.injury_status,
+                p.player_name, p.display_name, p.position, p.team_id,
                 t.team_abbr,
                 g.game_date, g.season, g.week, g.home_team_id, g.away_team_id,
                 ht.team_abbr as home_abbr, at.team_abbr as away_abbr,
@@ -281,7 +555,6 @@ class DatabaseManager:
             p.id as player_id,
             p.display_name,
             p.position as db_position,
-            p.injury_status,
             t.team_abbr as db_team,
             -- Latest performance metrics
             (SELECT ps.fantasy_points
@@ -452,24 +725,32 @@ class DatabaseManager:
         self.conn.commit()
         logger.info(f"Batch updated {len(updates)} fantasy points")
 
-    def batch_update_injury_status(self, updates: List[Tuple[str, str]]) -> int:
-        """Batch update player injury statuses."""
+    def batch_insert_injury_reports(self, injury_reports: pd.DataFrame) -> None:
+        """Batch insert injury reports for temporal tracking."""
+        injury_reports.to_sql(
+            "injury_reports", self.conn, if_exists="append", index=False, method="multi"
+        )
+        logger.info(f"Batch inserted {len(injury_reports)} injury reports")
+
+    def get_latest_injury_status(self, player_id: int, season: int, week: int) -> Dict:
+        """Get the most recent injury report for a player before a given week."""
         query = """
-        UPDATE players
-        SET injury_status = ?
-        WHERE player_name = ? OR display_name = ?
+        SELECT injury_status, injury_designation, injury_body_part, practice_status, report_date
+        FROM injury_reports
+        WHERE player_id = ? AND season = ? AND week <= ?
+        ORDER BY week DESC, report_date DESC
+        LIMIT 1
         """
-
-        expanded_updates = []
-        for status, name in updates:
-            expanded_updates.append((status, name, name))
-
-        cursor = self.conn.executemany(query, expanded_updates)
-        self.conn.commit()
-
-        updated_count = cursor.rowcount
-        logger.info(f"Batch updated injury status for {updated_count} players")
-        return updated_count
+        result = self.conn.execute(query, [player_id, season, week]).fetchone()
+        if result:
+            return {
+                "injury_status": result[0],
+                "injury_designation": result[1],
+                "injury_body_part": result[2],
+                "practice_status": result[3],
+                "report_date": result[4],
+            }
+        return {}
 
     # ==================== UTILITY METHODS ====================
 
