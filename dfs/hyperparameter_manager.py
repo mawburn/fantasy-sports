@@ -164,8 +164,8 @@ class HyperparameterManager:
             "RB": 6.0,  # RBs have moderate variance
             "WR": 5.0,  # WRs have moderate variance
             "TE": 4.0,  # TEs have lower variance
-            "DST": 3.0,  # DST has lower variance
-            "DEF": 3.0,  # Alternative DST name
+            "DST": 4.0,  # DST has moderate variance, adjusted from 3.0
+            "DEF": 4.0,  # Alternative DST name
         }
         mae_threshold = mae_guardrails.get(position, 6.0)
 

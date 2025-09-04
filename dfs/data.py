@@ -1462,7 +1462,7 @@ def collect_weather_data_optimized(
     db_path: str = "data/nfl_dfs.db",
     limit: int = None,
     rate_limit_delay: float = 1.5,
-    max_days_per_batch: int = 30,
+    max_days_per_batch: int = 365,
 ) -> None:
     """Collect weather data using batch API calls for date ranges to minimize requests."""
     conn = get_db_connection(db_path)
@@ -1619,6 +1619,9 @@ def collect_weather_data_optimized(
                         logger.info(
                             f"Collected weather for {weather_count} games ({api_calls_made} API calls)"
                         )
+
+                    # Commit after each successful batch
+                    conn.commit()
 
                 except Exception as e:
                     logger.warning(
@@ -2275,7 +2278,7 @@ def load_draftkings_csv(
                 else:
                     # Try to find matching individual player
                     player_id = find_player_by_name_and_team(player_name, team_abbr, conn)
-                    
+
                     # If not found, create new player (rookie/new signing)
                     if not player_id:
                         player_id = create_new_player(player_name, team_abbr, roster_position, conn)
@@ -2378,7 +2381,7 @@ def find_player_by_name_and_team(name: str, team_abbr: str, conn: sqlite3.Connec
         'LAC': ['LAC', 'SD'],
         'SD': ['LAC', 'SD']
     }
-    
+
     # Get all possible team IDs for this team abbreviation
     search_teams = team_aliases.get(team_abbr, [team_abbr])
     team_ids = []
@@ -2452,18 +2455,18 @@ def create_new_player(name: str, team_abbr: str, position: str, conn: sqlite3.Co
     if not team_id:
         logger.warning(f"Cannot create player {name}: unknown team {team_abbr}")
         return None
-    
+
     # Map DraftKings positions to NFL positions
     position_mapping = {
         'QB': 'QB',
-        'RB': 'RB', 
+        'RB': 'RB',
         'WR': 'WR',
         'TE': 'TE',
         'FLEX': 'RB',  # Default to RB for FLEX
         'DST': 'DEF'
     }
     nfl_position = position_mapping.get(position, position)
-    
+
     try:
         cursor = conn.execute(
             """INSERT INTO players (player_name, display_name, position, team_id, status)
@@ -4837,8 +4840,8 @@ def get_training_data(
             features.update(weather_betting_features)
 
             # Note: Injury features removed from training to prevent data corruption
-            
-            # Add advanced QB-specific features for better prediction  
+
+            # Add advanced QB-specific features for better prediction
             try:
                 qb_features = {}
 

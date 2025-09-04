@@ -32,6 +32,11 @@ uv run python run.py collect --csv data/DKSalaries.csv
 uv run python run.py odds --date 2025-09-07  # specific date
 uv run python run.py odds                    # all upcoming games
 
+# Collect weather data (requires VISUAL_CROSSING_API_KEY for historical)
+uv run python run.py weather                 # all weather data (historical + upcoming)
+uv run python run.py weather --historical    # historical weather only
+uv run python run.py weather --upcoming      # upcoming games only
+
 # Train enhanced models with quantile regression and validation
 uv run python run.py train
 
@@ -90,6 +95,7 @@ dfs/
 - Gradient clipping and training stability improvements
 
 **NEW - Automated Hyperparameter Tuning:**
+
 - **LR Finder**: Exponential learning rate range test to find optimal LR (10-20% R² improvement)
 - **Batch Size Optimizer**: Memory-aware optimization for MPS/CUDA/CPU (5-15% speed boost)
 - **Optuna Integration**: Bayesian optimization for joint hyperparameter tuning (15-30% overall gain)
@@ -99,25 +105,29 @@ dfs/
 ### Advanced Feature Engineering (data.py)
 
 **Enhanced Odds Features:**
+
 - `team_spread`, `team_spread_abs`, `total_line` - core betting market data
 - `team_itt` - implied team total (total_line/2 - team_spread/2)
 - `game_tot_z`, `team_itt_z` - weekly z-scores for market context
 - `is_favorite` - binary flag for favorites vs underdogs
 
 **Comprehensive Weather Features:**
-- Raw: `temperature_f`, `wind_mph`, `humidity_pct`  
+
+- Raw: `temperature_f`, `wind_mph`, `humidity_pct`
 - Thresholds: `cold_lt40`, `hot_gt85`, `wind_gt15`, `dome`
 - Smart dome detection and outdoor-only weather collection
 
 **Advanced Injury Features:**
+
 - One-hot status: `injury_status_Out/Doubtful/Questionable/Probable`
 - Rolling metrics: `games_missed_last4`, `practice_trend`
 - Team impact: `team_injured_starters`, `opp_injured_starters`
 - Return indicators: `returning_from_injury`
 
 **Player Usage & Efficiency Features:**
+
 - Opportunity: `targets_ema`, `routes_run_ema`, `rush_att_ema`, `snap_share_ema`
-- Red Zone: `redzone_opps_ema`  
+- Red Zone: `redzone_opps_ema`
 - Efficiency: `air_yards_ema`, `adot_ema`, `yprr_ema`, `yards_after_contact`
 - Context: `salary`, `home`, `rest_days`, `travel`, `season_week`
 
@@ -126,6 +136,7 @@ dfs/
 **Schema Enforcement (`feature_names.json`):**
 
 Defines the fixed ordering of 40 features across 6 categories:
+
 - **Odds Features (7)**: `team_spread`, `team_itt`, `is_favorite`, etc.
 - **Weather Features (7)**: `temperature_f`, `cold_lt40`, `dome`, etc.
 - **Injury Features (9)**: `injury_status_*`, `games_missed_last4`, etc.
@@ -136,6 +147,7 @@ Defines the fixed ordering of 40 features across 6 categories:
 📖 **See [FEATURE_SCHEMA.md](FEATURE_SCHEMA.md) for complete documentation**
 
 **Data Quality Checks (`utils_feature_validation.py`):**
+
 - Fixed column ordering for model compatibility
 - Binary feature validation (0/1 values only)
 - Injury status exclusivity (only one status per player)
@@ -173,7 +185,7 @@ Defines the fixed ordering of 40 features across 6 categories:
 uv run python run.py collect --seasons 2022 2023 2024
 
 # 2. Collect weather data (optional, batch-optimized for enhanced predictions)
-uv run python run.py weather --limit 25
+uv run python run.py weather --historical
 
 # 3. Train models
 uv run python run.py train --positions QB RB WR TE DEF
@@ -205,6 +217,7 @@ uv run python run.py train --positions QB RB WR --tune-lr
 ```
 
 **How it works:**
+
 - Starts with very small LR (1e-8) and exponentially increases
 - Tracks loss vs learning rate curve
 - Identifies steepest decline point (fastest learning)
@@ -227,6 +240,7 @@ uv run python run.py train --positions WR TE --tune-batch-size
 ```
 
 **How it works:**
+
 - Binary search for maximum memory-feasible batch size
 - Tests performance across different batch sizes
 - Balances memory usage with gradient quality
@@ -255,6 +269,7 @@ uv run python run.py train --positions QB RB --tune-all --trials 50
 ```
 
 **Optimized parameters:**
+
 - Learning rate (log scale: 1e-6 to 1e-2)
 - Batch size (16, 32, 64, 128, 256)
 - Hidden layer sizes (position-specific ranges)
@@ -447,17 +462,14 @@ The system automatically integrates betting odds into your feature engineering p
 Weather data can enhance predictions for outdoor stadium games. The weather command uses the Visual Crossing Weather API with intelligent batch processing:
 
 ```bash
-# Optimized batch collection (default - MUCH more efficient)
-uv run python run.py weather --limit 25
+# Collect all weather data (historical + upcoming) - RECOMMENDED
+uv run python run.py weather
 
-# Conservative daily collection (stays well within API limits)
-uv run python run.py weather --limit 50 --rate-limit 2.0
+# Collect only historical weather data for training
+uv run python run.py weather --historical
 
-# Disable batch processing (less efficient, one call per game)
-uv run python run.py weather --limit 20 --no-batch
-
-# Unlimited collection (use all available API quota)
-uv run python run.py weather --rate-limit 1.5
+# Collect only upcoming weather data for current contests
+uv run python run.py weather --upcoming
 ```
 
 **Batch Processing Benefits:**
@@ -516,7 +528,7 @@ The system includes comprehensive tests for validation and reliability:
 # Run feature validation tests
 uv run python tests/test_features.py
 
-# Run model training tests  
+# Run model training tests
 uv run python tests/test_training.py
 
 # Run all tests together
@@ -524,6 +536,7 @@ uv run python -m pytest tests/ -v
 ```
 
 **Test Coverage:**
+
 - ✅ Feature schema validation and ordering
 - ✅ Binary feature constraints (0/1 values)
 - ✅ Injury status exclusivity (mutual exclusion)

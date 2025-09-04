@@ -4236,7 +4236,7 @@ class DEFCatBoostModel:
                 "catboost_min_data_in_leaf": best_params["min_data_in_leaf"],
             }
 
-            hyperparameter_manager.update_hyperparameters(
+            updated = hyperparameter_manager.update_hyperparameters(
                 position="DST",
                 new_params=yaml_params,
                 validation_r2=val_r2,
@@ -4244,9 +4244,14 @@ class DEFCatBoostModel:
                 validation_spearman=final_spearman,
                 trials=n_trials,
             )
-            logger.info(
-                f"Updated DST hyperparameters in YAML (MAE: {final_mae:.3f}, Spearman: {final_spearman:.3f}, R²: {val_r2:.4f})"
-            )
+            if updated:
+                logger.info(
+                    f"Updated DST hyperparameters in YAML (MAE: {final_mae:.3f}, Spearman: {final_spearman:.3f}, R²: {val_r2:.4f})"
+                )
+            else:
+                logger.info(
+                    f"DST hyperparameters not updated due to guardrail failure (MAE: {final_mae:.3f}, Spearman: {final_spearman:.3f}, R²: {val_r2:.4f})"
+                )
 
         # Store best params for use in training
         self.best_params = best_params

@@ -19,6 +19,7 @@ from data import (
     collect_injury_data,
     collect_nfl_data,
     collect_odds_data,
+    collect_weather_data_optimized,
     get_current_week_players,
     get_db_connection,
     get_player_features,
@@ -1087,6 +1088,19 @@ def main():
         help="Update single player injury status (e.g., --player 'Patrick Mahomes' Q)",
     )
 
+    # Weather command
+    weather_parser = subparsers.add_parser("weather", help="Collect weather data")
+    weather_parser.add_argument(
+        "--historical",
+        action="store_true",
+        help="Collect all missing historical weather data"
+    )
+    weather_parser.add_argument(
+        "--upcoming",
+        action="store_true",
+        help="Collect weather for upcoming games only"
+    )
+
     # Optimize command
     optimize_parser = subparsers.add_parser("optimize", help="Build optimal lineups")
     optimize_parser.add_argument("--contest-id", help="DraftKings contest ID")
@@ -1209,6 +1223,22 @@ def main():
             manual_updates=manual_updates if manual_updates else None,
         )
         logger.info(f"Updated injury status for {count} player(s)")
+
+    elif args.command == "weather":
+        if args.historical:
+            logger.info("Collecting all historical weather data...")
+            collect_weather_data_optimized(db_path=DEFAULT_DB_PATH)
+        elif args.upcoming:
+            logger.info("Collecting weather for upcoming games...")
+            # Import the upcoming weather function
+            from collect_weather_today import main as collect_upcoming
+            collect_upcoming()
+        else:
+            # Default: collect both
+            logger.info("Collecting all weather data (historical + upcoming)...")
+            collect_weather_data_optimized(db_path=DEFAULT_DB_PATH)
+            from collect_weather_today import main as collect_upcoming
+            collect_upcoming()
 
     elif args.command == "predict":
         predict_players_optimized(args.contest_id, args.output, args.injury_file)
