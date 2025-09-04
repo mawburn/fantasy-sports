@@ -184,8 +184,7 @@ def extract_volume_features(
             WHERE pbp.posteam = (
                 SELECT t.team_abbr
                 FROM players p
-                JOIN teams t ON p.team_id = t.id
-                WHERE p.id = ?
+                    WHERE p.id = ?
             )
             AND g.game_date >= ? AND g.game_date < ?
             AND g.game_finished = 1
@@ -2836,11 +2835,11 @@ def get_rb_specific_features(
             rz_query, (*game_ids, f"%{player_name.split()[0]}%")
         ).fetchone()
 
-        if rz_stats and rz_stats[4] > 0:  # Has attempts
-            features["rb_rz_attempts_pg"] = rz_stats[0] / len(game_ids)
-            features["rb_inside10_attempts_pg"] = rz_stats[1] / len(game_ids)
-            features["rb_inside5_attempts_pg"] = rz_stats[2] / len(game_ids)
-            features["rb_td_rate"] = rz_stats[3] / rz_stats[4] if rz_stats[4] > 0 else 0
+        if rz_stats and rz_stats[4] and rz_stats[4] > 0 and len(game_ids) > 0:  # Has attempts
+            features["rb_rz_attempts_pg"] = (rz_stats[0] or 0) / len(game_ids)
+            features["rb_inside10_attempts_pg"] = (rz_stats[1] or 0) / len(game_ids)
+            features["rb_inside5_attempts_pg"] = (rz_stats[2] or 0) / len(game_ids)
+            features["rb_td_rate"] = (rz_stats[3] or 0) / rz_stats[4]
             features["rb_ypc"] = rz_stats[5] or 0
 
         # Get team red zone attempts for share calculation
@@ -2853,7 +2852,7 @@ def get_rb_specific_features(
         """
 
         team_rz = conn.execute(team_rz_query, (*game_ids, team_abbr)).fetchone()
-        if team_rz and team_rz[0] > 0 and "rb_rz_attempts_pg" in features:
+        if team_rz and team_rz[0] and team_rz[0] > 0 and "rb_rz_attempts_pg" in features:
             features["rb_rz_share"] = (
                 features["rb_rz_attempts_pg"] * len(game_ids)
             ) / team_rz[0]
@@ -2899,7 +2898,7 @@ def get_rb_specific_features(
                 b.spread_favorite,
                 b.over_under_line,
                 CASE
-                    WHEN ht.abbreviation = ? THEN b.home_team_spread
+                    WHEN ht.team_abbr = ? THEN b.home_team_spread
                     ELSE b.away_team_spread
                 END as team_spread
             FROM games g
@@ -2907,7 +2906,7 @@ def get_rb_specific_features(
             JOIN teams ht ON g.home_team_id = ht.id
             JOIN teams at ON g.away_team_id = at.id
             WHERE g.season = ? AND g.week = ?
-            AND (ht.abbreviation = ? OR at.abbreviation = ?)
+            AND (ht.team_abbr = ? OR at.team_abbr = ?)
         """,
             (team_abbr, season, week, team_abbr, team_abbr),
         ).fetchone()
@@ -2916,8 +2915,8 @@ def get_rb_specific_features(
             features["rb_team_spread"] = game_script[2] or 0
             features["rb_game_total"] = game_script[1] or 47
             features["rb_implied_total"] = (
-                (game_script[1] / 2.0) - (game_script[2] / 2.0)
-                if game_script[1]
+                ((game_script[1] or 47) / 2.0) - ((game_script[2] or 0) / 2.0)
+                if game_script[1] is not None and game_script[2] is not None
                 else 23.5
             )
             features["rb_positive_script"] = (
@@ -2932,14 +2931,13 @@ def get_rb_specific_features(
                 AVG(ps.fantasy_points) as avg_fp_allowed
             FROM player_stats ps
             JOIN games g ON ps.game_id = g.id
-            JOIN teams t ON ps.team_id = t.id
-            JOIN players p ON ps.player_id = p.player_id
+            JOIN players p ON ps.player_id = p.id
             WHERE p.position = 'RB'
-            AND t.abbreviation != ?
+            AND t.team_abbr != ?
             AND (
-                (g.home_team_id = (SELECT id FROM teams WHERE abbreviation = ?) AND
+                (g.home_team_id = (SELECT id FROM teams WHERE team_abbr = ?) AND
                  g.away_team_id = t.id) OR
-                (g.away_team_id = (SELECT id FROM teams WHERE abbreviation = ?) AND
+                (g.away_team_id = (SELECT id FROM teams WHERE team_abbr = ?) AND
                  g.home_team_id = t.id)
             )
             AND g.season = ? AND g.week < ?
@@ -3057,12 +3055,12 @@ def get_wr_specific_features(
             FROM play_by_play
             WHERE game_id IN ({game_id_placeholders})
             AND pass_attempt = 1
-            AND (receiver LIKE ? OR description LIKE ?)
+            AND description LIKE ?
         """
 
         rz_stats = conn.execute(
             rz_targets_query,
-            (*game_ids, f"%{player_name.split()[0]}%", f"%{player_name.split()[0]}%"),
+            (*game_ids, f"%{player_name.split()[0]}%"),
         ).fetchone()
 
         if rz_stats:
@@ -3081,7 +3079,7 @@ def get_wr_specific_features(
             SELECT
                 b.over_under_line,
                 CASE
-                    WHEN ht.abbreviation = ? THEN b.home_team_spread
+                    WHEN ht.team_abbr = ? THEN b.home_team_spread
                     ELSE b.away_team_spread
                 END as team_spread
             FROM games g
@@ -3089,7 +3087,7 @@ def get_wr_specific_features(
             JOIN teams ht ON g.home_team_id = ht.id
             JOIN teams at ON g.away_team_id = at.id
             WHERE g.season = ? AND g.week = ?
-            AND (ht.abbreviation = ? OR at.abbreviation = ?)
+            AND (ht.team_abbr = ? OR at.team_abbr = ?)
         """,
             (team_abbr, season, week, team_abbr, team_abbr),
         ).fetchone()
@@ -3152,6 +3150,9 @@ def get_te_specific_features(
 ) -> Dict[str, float]:
     """Extract TE-specific features for enhanced prediction accuracy."""
     features = {}
+    
+    # Debug logging
+    logger.debug(f"get_te_specific_features called with player_id={player_id}, conn type={type(conn)}")
 
     try:
         # 1. Red Zone Target Share (most predictive for TEs)
@@ -3161,17 +3162,18 @@ def get_te_specific_features(
             COALESCE(SUM(team_totals.total_rz_targets), 1) as team_rz_targets
         FROM player_stats ps
         JOIN games g ON ps.game_id = g.id
-        JOIN teams t ON ps.team_id = t.id
+        JOIN players p ON ps.player_id = p.id
         LEFT JOIN (
             SELECT
                 ps2.game_id,
-                ps2.team_id,
+                p2.team_id,
                 SUM(CASE WHEN ps2.red_zone_targets > 0 THEN ps2.red_zone_targets ELSE 0 END) as total_rz_targets
             FROM player_stats ps2
-            GROUP BY ps2.game_id, ps2.team_id
-        ) team_totals ON ps.game_id = team_totals.game_id AND ps.team_id = team_totals.team_id
-        WHERE ps.player_id = ? AND t.team_abbr = ?
-            AND ps.season = ? AND ps.week BETWEEN ? AND ?
+            JOIN players p2 ON ps2.player_id = p2.id
+            GROUP BY ps2.game_id, p2.team_id
+        ) team_totals ON ps.game_id = team_totals.game_id AND p.team_id = team_totals.team_id
+        WHERE ps.player_id = ? AND p.team_id IN (SELECT id FROM teams WHERE team_abbr = ?)
+            AND g.season = ? AND g.week BETWEEN ? AND ?
         """
         rz_params = (
             player_id,
@@ -3180,7 +3182,13 @@ def get_te_specific_features(
             max(1, week - lookback_weeks),
             week - 1,
         )
-        rz_result = conn.execute(rz_query, rz_params).fetchone()
+        try:
+            rz_result = conn.execute(rz_query, rz_params).fetchone()
+        except Exception as query_error:
+            logger.error(f"RZ query failed: {query_error}")
+            logger.error(f"Query: {rz_query}")
+            logger.error(f"Params: {rz_params}")
+            raise
         if rz_result:
             player_rz, team_rz = rz_result
             features["te_rz_target_share"] = player_rz / max(team_rz, 1)
@@ -3190,23 +3198,22 @@ def get_te_specific_features(
         # 2. Two-TE Set Usage (formation-based opportunities)
         formation_query = """
         SELECT
-            AVG(CASE WHEN ps.snaps > 0 THEN ps.snaps ELSE 0 END) as avg_snaps,
+            AVG(CASE WHEN ps.snap_count > 0 THEN ps.snap_count ELSE 0 END) as avg_snaps,
             AVG(team_totals.te_snaps) as avg_team_te_snaps
         FROM player_stats ps
         JOIN games g ON ps.game_id = g.id
-        JOIN teams t ON ps.team_id = t.id
+        JOIN players p ON ps.player_id = p.id
         LEFT JOIN (
             SELECT
                 ps2.game_id,
-                t2.id as team_id,
-                SUM(CASE WHEN p2.position = 'TE' AND ps2.snaps > 0 THEN ps2.snaps ELSE 0 END) as te_snaps
+                p2.team_id,
+                SUM(CASE WHEN p2.position = 'TE' AND ps2.snap_count > 0 THEN ps2.snap_count ELSE 0 END) as te_snaps
             FROM player_stats ps2
             JOIN players p2 ON ps2.player_id = p2.id
-            JOIN teams t2 ON p2.team_id = t2.id
-            GROUP BY ps2.game_id, t2.id
-        ) team_totals ON ps.game_id = team_totals.game_id AND ps.team_id = team_totals.team_id
-        WHERE ps.player_id = ? AND t.team_abbr = ?
-            AND ps.season = ? AND ps.week BETWEEN ? AND ?
+            GROUP BY ps2.game_id, p2.team_id
+        ) team_totals ON ps.game_id = team_totals.game_id AND p.team_id = team_totals.team_id
+        WHERE ps.player_id = ? AND p.team_id IN (SELECT id FROM teams WHERE team_abbr = ?)
+            AND g.season = ? AND g.week BETWEEN ? AND ?
         """
         formation_result = conn.execute(formation_query, rz_params).fetchone()
         if formation_result and formation_result[0] is not None:
@@ -3230,9 +3237,9 @@ def get_te_specific_features(
             COUNT(*) as games_played
         FROM player_stats ps
         JOIN games g ON ps.game_id = g.id
-        JOIN teams t ON ps.team_id = t.id
-        WHERE ps.player_id = ? AND t.team_abbr = ?
-            AND ps.season = ? AND ps.week BETWEEN ? AND ?
+        JOIN players p ON ps.player_id = p.id
+        WHERE ps.player_id = ? AND p.team_id IN (SELECT id FROM teams WHERE team_abbr = ?)
+            AND g.season = ? AND g.week BETWEEN ? AND ?
         """
         route_result = conn.execute(route_query, rz_params).fetchone()
         if route_result and route_result[3] > 0:
@@ -3253,13 +3260,13 @@ def get_te_specific_features(
         gl_query = """
         SELECT
             COALESCE(SUM(CASE WHEN ps.red_zone_touches > 0 THEN ps.red_zone_touches ELSE 0 END), 0) as rz_touches,
-            COALESCE(SUM(CASE WHEN ps.touchdowns > 0 THEN ps.touchdowns ELSE 0 END), 0) as tds,
+            COALESCE(SUM(CASE WHEN ps.receiving_tds > 0 THEN ps.receiving_tds ELSE 0 END), 0) as tds,
             COUNT(*) as games
         FROM player_stats ps
         JOIN games g ON ps.game_id = g.id
-        JOIN teams t ON ps.team_id = t.id
-        WHERE ps.player_id = ? AND t.team_abbr = ?
-            AND ps.season = ? AND ps.week BETWEEN ? AND ?
+        JOIN players p ON ps.player_id = p.id
+        WHERE ps.player_id = ? AND p.team_id IN (SELECT id FROM teams WHERE team_abbr = ?)
+            AND g.season = ? AND g.week BETWEEN ? AND ?
         """
         gl_result = conn.execute(gl_query, rz_params).fetchone()
         if gl_result:
@@ -3273,29 +3280,34 @@ def get_te_specific_features(
         # 5. Game Script Dependency
         game_script_query = """
         SELECT
-            AVG(CASE WHEN team_totals.team_score > opp_totals.opp_score THEN ps.dk_points ELSE 0 END) as avg_winning_points,
-            AVG(CASE WHEN team_totals.team_score <= opp_totals.opp_score THEN ps.dk_points ELSE 0 END) as avg_losing_points,
-            AVG(ps.dk_points) as avg_total_points
+            AVG(CASE WHEN team_totals.team_score > opp_totals.opp_score THEN ps.fantasy_points ELSE 0 END) as avg_winning_points,
+            AVG(CASE WHEN team_totals.team_score <= opp_totals.opp_score THEN ps.fantasy_points ELSE 0 END) as avg_losing_points,
+            AVG(ps.fantasy_points) as avg_total_points
         FROM player_stats ps
         JOIN games g ON ps.game_id = g.id
-        JOIN teams t ON ps.team_id = t.id
+        JOIN players p ON ps.player_id = p.id
         LEFT JOIN (
-            SELECT game_id, team_id, SUM(dk_points) as team_score
-            FROM player_stats GROUP BY game_id, team_id
-        ) team_totals ON ps.game_id = team_totals.game_id AND ps.team_id = team_totals.team_id
+            SELECT ps3.game_id, p3.team_id, SUM(ps3.fantasy_points) as team_score
+            FROM player_stats ps3
+            JOIN players p3 ON ps3.player_id = p3.id
+            GROUP BY ps3.game_id, p3.team_id
+        ) team_totals ON ps.game_id = team_totals.game_id AND p.team_id = team_totals.team_id
         LEFT JOIN (
             SELECT g2.id as game_id,
-                   CASE WHEN g2.home_team_id = ps2.team_id THEN g2.away_team_id ELSE g2.home_team_id END as opp_team_id,
-                   SUM(ps2.dk_points) as opp_score
+                   CASE WHEN g2.home_team_id = p2.team_id THEN g2.away_team_id ELSE g2.home_team_id END as opp_team_id,
+                   SUM(ps2.fantasy_points) as opp_score
             FROM games g2
             JOIN player_stats ps2 ON g2.id = ps2.game_id
-            WHERE ps2.team_id != t.id
+            JOIN players p2 ON ps2.player_id = p2.id
+            WHERE p2.team_id NOT IN (SELECT id FROM teams WHERE team_abbr = ?)
             GROUP BY g2.id, opp_team_id
         ) opp_totals ON ps.game_id = opp_totals.game_id
-        WHERE ps.player_id = ? AND t.team_abbr = ?
-            AND ps.season = ? AND ps.week BETWEEN ? AND ?
+        WHERE ps.player_id = ? AND p.team_id IN (SELECT id FROM teams WHERE team_abbr = ?)
+            AND g.season = ? AND g.week BETWEEN ? AND ?
         """
-        script_result = conn.execute(game_script_query, rz_params).fetchone()
+        # Add team_abbr for the subquery
+        script_params = (team_abbr,) + rz_params  # team_abbr for subquery + original params
+        script_result = conn.execute(game_script_query, script_params).fetchone()
         if script_result and script_result[2]:
             winning_avg, losing_avg, total_avg = script_result
             features["te_winning_game_boost"] = (winning_avg or 0) / max(total_avg, 1)
@@ -3307,16 +3319,16 @@ def get_te_specific_features(
         # 6. Opponent TE Defense Strength
         def_query = """
         SELECT
-            AVG(CASE WHEN p.position = 'TE' THEN ps.dk_points ELSE 0 END) as avg_te_points_allowed,
+            AVG(CASE WHEN p.position = 'TE' THEN ps.fantasy_points ELSE 0 END) as avg_te_points_allowed,
             COUNT(CASE WHEN p.position = 'TE' THEN 1 END) as te_games
         FROM player_stats ps
         JOIN players p ON ps.player_id = p.id
         JOIN games g ON ps.game_id = g.id
         JOIN teams opp_t ON (
-            CASE WHEN g.home_team_id = ps.team_id THEN g.away_team_id ELSE g.home_team_id END = opp_t.id
+            CASE WHEN g.home_team_id = p.team_id THEN g.away_team_id ELSE g.home_team_id END = opp_t.id
         )
         WHERE opp_t.team_abbr = ?
-            AND ps.season = ? AND ps.week BETWEEN ? AND ?
+            AND g.season = ? AND g.week BETWEEN ? AND ?
             AND p.position = 'TE'
         """
         def_params = (opponent_abbr, season, max(1, week - 4), week - 1)
@@ -3337,9 +3349,9 @@ def get_te_specific_features(
             AVG(CASE WHEN ps.targets > 0 THEN ps.receptions / ps.targets ELSE 0 END) as catch_rate
         FROM player_stats ps
         JOIN games g ON ps.game_id = g.id
-        JOIN teams t ON ps.team_id = t.id
-        WHERE ps.player_id = ? AND t.team_abbr = ?
-            AND ps.season = ? AND ps.week BETWEEN ? AND ?
+        JOIN players p ON ps.player_id = p.id
+        WHERE ps.player_id = ? AND p.team_id IN (SELECT id FROM teams WHERE team_abbr = ?)
+            AND g.season = ? AND g.week BETWEEN ? AND ?
             AND ps.receptions > 0
         """
         yac_result = conn.execute(yac_query, rz_params).fetchone()
@@ -3357,13 +3369,13 @@ def get_te_specific_features(
         role_query = """
         SELECT
             AVG(ps.targets) as avg_targets,
-            AVG(ps.snaps) as avg_snaps,
+            AVG(ps.snap_count) as avg_snaps,
             AVG(CASE WHEN ps.targets >= 4 THEN 1 ELSE 0 END) as receiving_game_rate
         FROM player_stats ps
         JOIN games g ON ps.game_id = g.id
-        JOIN teams t ON ps.team_id = t.id
-        WHERE ps.player_id = ? AND t.team_abbr = ?
-            AND ps.season = ? AND ps.week BETWEEN ? AND ?
+        JOIN players p ON ps.player_id = p.id
+        WHERE ps.player_id = ? AND p.team_id IN (SELECT id FROM teams WHERE team_abbr = ?)
+            AND g.season = ? AND g.week BETWEEN ? AND ?
         """
         role_result = conn.execute(role_query, rz_params).fetchone()
         if role_result:
@@ -3387,9 +3399,10 @@ def get_te_specific_features(
                 SUM(ps.targets) as team_targets,
                 SUM(ps.passing_yards + ps.receiving_yards) as team_pass_yards
             FROM player_stats ps
-            JOIN teams t ON ps.team_id = t.id
-            WHERE t.team_abbr = ?
-                AND ps.season = ? AND ps.week BETWEEN ? AND ?
+            JOIN games g ON ps.game_id = g.id
+            JOIN players p ON ps.player_id = p.id
+            WHERE p.team_id IN (SELECT id FROM teams WHERE team_abbr = ?)
+                AND g.season = ? AND g.week BETWEEN ? AND ?
             GROUP BY ps.game_id
         ) team_totals
         """
@@ -3416,14 +3429,20 @@ def get_te_specific_features(
         # 11. Vegas Correlation Features
         vegas_query = """
         SELECT
-            AVG(CASE WHEN g.total_line > 0 THEN g.total_line ELSE 45 END) as avg_total,
-            AVG(CASE WHEN g.team_implied_total > 0 THEN g.team_implied_total ELSE 22.5 END) as avg_implied
+            AVG(CASE WHEN bo.over_under_line > 0 THEN bo.over_under_line ELSE 45 END) as avg_total,
+            AVG(CASE 
+                WHEN g.home_team_id IN (SELECT id FROM teams WHERE team_abbr = ?) 
+                THEN (bo.over_under_line / 2.0) - (bo.home_team_spread / 2.0)
+                ELSE (bo.over_under_line / 2.0) - (bo.away_team_spread / 2.0)
+            END) as avg_implied
         FROM games g
-        JOIN teams t ON (g.home_team_id = t.id OR g.away_team_id = t.id)
-        WHERE t.team_abbr = ?
+        LEFT JOIN betting_odds bo ON g.id = bo.game_id
+        WHERE (g.home_team_id IN (SELECT id FROM teams WHERE team_abbr = ?)
+               OR g.away_team_id IN (SELECT id FROM teams WHERE team_abbr = ?))
             AND g.season = ? AND g.week BETWEEN ? AND ?
         """
-        vegas_result = conn.execute(vegas_query, team_params).fetchone()
+        vegas_params = (team_abbr, team_abbr, team_abbr, season, max(1, week - lookback_weeks), week - 1)
+        vegas_result = conn.execute(vegas_query, vegas_params).fetchone()
         if vegas_result:
             avg_total, avg_implied = vegas_result
             features["te_vegas_total_correlation"] = (avg_total or 45) / 50.0
@@ -3435,15 +3454,15 @@ def get_te_specific_features(
         # 12. Ceiling Game Indicators (high target games)
         ceiling_query = """
         SELECT
-            MAX(ps.dk_points) as max_points,
-            AVG(ps.dk_points) as avg_points,
-            COUNT(CASE WHEN ps.dk_points >= 15 THEN 1 END) as ceiling_games,
+            MAX(ps.fantasy_points) as max_points,
+            AVG(ps.fantasy_points) as avg_points,
+            COUNT(CASE WHEN ps.fantasy_points >= 15 THEN 1 END) as ceiling_games,
             COUNT(*) as total_games
         FROM player_stats ps
         JOIN games g ON ps.game_id = g.id
-        JOIN teams t ON ps.team_id = t.id
-        WHERE ps.player_id = ? AND t.team_abbr = ?
-            AND ps.season = ? AND ps.week BETWEEN ? AND ?
+        JOIN players p ON ps.player_id = p.id
+        WHERE ps.player_id = ? AND p.team_id IN (SELECT id FROM teams WHERE team_abbr = ?)
+            AND g.season = ? AND g.week BETWEEN ? AND ?
         """
         ceiling_result = conn.execute(ceiling_query, rz_params).fetchone()
         if ceiling_result and ceiling_result[3] > 0:
@@ -3459,7 +3478,9 @@ def get_te_specific_features(
             features["te_floor_consistency"] = 0.7
 
     except Exception as e:
+        import traceback
         logger.warning(f"Error computing TE features for {player_name}: {e}")
+        logger.debug(f"Full traceback: {traceback.format_exc()}")
         # Provide safe defaults for all features
         default_features = {
             "te_rz_target_share": 0.15,
@@ -3639,7 +3660,7 @@ def get_dst_specific_features(
             SELECT ds.game_id, COUNT(*) as total_plays
             FROM dfs_scores ds
             JOIN teams t ON ds.team_id = t.id
-            WHERE t.team_abbr = ? AND ds.season = ?
+            WHERE p.team_id IN (SELECT id FROM teams WHERE team_abbr = ?) AND ds.season = ?
                 AND ds.week BETWEEN ? AND ?
             GROUP BY ds.game_id
         ) team_totals
@@ -3807,8 +3828,7 @@ def get_player_features(
         player_info = conn.execute(
             """SELECT p.position, p.team_id, t.team_abbr, p.player_name
                FROM players p
-               JOIN teams t ON p.team_id = t.id
-               WHERE p.id = ?""",
+                  WHERE p.id = ?""",
             (player_id,),
         ).fetchone()
 
@@ -5966,8 +5986,7 @@ def get_current_week_players(
                 t.team_name
                FROM draftkings_salaries dk
                JOIN players p ON dk.player_id = p.id
-               JOIN teams t ON p.team_id = t.id
-               WHERE dk.contest_id = ?
+                  WHERE dk.contest_id = ?
                ORDER BY p.position, dk.salary DESC""",
             (contest_id,),
         ).fetchall()

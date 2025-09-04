@@ -525,11 +525,13 @@ class BatchSizeOptimizer:
                 val_dataset = val_loader.dataset
 
                 # Create new loaders with test batch size
+                # Use num_workers=0 for CUDA to avoid initialization errors
+                num_workers = 0 if hasattr(self, 'device') and self.device.type == 'cuda' else 0
                 test_train_loader = DataLoader(
-                    train_dataset, batch_size=batch_size, shuffle=True
+                    train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers
                 )
                 test_val_loader = DataLoader(
-                    val_dataset, batch_size=batch_size, shuffle=False
+                    val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers
                 )
 
                 # Train for limited epochs
@@ -1838,7 +1840,9 @@ class BaseNeuralModel(ABC):
         X_tensor = torch.tensor(X_train, dtype=torch.float32).to(self.device)
         y_tensor = torch.tensor(y_train, dtype=torch.float32).to(self.device)
         dataset = TensorDataset(X_tensor, y_tensor)
-        loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
+        # Use num_workers=0 for CUDA to avoid initialization errors
+        num_workers = 0 if self.device.type == 'cuda' else 0
+        loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True, num_workers=num_workers)
 
         # Run LR finder
         lr_finder = LRFinder(self.network, temp_optimizer, self.criterion, self.device)
@@ -1897,8 +1901,10 @@ class BaseNeuralModel(ABC):
         val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
 
         # Create initial loaders (will be recreated with different batch sizes)
-        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+        # Use num_workers=0 for CUDA to avoid initialization errors
+        num_workers = 0 if self.device.type == 'cuda' else 0
+        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=num_workers)
+        val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=num_workers)
 
         # Find optimal batch size
         optimal_batch_size = batch_optimizer.optimize_batch_size(
@@ -2132,9 +2138,14 @@ class BaseNeuralModel(ABC):
         train_dataset = TensorDataset(train_X, train_y)
         val_dataset = TensorDataset(val_X, val_y)
 
-        # Optimize DataLoader settings for Apple Silicon
-        num_workers = 0 if self.device.type == "mps" else min(4, os.cpu_count() // 2)
-        pin_memory = False  # Disabled since tensors are already moved to device
+        # Optimize DataLoader settings for device type
+        # Set num_workers=0 for GPU/MPS to avoid CUDA initialization errors in forked processes
+        if self.device.type in ["cuda", "mps"]:
+            num_workers = 0
+            pin_memory = False
+        else:
+            num_workers = min(4, os.cpu_count() // 2)
+            pin_memory = False
 
         train_loader = DataLoader(
             train_dataset,
