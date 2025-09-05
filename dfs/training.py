@@ -375,8 +375,9 @@ class ModelTrainer:
             X_val, y_val, shuffle=False
         )
 
-        # Setup best model tracking (without early stopping)
+        # Setup best model tracking (track by NDCG@20, not val_loss)
         best_val_loss = float("inf")
+        best_ndcg = -float("inf")  # Track best NDCG@20
         best_metrics = {}
         best_epoch = 0
         best_model_state = None
@@ -397,15 +398,20 @@ class ModelTrainer:
             self.history["val_loss"].append(val_loss)
             self.history["val_metrics"].append(val_metrics)
 
-            # Track best model (save state when we find a better one)
-            if val_loss < best_val_loss:
+            # Track best model based on NDCG@20 (DFS cares about ranking quality)
+            current_ndcg = val_metrics.get("ndcg@20", 0.0)
+            if current_ndcg > best_ndcg:
+                best_ndcg = current_ndcg
                 best_val_loss = val_loss
                 best_metrics = val_metrics.copy()
                 best_epoch = epoch
                 best_model_state = self.model.state_dict().copy()
                 best_learning_rate = self.optimizer.param_groups[0]["lr"]  # Capture LR at best epoch
                 if self.verbose:
-                    logger.info(f"New best model found at epoch {epoch} with val_loss={val_loss:.4f}")
+                    logger.info(
+                        f"New best model found at epoch {epoch} with NDCG@20={current_ndcg:.4f}, "
+                        f"MAE={val_metrics.get('mae', 0):.3f}, val_loss={val_loss:.4f}"
+                    )
 
             # Learning rate scheduling
             self.scheduler.step(val_loss)
@@ -418,7 +424,9 @@ class ModelTrainer:
                     f"Epoch {epoch:3d}/{self.epochs} | "
                     f"Train Loss: {train_loss:.4f} | "
                     f"Val Loss: {val_loss:.4f} | "
-                    f"Val R²: {val_metrics['r2']:.4f} | "
+                    f"NDCG@20: {val_metrics.get('ndcg@20', 0):.4f} | "
+                    f"MAE: {val_metrics.get('mae', 0):.3f} | "
+                    f"R²: {val_metrics['r2']:.4f} | "
                     f"LR: {current_lr:.2e} | "
                     f"Time: {elapsed:.1f}s"
                 )
@@ -427,7 +435,10 @@ class ModelTrainer:
         if best_model_state is not None:
             self.model.load_state_dict(best_model_state)
             if self.verbose:
-                logger.info(f"Training completed. Best model from epoch {best_epoch} restored.")
+                logger.info(
+                    f"Training completed. Best model from epoch {best_epoch} restored "
+                    f"(NDCG@20={best_ndcg:.4f}, MAE={best_metrics.get('mae', 0):.3f})."
+                )
 
         # Final validation to get best metrics
         _, final_metrics, _ = self.validate(val_loader, loss_fn, position)
