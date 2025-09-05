@@ -832,43 +832,138 @@ try:
             print(f"\n--- Trial {trial.number + 1} ---")
 
             try:
-                # Train model
-                result = model.train(self.X_train, self.y_train, self.X_val, self.y_val)
+                # Instead of using the standard train method, we need custom training
+                # that considers guardrails when selecting the best epoch
 
-                # Calculate ALL metrics from the current model state (should be best checkpoint after training)
-                import numpy as np
-                import torch
-                from scipy.stats import spearmanr
-                from sklearn.metrics import r2_score
+                # Initialize the model's network if not already done
+                if model.network is None:
+                    input_size = self.X_train.shape[1]
+                    model.input_size = input_size
+                    model.network = model.build_network(input_size)
+                    model.network.to(model.device)
 
-                model.network.eval()
-                with torch.no_grad():
-                    X_val_tensor = torch.tensor(self.X_val, dtype=torch.float32)
-                    if hasattr(model, "device"):
-                        X_val_tensor = X_val_tensor.to(model.device)
+                # Normalize targets
+                model._normalize_targets(self.y_train)
+                y_train_normalized = (self.y_train - model.y_mean) / model.y_std
+                y_val_normalized = (self.y_val - model.y_mean) / model.y_std
 
-                    val_pred = model.network(X_val_tensor)
-                    if isinstance(val_pred, dict):
-                        val_pred = val_pred["mean"]
-                    val_pred = val_pred.detach().cpu().numpy().squeeze()
+                # Create data loaders
+                from training import ModelTrainer
+                from data_utils import DataManager
 
-                # Use all metrics from training result (calculated from best checkpoint)
-                mae = result.val_mae
-                r2 = result.val_r2
-
-                # CRITICAL: Convert MAE from normalized scale back to original scale for guardrail checking
-                # The model trains on normalized targets, so mae is in normalized units
-                # We need to convert it back to fantasy points for meaningful guardrail comparison
-                mae_original_scale = mae * model.y_std
-
-                # Still need to calculate NDCG and Spearman from current best model state
-                ndcg_score = calculate_ndcg_at_k(self.y_val, val_pred, k=20)
-                spearman_corr, _ = spearmanr(self.y_val, val_pred)
-
-                # Debug: Check if model actually has best checkpoint loaded
-                logger.info(
-                    f"Trial {trial.number + 1}: MAE={mae:.3f} (normalized), {mae_original_scale:.3f} (original scale)"
+                trainer = ModelTrainer(
+                    model=model.network,
+                    device=model.device,
+                    learning_rate=model.learning_rate,
+                    weight_decay=model.weight_decay,
+                    batch_size=model.batch_size,
+                    epochs=model.epochs,
+                    early_stopping_patience=model.patience,
+                    scheduler_patience=15,
+                    gradient_clip_val=1.0,
+                    use_amp=model.device.type == "cuda",
+                    verbose=False  # Less verbose for hyperopt
                 )
+
+                data_manager = DataManager(
+                    batch_size=model.batch_size,
+                    device=model.device,
+                    num_workers=0,
+                    pin_memory=model.device.type == "cuda"
+                )
+
+                # Create sample weights
+                sample_weights = data_manager.create_sample_weights(
+                    y_train_normalized,
+                    method="inverse_frequency"
+                )
+
+                # Create data loaders
+                train_loader = trainer.create_data_loader(
+                    self.X_train, y_train_normalized, shuffle=True, sample_weights=sample_weights
+                )
+                val_loader = trainer.create_data_loader(
+                    self.X_val, y_val_normalized, shuffle=False
+                )
+
+                # Custom training loop that checks guardrails
+                best_ndcg = -float('inf')
+                best_mae_original = float('inf')
+                best_r2 = -float('inf')
+                best_spearman = -float('inf')
+                best_epoch = 0
+                best_model_state = None
+
+                for epoch in range(model.epochs):
+                    # Train epoch
+                    train_loss = trainer.train_epoch(train_loader, model.criterion, position)
+
+                    # Validate
+                    val_loss, val_metrics, _ = trainer.validate(val_loader, model.criterion, position)
+
+                    # Calculate metrics on original scale for guardrail checking
+                    model.network.eval()
+                    with torch.no_grad():
+                        X_val_tensor = torch.FloatTensor(self.X_val).to(model.device)
+                        val_pred = model.network(X_val_tensor)
+                        if isinstance(val_pred, dict):
+                            val_pred = val_pred["mean"]
+                        val_pred_np = val_pred.cpu().numpy()
+
+                    # Denormalize predictions
+                    val_pred_original = val_pred_np * model.y_std + model.y_mean
+
+                    # Calculate metrics
+                    mae_original = np.mean(np.abs(self.y_val - val_pred_original))
+                    r2_original = r2_score(self.y_val, val_pred_original)
+                    spearman, _ = spearmanr(self.y_val, val_pred_original)
+                    ndcg = calculate_ndcg_at_k(self.y_val, val_pred_original, k=20)
+
+                    # Check if this is the best model considering guardrails
+                    if (
+                        mae_original < mae_guardrail and
+                        spearman > 0 and
+                        r2_original > 0 and
+                        ndcg > best_ndcg
+                    ):
+                        best_ndcg = ndcg
+                        best_mae_original = mae_original
+                        best_r2 = r2_original
+                        best_spearman = spearman
+                        best_epoch = epoch
+                        best_model_state = model.network.state_dict().copy()
+                        logger.info(
+                            f"Trial {trial.number + 1}, Epoch {epoch}: New best model with guardrails - "
+                            f"NDCG={ndcg:.4f}, MAE={mae_original:.3f}, R²={r2_original:.4f}, Spearman={spearman:.4f}"
+                        )
+
+                    # Update scheduler
+                    trainer.scheduler.step(val_loss)
+
+                # Restore best model if found
+                if best_model_state is not None:
+                    model.network.load_state_dict(best_model_state)
+                    mae_original_scale = best_mae_original
+                    r2 = best_r2
+                    spearman_corr = best_spearman
+                    ndcg_score = best_ndcg
+                    logger.info(
+                        f"Trial {trial.number + 1}: Restored best model from epoch {best_epoch} "
+                        f"(NDCG={ndcg_score:.4f}, MAE={mae_original_scale:.3f})"
+                    )
+                else:
+                    # No model passed guardrails during training
+                    logger.info(f"Trial {trial.number + 1}: No epoch passed all guardrails")
+                    raise optuna.TrialPruned("No epoch passed all guardrails")
+
+                # Create a dummy result for compatibility
+                result = type('Result', (), {
+                    'val_mae': best_mae_original / model.y_std,  # Normalized
+                    'val_r2': best_r2,
+                    'val_rmse': np.sqrt(best_mae_original)
+                })()
+
+                # All metrics have been calculated in the custom training loop
 
                 # Handle NaN values (treat as 0.0)
                 if spearman_corr is None or np.isnan(spearman_corr):
@@ -881,19 +976,14 @@ try:
                 # Store metrics in trial attributes for inspection
                 # Store both normalized MAE (for comparison) and original scale MAE (for reporting)
                 trial.set_user_attr("mae", float(mae_original_scale))
-                trial.set_user_attr("mae_normalized", float(mae))
+                trial.set_user_attr("mae_normalized", float(best_mae_original / model.y_std))
                 trial.set_user_attr("ndcg_at_k", float(ndcg_score))
                 trial.set_user_attr("r2", float(r2))
                 trial.set_user_attr("spearman", float(spearman_corr))
 
-                # Store the best model if this is the best NDCG@k so far AND all guardrails pass
-                # Use original scale MAE for guardrail checking
-                if (
-                    mae_original_scale < mae_guardrail
-                    and spearman_corr > 0
-                    and r2 > 0
-                    and (not hasattr(self, "best_ndcg") or ndcg_score > self.best_ndcg)
-                ):
+                # Store the best model if this is the best NDCG@k so far
+                # Note: guardrails already checked during training
+                if not hasattr(self, "best_ndcg") or ndcg_score > self.best_ndcg:
                     self.best_ndcg = ndcg_score
                     self.best_model = model
                     # Ensure the best model has input_size set
@@ -911,34 +1001,13 @@ try:
                         f"Trial {trial.number + 1}: New best valid trial stored (MAE={mae_original_scale:.3f}, NDCG={ndcg_score:.4f})"
                     )
 
-                # Apply quality guardrails - prune if metrics don't meet minimum standards
-                # Use original scale MAE for guardrail checking
-                if mae_original_scale >= mae_guardrail:
-                    logger.info(
-                        f"Trial {trial.number + 1}: MAE guardrail failed: {mae_original_scale:.3f} >= {mae_guardrail}"
-                    )
-                    raise optuna.TrialPruned(
-                        f"MAE guardrail failed: {mae_original_scale:.3f} >= {mae_guardrail}"
-                    )
-
-                if spearman_corr <= 0:
-                    logger.info(
-                        f"Trial {trial.number + 1}: Spearman guardrail failed: {spearman_corr:.4f} <= 0"
-                    )
-                    raise optuna.TrialPruned(
-                        f"Spearman guardrail failed: {spearman_corr:.4f} <= 0"
-                    )
-
-                if r2 <= 0:
-                    logger.info(
-                        f"Trial {trial.number + 1}: R² guardrail failed: {r2:.4f} <= 0"
-                    )
-                    raise optuna.TrialPruned(f"R² guardrail failed: {r2:.4f} <= 0")
+                # No need to check guardrails here - they were already checked during training
+                # If we got here, the best model already passed all guardrails
 
                 # Add newline to separate from training progress, then log trial progress
                 print()  # Ensure newline after training progress
                 logger.info(
-                    f"Trial {trial.number + 1}: NDCG@20={ndcg_score:.4f}, MAE={mae_original_scale:.4f}, Spearman={spearman_corr:.4f}, R²={r2:.4f}"
+                    f"Trial {trial.number + 1}: Final metrics - NDCG@20={ndcg_score:.4f}, MAE={mae_original_scale:.4f}, Spearman={spearman_corr:.4f}, R²={r2:.4f}"
                 )
 
                 # Return NDCG@k for maximization
@@ -2772,7 +2841,7 @@ class TENetwork(nn.Module):
         combined = torch.cat([attended_flat, efficiency_features], dim=1)
 
         # Process combined features
-        processed = self.combination_layers(combined)
+        processed = self.combination(combined)
 
         # Generate output
         output = self.output(processed)
