@@ -380,6 +380,7 @@ class ModelTrainer:
         best_metrics = {}
         best_epoch = 0
         best_model_state = None
+        best_learning_rate = self.learning_rate  # Initialize with starting LR
 
         # Training loop - run all epochs
         for epoch in range(self.epochs):
@@ -402,6 +403,7 @@ class ModelTrainer:
                 best_metrics = val_metrics.copy()
                 best_epoch = epoch
                 best_model_state = self.model.state_dict().copy()
+                best_learning_rate = self.optimizer.param_groups[0]["lr"]  # Capture LR at best epoch
                 if self.verbose:
                     logger.info(f"New best model found at epoch {epoch} with val_loss={val_loss:.4f}")
 
@@ -438,7 +440,7 @@ class ModelTrainer:
             "epochs_trained": len(self.history["train_loss"]),
             "best_epoch": best_epoch,
             "early_stopped": False,  # No early stopping anymore
-            "final_learning_rate": self.optimizer.param_groups[0]["lr"]
+            "best_learning_rate": best_learning_rate  # LR at best epoch, not final
         }
 
     def _compute_multi_head_loss(

@@ -4141,11 +4141,11 @@ class EnsembleModel:
                     k: v for k, v in combined_params.items() if not k.startswith("xgb_")
                 }
 
-                # Add final learning rate if available from neural model training
+                # Update learning_rate with best epoch value from training if available
                 if hasattr(self.neural_model, '_last_training_result'):
-                    final_lr = self.neural_model._last_training_result.get('final_learning_rate')
-                    if final_lr is not None:
-                        nn_only_params['final_learning_rate'] = final_lr
+                    best_lr = self.neural_model._last_training_result.get('best_learning_rate')
+                    if best_lr is not None:
+                        nn_only_params['learning_rate'] = best_lr  # Override with LR from best epoch
                 hyperparameter_manager = get_hyperparameter_manager()
                 hyperparameter_manager.update_hyperparameters(
                     position=self.position,
