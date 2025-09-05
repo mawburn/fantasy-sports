@@ -7,6 +7,7 @@ import numpy as np
 from typing import Dict, List, Any, Optional, Tuple
 from scipy import stats
 import logging
+import warnings
 
 logger = logging.getLogger(__name__)
 
@@ -101,15 +102,30 @@ def calculate_spearman_correlation(y_true: np.ndarray, y_pred: np.ndarray) -> fl
     Returns:
         Spearman correlation coefficient
     """
-    if len(y_true) < 2:
-        return 0.0
+    # Suppress ConstantInputWarning since we handle constant arrays explicitly
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="An input array is constant")
 
-    # Handle NaN values
-    mask = ~(np.isnan(y_true) | np.isnan(y_pred))
-    if np.sum(mask) < 2:
-        return 0.0
+        if len(y_true) < 2:
+            return 0.0
 
-    return stats.spearmanr(y_true[mask], y_pred[mask])[0]
+        # Handle NaN values
+        mask = ~(np.isnan(y_true) | np.isnan(y_pred))
+        if np.sum(mask) < 2:
+            return 0.0
+
+        # Check for constant values (which make correlation undefined)
+        y_true_filtered = y_true[mask]
+        y_pred_filtered = y_pred[mask]
+
+        if np.var(y_true_filtered) == 0 or np.var(y_pred_filtered) == 0:
+            return 0.0
+
+        try:
+            corr, p_value = stats.spearmanr(y_true_filtered, y_pred_filtered)
+            return corr if not np.isnan(corr) else 0.0
+        except (ValueError, RuntimeWarning):
+            return 0.0
 
 
 def calculate_metrics_suite(

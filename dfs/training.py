@@ -437,7 +437,8 @@ class ModelTrainer:
             "history": self.history,
             "epochs_trained": len(self.history["train_loss"]),
             "best_epoch": best_epoch,
-            "early_stopped": False  # No early stopping anymore
+            "early_stopped": False,  # No early stopping anymore
+            "final_learning_rate": self.optimizer.param_groups[0]["lr"]
         }
 
     def _compute_multi_head_loss(

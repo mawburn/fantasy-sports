@@ -2218,6 +2218,9 @@ class BaseNeuralModel(ABC):
         best_epoch = training_result.get("best_epoch", training_result["epochs_trained"])
         best_val_ndcg = training_result["best_metrics"].get("ndcg@20", 0.0)
 
+        # Store training result for hyperparameter saving
+        self._last_training_result = training_result
+
         # Store training history
         self.train_losses = trainer.history["train_loss"]
         self.val_losses = trainer.history["val_loss"]
@@ -4137,6 +4140,12 @@ class EnsembleModel:
                 nn_only_params = {
                     k: v for k, v in combined_params.items() if not k.startswith("xgb_")
                 }
+
+                # Add final learning rate if available from neural model training
+                if hasattr(self.neural_model, '_last_training_result'):
+                    final_lr = self.neural_model._last_training_result.get('final_learning_rate')
+                    if final_lr is not None:
+                        nn_only_params['final_learning_rate'] = final_lr
                 hyperparameter_manager = get_hyperparameter_manager()
                 hyperparameter_manager.update_hyperparameters(
                     position=self.position,

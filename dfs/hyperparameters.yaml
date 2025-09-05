@@ -40,14 +40,14 @@ positions:
     xgb_subsample: 0.8
   QB:
     batch_size: 48
-    best_validation_r2: null
-    best_validation_mae: null
-    best_validation_spearman: null
-    best_validation_ndcg_at_k: null
-    dropout_rate: null
+    best_validation_r2: 0.08784937858581543
+    best_validation_mae: 6.384668827056885
+    best_validation_spearman: 0.2823593790297541
+    best_validation_ndcg_at_k: 0.47063167773439313
+    dropout_rate: 0.2465447373174767
     epochs: 500
     hidden_size: 192
-    last_tuned: "2025-08-22T16:17:54.700121"
+    last_tuned: "2025-09-05T18:42:29.357706"
     learning_rate: 0.0044809759182149545
     num_layers: 2
     tuning_trials: 5
@@ -57,18 +57,18 @@ positions:
     xgb_max_depth: 7
     xgb_subsample: 0.8
   RB:
-    batch_size: 48
-    best_validation_r2: 0.10740649700164795
-    best_validation_mae: 5.380098819732666
-    best_validation_spearman: 0.41242198816698356
-    best_validation_ndcg_at_k: 0.35988851366759955
-    dropout_rate: 0.4795542149013333
+    batch_size: 240
+    best_validation_r2: 0.12019437551498413
+    best_validation_mae: 5.337850570678711
+    best_validation_spearman: 0.4129450271967988
+    best_validation_ndcg_at_k: 0.42578676723031494
+    dropout_rate: 0.10718475024592788
     epochs: 500
-    hidden_size: 64
-    last_tuned: "2025-09-04T19:13:47.586916"
-    learning_rate: 0.004362599362560562
+    hidden_size: 512
+    last_tuned: "2025-09-05T14:58:55.156265"
+    learning_rate: 0.001024946488521555
     num_layers: 4
-    tuning_trials: 10
+    tuning_trials: 20
     weight_decay: 0.001
     xgb_colsample_bytree: 0.8
     xgb_learning_rate: 0.08
@@ -93,18 +93,18 @@ positions:
     xgb_max_depth: 5
     xgb_subsample: 0.8
   WR:
-    batch_size: 48
+    batch_size: 192
     best_validation_r2: null
     best_validation_mae: null
     best_validation_spearman: null
     best_validation_ndcg_at_k: null
-    dropout_rate: null
+    dropout_rate: 0.22865977668818122
     epochs: 500
-    hidden_size: 192
-    last_tuned: "2025-08-22T15:04:54.013486"
-    learning_rate: 0.0044809759182149545
-    num_layers: 2
-    tuning_trials: 5
+    hidden_size: 160
+    last_tuned: "2025-09-05T16:34:17.549667"
+    learning_rate: 0.0004445950785400399
+    num_layers: 4
+    tuning_trials: 100
     weight_decay: 0.001
     xgb_colsample_bytree: 0.8
     xgb_learning_rate: 0.08
