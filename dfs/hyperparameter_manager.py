@@ -15,6 +15,22 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
+def apply_hyperparameters_to_model(model: Any, hyperparams: Dict[str, Any]) -> None:
+    """Apply hyperparameters to model attributes generically.
+
+    This utility function sets attributes on a model object based on a dictionary
+    of hyperparameters, only setting those that the model already has as attributes.
+
+    Args:
+        model: The model object to apply hyperparameters to
+        hyperparams: Dictionary of hyperparameter names and values
+    """
+    for param_name, param_value in hyperparams.items():
+        if hasattr(model, param_name):
+            setattr(model, param_name, param_value)
+            logger.debug(f"Set {param_name}={param_value} on {model.__class__.__name__}")
+
+
 class HyperparameterManager:
     """Manages hyperparameter configuration using YAML files."""
 

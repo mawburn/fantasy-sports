@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 # Import hyperparameter manager with error handling
 try:
-    from hyperparameter_manager import get_hyperparameter_manager
+    from hyperparameter_manager import get_hyperparameter_manager, apply_hyperparameters_to_model
 
     HAS_HYPERPARAMETER_MANAGER = True
 except ImportError:
@@ -706,6 +706,15 @@ try:
                 int(layers_config.get("max", 4)),
             )
 
+            # Weight decay
+            weight_config = search_ranges.get("weight_decay", {})
+            weight_decay = trial.suggest_float(
+                "weight_decay",
+                float(weight_config.get("min", 1e-5)),
+                float(weight_config.get("max", 1e-2)),
+                log=weight_config.get("log_scale", True),
+            )
+
             # Get position first
             position = self.model_config.position.upper()
 
@@ -804,16 +813,17 @@ try:
 
             # Create model with suggested hyperparameters
             model = self.model_class(self.model_config)
-            model.learning_rate = lr
-            model.batch_size = batch_size
 
-            # For neural network models, update architecture params
-            if hasattr(model, "hidden_size"):
-                model.hidden_size = hidden_size
-            if hasattr(model, "dropout_rate"):
-                model.dropout_rate = dropout_rate
-            if hasattr(model, "num_layers"):
-                model.num_layers = num_layers
+            # Apply all hyperparameters using the utility function
+            hyperparams = {
+                'learning_rate': lr,
+                'batch_size': batch_size,
+                'weight_decay': weight_decay,
+                'hidden_size': hidden_size,
+                'dropout_rate': dropout_rate,
+                'num_layers': num_layers
+            }
+            apply_hyperparameters_to_model(model, hyperparams)
 
             # Train for specified epochs
             model.epochs = self.epochs
