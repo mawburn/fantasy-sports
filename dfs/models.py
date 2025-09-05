@@ -639,6 +639,11 @@ try:
             Returns:
                 Average NDCG@20 to maximize (with MAE guardrail)
             """
+            # Import required libraries at the beginning
+            import numpy as np
+            from scipy.stats import spearmanr
+            from sklearn.metrics import mean_absolute_error, r2_score
+
             # Get search ranges from hyperparameter manager
             from hyperparameter_manager import get_hyperparameter_manager
 
@@ -761,10 +766,6 @@ try:
                     )
 
                     # Evaluate using MAE, NDCG@k, Spearman correlation, and R²
-                    import numpy as np
-                    from scipy.stats import spearmanr
-                    from sklearn.metrics import mean_absolute_error, r2_score
-
                     val_pred = model.predict(self.X_val)
 
                     mae = mean_absolute_error(self.y_val, val_pred)
