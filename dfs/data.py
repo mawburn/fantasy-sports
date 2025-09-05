@@ -1100,6 +1100,104 @@ def load_env_file():
 load_env_file()
 
 
+def collect_upcoming_weather(db_path: str = "data/nfl_dfs.db") -> int:
+    """Collect weather forecast for upcoming games using free weather.gov API.
+
+    Args:
+        db_path: Path to the database
+
+    Returns:
+        Number of weather records stored
+    """
+    import time
+    from datetime import datetime, timedelta
+
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    today = datetime.now().date()
+    next_week = today + timedelta(days=7)
+
+    # Find upcoming games that need weather data
+    cursor.execute("""
+        SELECT g.id, g.home_team_id, g.game_date
+        FROM games g
+        LEFT JOIN weather w ON g.id = w.game_id
+        WHERE w.game_id IS NULL
+        AND date(g.game_date) >= date(?)
+        AND date(g.game_date) <= date(?)
+        ORDER BY g.game_date
+    """, (today.isoformat(), next_week.isoformat()))
+
+    upcoming_games = cursor.fetchall()
+
+    if not upcoming_games:
+        logger.info("No upcoming games found needing weather data")
+        return 0
+
+    logger.info(f"Found {len(upcoming_games)} upcoming games needing weather forecasts")
+
+    weather_records = []
+    for game_id, home_team_id, game_date in upcoming_games:
+        # Get home team abbreviation
+        cursor.execute("SELECT team_abbr FROM teams WHERE id = ?", (home_team_id,))
+        result = cursor.fetchone()
+        if not result:
+            continue
+
+        home_team_abbr = result[0]
+
+        # Check if it's an outdoor stadium
+        if not is_outdoor_stadium(home_team_abbr):
+            continue
+
+        stadium = OUTDOOR_STADIUMS.get(home_team_abbr)
+        if not stadium:
+            continue
+
+        logger.info(f"Getting forecast for {game_id} at {stadium['name']}")
+
+        # Use the free weather.gov API for forecasts
+        weather_data = get_weather_forecast(stadium["lat"], stadium["lon"])
+
+        if weather_data:
+            weather_record = (
+                game_id,
+                stadium["name"],
+                stadium["lat"],
+                stadium["lon"],
+                weather_data.get("temperature"),
+                weather_data.get("feels_like"),
+                weather_data.get("humidity"),
+                weather_data.get("wind_speed"),
+                weather_data.get("wind_direction"),
+                weather_data.get("precipitation_chance"),
+                weather_data.get("conditions"),
+                weather_data.get("visibility"),
+                weather_data.get("pressure"),
+                datetime.now().isoformat(),
+            )
+            weather_records.append(weather_record)
+
+            # Small delay to be respectful to the free API
+            time.sleep(0.5)
+
+    # Store weather records
+    if weather_records:
+        cursor.executemany("""
+            INSERT OR REPLACE INTO weather (
+                game_id, stadium_name, latitude, longitude,
+                temperature, feels_like, humidity, wind_speed, wind_direction,
+                precipitation_chance, conditions, visibility, pressure, collected_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, weather_records)
+        conn.commit()
+        logger.info(f"Stored weather forecasts for {len(weather_records)} games")
+
+    conn.close()
+    return len(weather_records)
+
+
 def collect_weather_data_optimized(
     db_path: str = "data/nfl_dfs.db",
     limit: int = None,

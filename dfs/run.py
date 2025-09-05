@@ -1782,15 +1782,12 @@ def main():
             collect_weather_data_optimized(db_path=DEFAULT_DB_PATH)
         elif args.upcoming:
             logger.info("Collecting weather for upcoming games...")
-            # Import the upcoming weather function
-            from collect_weather_today import main as collect_upcoming
-            collect_upcoming()
+            from data import collect_upcoming_weather
+            collect_upcoming_weather(db_path=DEFAULT_DB_PATH)
         else:
             # Default: collect both
             logger.info("Collecting all weather data (historical + upcoming)...")
             collect_weather_data_optimized(db_path=DEFAULT_DB_PATH)
-            from collect_weather_today import main as collect_upcoming
-            collect_upcoming()
 
     elif args.command == "predict":
         predict_players_optimized(args.contest_id, args.output, args.injury_file)
