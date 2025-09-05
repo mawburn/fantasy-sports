@@ -1999,7 +1999,8 @@ class BaseNeuralModel(ABC):
         # Save to hyperparameter manager if available
         if HAS_HYPERPARAMETER_MANAGER:
             hyperparameter_manager = get_hyperparameter_manager()
-            hyperparameter_manager.update_hyperparameters(
+            logger.info(f"Updating hyperparameters for {self.config.position} with params: {best_params}")
+            updated = hyperparameter_manager.update_hyperparameters(
                 position=self.config.position,
                 new_params=best_params,
                 validation_r2=validation_r2,
@@ -2008,6 +2009,8 @@ class BaseNeuralModel(ABC):
                 validation_ndcg=validation_ndcg,
                 trials=n_trials,
             )
+            if not updated:
+                logger.warning(f"Hyperparameters were NOT updated for {self.config.position} - check guardrails")
 
         return best_params
 

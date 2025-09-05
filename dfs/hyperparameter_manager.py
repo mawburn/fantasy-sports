@@ -283,6 +283,7 @@ class HyperparameterManager:
 
         if should_update:
             # Update hyperparameters
+            logger.info(f"Updating {position} with new params: {new_params}")
             self.config["positions"][position].update(new_params)
 
             # Update metadata
