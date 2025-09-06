@@ -2734,6 +2734,9 @@ class WRNetwork(nn.Module):
             num_heads=1
         )
 
+        # Add numerical stability - clamp extreme values
+        self.register_buffer('epsilon', torch.tensor(1e-8))
+
         # Custom output for WR to fix constant prediction issue
         self.output = nn.Sequential(
             nn.Linear(combined_features, 32),
@@ -2770,7 +2773,12 @@ class WRNetwork(nn.Module):
         if self._debug_count <= 5:  # Only log first 5 forward passes
             logger.warning(f"WR DEBUG {self._debug_count}: combined_std={torch.std(combined).item():.8f}")
 
+        # Add numerical stability before attention
+        combined = torch.clamp(combined, min=-10.0, max=10.0)
         attended = self.attention(combined)
+
+        # Add small noise for numerical stability
+        attended = attended + torch.randn_like(attended) * self.epsilon
 
         if self._debug_count <= 5:
             logger.warning(f"WR DEBUG {self._debug_count}: attended_std={torch.std(attended).item():.8f}")
@@ -2849,6 +2857,9 @@ class TENetwork(nn.Module):
             nn.Softplus()  # Smooth positive activation, better gradients than ReLU
         )
 
+        # Add numerical stability buffer
+        self.register_buffer('epsilon', torch.tensor(1e-8))
+
         # Initialize output layers with positive bias to avoid dead neurons
         with torch.no_grad():
             self.output[3].bias.fill_(2.0)  # Start with positive predictions (~7.4 after Softplus)
@@ -2866,9 +2877,15 @@ class TENetwork(nn.Module):
         attention_input = torch.stack(
             [redzone_features, formation_features, script_features], dim=1
         )  # [batch, 3, 32]
+
+        # Add numerical stability
+        attention_input = torch.clamp(attention_input, min=-10.0, max=10.0)
         attended_features, attention_weights = self.attention(
             attention_input, attention_input, attention_input
         )
+
+        # Add small noise for numerical stability
+        attended_features = attended_features + torch.randn_like(attended_features) * self.epsilon
         # Flatten attention output: [batch, 3, 32] -> [batch, 96]
         attended_flat = attended_features.flatten(start_dim=1)
 
