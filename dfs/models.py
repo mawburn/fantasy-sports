@@ -914,6 +914,13 @@ try:
                     # Denormalize predictions
                     val_pred_original = val_pred_np * model.y_std + model.y_mean
 
+                    # DEBUG: Check if predictions are constant
+                    pred_std = np.std(val_pred_original)
+                    if pred_std < 1e-4:
+                        logger.warning(f"DEBUG Trial {trial.number + 1}, Epoch {epoch}: "
+                                     f"pred_std={pred_std:.8f}, raw_std={np.std(val_pred_np):.8f}")
+                        logger.warning(f"Sample predictions: {val_pred_original[:5]}")
+
                     # Calculate metrics
                     mae_original = np.mean(np.abs(self.y_val - val_pred_original))
                     r2_original = r2_score(self.y_val, val_pred_original)
@@ -2754,12 +2761,24 @@ class WRNetwork(nn.Module):
             [target_features, efficiency_features, script_features], dim=1
         )
 
-        # Skip attention for now - it's causing constant outputs
-        # attended = self.attention(combined)
-        # output = self.output(attended)
+        # DEBUG: Check combined features before attention
+        if hasattr(self, '_debug_count'):
+            self._debug_count += 1
+        else:
+            self._debug_count = 1
 
-        # Direct output without attention bottleneck
-        output = self.output(combined)
+        if self._debug_count <= 5:  # Only log first 5 forward passes
+            logger.warning(f"WR DEBUG {self._debug_count}: combined_std={torch.std(combined).item():.8f}")
+
+        attended = self.attention(combined)
+
+        if self._debug_count <= 5:
+            logger.warning(f"WR DEBUG {self._debug_count}: attended_std={torch.std(attended).item():.8f}")
+
+        output = self.output(attended)
+
+        if self._debug_count <= 5:
+            logger.warning(f"WR DEBUG {self._debug_count}: output_std={torch.std(output).item():.8f}")
 
         # Return the tensor directly (no longer using dict output)
         return output.squeeze(-1)
@@ -2856,11 +2875,28 @@ class TENetwork(nn.Module):
         # Combine all features: attended (96) + efficiency (24) = 120 total
         combined = torch.cat([attended_flat, efficiency_features], dim=1)
 
+        # DEBUG: Check TE network forward pass
+        if hasattr(self, '_debug_count'):
+            self._debug_count += 1
+        else:
+            self._debug_count = 1
+
+        if self._debug_count <= 5:  # Only log first 5 forward passes
+            logger.warning(f"TE DEBUG {self._debug_count}: attention_input_std={torch.std(attention_input).item():.8f}")
+            logger.warning(f"TE DEBUG {self._debug_count}: attended_flat_std={torch.std(attended_flat).item():.8f}")
+            logger.warning(f"TE DEBUG {self._debug_count}: combined_std={torch.std(combined).item():.8f}")
+
         # Process combined features
         processed = self.combination(combined)
 
+        if self._debug_count <= 5:
+            logger.warning(f"TE DEBUG {self._debug_count}: processed_std={torch.std(processed).item():.8f}")
+
         # Generate output
         output = self.output(processed)
+
+        if self._debug_count <= 5:
+            logger.warning(f"TE DEBUG {self._debug_count}: output_std={torch.std(output).item():.8f}")
 
         # Don't apply ReLU here - clipping happens after denormalization
         # Return squeezed output to match expected shape [batch_size]
