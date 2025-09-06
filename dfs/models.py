@@ -2727,13 +2727,19 @@ class WRNetwork(nn.Module):
             num_heads=1
         )
 
-        self.output = MultiHeadOutput(
-            in_features=combined_features,
-            hidden_dim=32,
-            predict_std=True,
-            predict_ceiling=False,
-            predict_floor=False
+        # Custom output for WR to fix constant prediction issue
+        self.output = nn.Sequential(
+            nn.Linear(combined_features, 32),
+            nn.LeakyReLU(0.01),
+            nn.Dropout(0.1),
+            nn.Linear(32, 1),
+            nn.Softplus()  # Ensure positive predictions
         )
+
+        # Initialize output layer for better gradients
+        with torch.no_grad():
+            self.output[3].bias.fill_(1.5)  # Start with reasonable predictions
+            nn.init.xavier_normal_(self.output[3].weight, gain=0.1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         features = self.feature_extractor(x)
@@ -2750,10 +2756,10 @@ class WRNetwork(nn.Module):
 
         # Apply attention and get outputs
         attended = self.attention(combined)
-        outputs = self.output(attended)
+        output = self.output(attended)
 
-        # Return mean for compatibility
-        return outputs["mean"]
+        # Return the tensor directly (no longer using dict output)
+        return output.squeeze(-1)
 
 
 class TENetwork(nn.Module):
@@ -2816,9 +2822,15 @@ class TENetwork(nn.Module):
         self.output = nn.Sequential(
             nn.Linear(40, 20),
             nn.ReLU(),
+            nn.Dropout(0.1),
             nn.Linear(20, 1),
-            nn.ReLU()  # Ensures non-negative
+            nn.Softplus()  # Smooth positive activation, better gradients than ReLU
         )
+
+        # Initialize output layers with positive bias to avoid dead neurons
+        with torch.no_grad():
+            self.output[3].bias.fill_(2.0)  # Start with positive predictions (~7.4 after Softplus)
+            nn.init.xavier_normal_(self.output[3].weight, gain=0.1)  # Smaller initial weights
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Multi-head feature extraction
