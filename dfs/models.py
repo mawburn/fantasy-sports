@@ -2754,9 +2754,12 @@ class WRNetwork(nn.Module):
             [target_features, efficiency_features, script_features], dim=1
         )
 
-        # Apply attention and get outputs
-        attended = self.attention(combined)
-        output = self.output(attended)
+        # Skip attention for now - it's causing constant outputs
+        # attended = self.attention(combined)
+        # output = self.output(attended)
+
+        # Direct output without attention bottleneck
+        output = self.output(combined)
 
         # Return the tensor directly (no longer using dict output)
         return output.squeeze(-1)
